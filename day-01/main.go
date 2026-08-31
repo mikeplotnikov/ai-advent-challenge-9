@@ -12,7 +12,8 @@ import (
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
 )
 
-const systemPrompt = "Ты дружелюбный ассистент. Отвечай кратко и по делу, на русском языке."
+const systemPrompt = "Ты ассистент, работающий на модели DeepSeek через официальный API DeepSeek. " +
+	"Отвечай кратко и по делу, на русском языке."
 
 func main() {
 	llm.LoadDotEnv(".env")
@@ -32,7 +33,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	answer, usage, err := client.Ask(context.Background(), []llm.Message{
+	answer, err := client.Ask(context.Background(), []llm.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
 	})
@@ -41,9 +42,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println(answer)
-	fmt.Fprintf(os.Stderr, "\n[%s: %d токенов промпта + %d токенов ответа]\n",
-		client.Model, usage.PromptTokens, usage.CompletionTokens)
+	fmt.Println(answer.Content)
+	fmt.Fprintf(os.Stderr, "\n[%s: %d токенов промпта + %d токенов ответа · запрос %s]\n",
+		answer.Model, answer.Usage.PromptTokens, answer.Usage.CompletionTokens, answer.ID)
 }
 
 func readStdin() string {

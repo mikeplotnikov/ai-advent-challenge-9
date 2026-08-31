@@ -54,12 +54,20 @@
   }
   .msg .bubble {
     background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-    padding: 13px 16px; white-space: pre-wrap; word-wrap: break-word;
+    padding: 13px 16px; word-wrap: break-word; overflow-wrap: anywhere;
   }
   .msg.user { align-self: flex-end; align-items: flex-end; }
-  .msg.user .bubble { background: var(--surface-2); border-color: #38414F; }
+  .msg.user .bubble { background: var(--surface-2); border-color: #38414F; white-space: pre-wrap; }
   .msg.bot .who { color: var(--ember); }
   .msg .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .bubble p { margin: 0 0 10px; }
+  .bubble p:last-child, .bubble ul:last-child, .bubble ol:last-child { margin-bottom: 0; }
+  .bubble h4 { font-family: var(--display); font-size: 16px; margin: 4px 0 8px; }
+  .bubble ul, .bubble ol { margin: 0 0 10px; padding-left: 22px; }
+  .bubble li { margin-bottom: 5px; }
+  .bubble li::marker { color: var(--ember); }
+  .bubble code { font-family: var(--mono); font-size: .87em; background: var(--ground); padding: 1px 5px; border-radius: 4px; }
+  .bubble strong { font-weight: 600; }
   .msg.error .bubble { border-color: var(--ember); color: var(--ember); }
 
   .empty { color: var(--muted); font-size: 16px; margin: auto; text-align: center; max-width: 44ch; }
@@ -125,6 +133,36 @@
   var history = [];   // what we send back to the server: user/assistant turns only
   var busy = false;
 
+  // Models answer in markdown; show it as formatting, not as asterisks.
+  function markdown(src) {
+    var esc = String(src)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    var out = [], list = null;
+    esc.split(/\n/).forEach(function (line) {
+      var item = line.match(/^\s*[-*•]\s+(.*)$/);
+      var num = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+      if (item || num) {
+        var tag = item ? "ul" : "ol";
+        if (list !== tag) { if (list) out.push("</" + list + ">"); out.push("<" + tag + ">"); list = tag; }
+        out.push("<li>" + inline(item ? item[1] : num[2]) + "</li>");
+        return;
+      }
+      if (list) { out.push("</" + list + ">"); list = null; }
+      if (line.trim() === "") { out.push(""); return; }
+      var head = line.match(/^\s*(#{1,4})\s+(.*)$/);
+      out.push(head ? "<h4>" + inline(head[2]) + "</h4>" : "<p>" + inline(line) + "</p>");
+    });
+    if (list) out.push("</" + list + ">");
+    return out.join("");
+  }
+
+  function inline(t) {
+    return t
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  }
+
   function clearEmpty() {
     var empty = feed.querySelector(".empty");
     if (empty) empty.remove();
@@ -139,7 +177,9 @@
     who.textContent = role === "user" ? "вы" : role === "error" ? "ошибка" : "модель";
     var body = document.createElement("div");
     body.className = "bubble";
-    if (text instanceof Node) body.appendChild(text); else body.textContent = text;
+    if (text instanceof Node) body.appendChild(text);
+    else if (role === "bot") body.innerHTML = markdown(text);
+    else body.textContent = text;
     wrap.appendChild(who);
     wrap.appendChild(body);
     if (meta) {
@@ -202,8 +242,10 @@
           return;
         }
         var u = res.data.usage || {};
-        bubble("bot", res.data.reply,
-          (res.data.model || "") + " · " + (u.prompt_tokens || 0) + " + " + (u.completion_tokens || 0) + " токенов");
+        var meta = (res.data.model || "") + " · " +
+          (u.prompt_tokens || 0) + " + " + (u.completion_tokens || 0) + " токенов";
+        if (res.data.request_id) meta += " · запрос " + String(res.data.request_id).slice(0, 8);
+        bubble("bot", res.data.reply, meta);
         history.push({ role: "assistant", content: res.data.reply });
         if (res.data.model) modelTag.textContent = res.data.model;
       })

@@ -19,7 +19,8 @@ import (
 var assets embed.FS
 
 const (
-	systemPrompt   = "Ты дружелюбный ассистент. Отвечай по-русски, ясно и по делу."
+	systemPrompt = "Ты ассистент, работающий на модели DeepSeek через официальный API DeepSeek. " +
+		"Отвечай по-русски, ясно и по делу."
 	maxHistory     = 20   // turns kept in one conversation
 	maxPromptRunes = 4000 // guard against a pasted novel
 )
@@ -29,10 +30,11 @@ type chatIn struct {
 }
 
 type chatOut struct {
-	Reply string    `json:"reply,omitempty"`
-	Usage llm.Usage `json:"usage,omitempty"`
-	Model string    `json:"model,omitempty"`
-	Error string    `json:"error,omitempty"`
+	Reply     string    `json:"reply,omitempty"`
+	Usage     llm.Usage `json:"usage,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 func main() {
@@ -97,13 +99,18 @@ func chatHandler(client *llm.Client) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
 
-		reply, usage, err := client.Ask(ctx, messages)
+		answer, err := client.Ask(ctx, messages)
 		if err != nil {
 			log.Printf("ошибка вызова модели: %v", err)
 			writeJSON(w, http.StatusBadGateway, chatOut{Error: "модель не ответила: " + err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, chatOut{Reply: reply, Usage: usage, Model: client.Model})
+		writeJSON(w, http.StatusOK, chatOut{
+			Reply:     answer.Content,
+			Usage:     answer.Usage,
+			Model:     answer.Model,
+			RequestID: answer.ID,
+		})
 	}
 }
 

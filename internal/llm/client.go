@@ -34,10 +34,11 @@ type Usage struct {
 }
 
 type Client struct {
-	APIKey string
-	Model  string
-	URL    string
-	HTTP   *http.Client
+	APIKey    string
+	Model     string
+	URL       string
+	MaxTokens int
+	HTTP      *http.Client
 }
 
 // New builds a client from the environment: DEEPSEEK_API_KEY and optional DEEPSEEK_MODEL.
@@ -51,62 +52,96 @@ func New() (*Client, error) {
 		model = DefaultModel
 	}
 	return &Client{
-		APIKey: key,
-		Model:  model,
-		URL:    DefaultURL,
-		HTTP:   &http.Client{Timeout: 120 * time.Second},
+		APIKey:    key,
+		Model:     model,
+		URL:       DefaultURL,
+		MaxTokens: 1500,
+		HTTP:      &http.Client{Timeout: 120 * time.Second},
 	}, nil
 }
 
+type thinking struct {
+	Type string `json:"type"`
+}
+
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
+	Model     string    `json:"model"`
+	Messages  []Message `json:"messages"`
+	Stream    bool      `json:"stream"`
+	MaxTokens int       `json:"max_tokens,omitempty"`
+	// deepseek-v4 models reason before answering, and that reasoning eats the
+	// token budget. A chat demo wants the answer, not the deliberation.
+	Thinking *thinking `json:"thinking,omitempty"`
 }
 
 type chatResponse struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
 	Choices []struct {
 		Message Message `json:"message"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
 }
 
+// Answer is what came back, including what the API says about itself —
+// the model name and request id are the proof of where the text came from.
+type Answer struct {
+	Content string
+	Model   string
+	ID      string
+	Usage   Usage
+}
+
 // Ask sends the whole conversation and returns the model's reply.
-func (c *Client) Ask(ctx context.Context, messages []Message) (string, Usage, error) {
-	body, err := json.Marshal(chatRequest{Model: c.Model, Messages: messages, Stream: false})
+func (c *Client) Ask(ctx context.Context, messages []Message) (Answer, error) {
+	body, err := json.Marshal(chatRequest{
+		Model:     c.Model,
+		Messages:  messages,
+		Stream:    false,
+		MaxTokens: c.MaxTokens,
+		Thinking:  &thinking{Type: "disabled"},
+	})
 	if err != nil {
-		return "", Usage{}, err
+		return Answer{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
 	if err != nil {
-		return "", Usage{}, err
+		return Answer{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", Usage{}, err
+		return Answer{}, err
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", Usage{}, err
+		return Answer{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", Usage{}, fmt.Errorf("API вернул %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return Answer{}, fmt.Errorf("API вернул %s: %s", resp.Status, strings.TrimSpace(string(raw)))
 	}
 
 	var parsed chatResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", Usage{}, fmt.Errorf("не разобрать ответ: %w", err)
+		return Answer{}, fmt.Errorf("не разобрать ответ: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
-		return "", Usage{}, fmt.Errorf("модель вернула пустой ответ")
+		return Answer{}, fmt.Errorf("модель вернула пустой ответ")
 	}
-	return strings.TrimSpace(parsed.Choices[0].Message.Content), parsed.Usage, nil
+	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if content == "" {
+		return Answer{}, fmt.Errorf("модель вернула пустой текст")
+	}
+	model := parsed.Model
+	if model == "" {
+		model = c.Model
+	}
+	return Answer{Content: content, Model: model, ID: parsed.ID, Usage: parsed.Usage}, nil
 }
 
 // LoadDotEnv fills in variables from a .env file without overriding the real environment.
