@@ -43,9 +43,21 @@ type Client struct {
 
 // New builds a client from the environment: DEEPSEEK_API_KEY and optional DEEPSEEK_MODEL.
 func New() (*Client, error) {
-	key := os.Getenv("DEEPSEEK_API_KEY")
+	return NewWithKeyEnv("")
+}
+
+// NewWithKeyEnv is New with a preferred key variable, falling back to DEEPSEEK_API_KEY.
+// Day 2 runs on its own key so its spend can be capped and revoked on its own.
+func NewWithKeyEnv(preferred string) (*Client, error) {
+	key := ""
+	if preferred != "" {
+		key = os.Getenv(preferred)
+	}
 	if key == "" {
-		return nil, fmt.Errorf("DEEPSEEK_API_KEY не задан: скопируй .env.example в .env и впиши ключ")
+		key = os.Getenv("DEEPSEEK_API_KEY")
+	}
+	if key == "" {
+		return nil, fmt.Errorf("ключ не задан: скопируй .env.example в .env и впиши ключ")
 	}
 	model := os.Getenv("DEEPSEEK_MODEL")
 	if model == "" {
@@ -60,15 +72,36 @@ func New() (*Client, error) {
 	}, nil
 }
 
+// Options are the per-request controls the API itself offers. A zero value sends
+// none of them, which is what "no constraints" has to mean for an honest comparison.
+type Options struct {
+	// MaxTokens caps generation. 0 means the field is not sent at all.
+	MaxTokens int
+	// Stop are sequences the API cuts the answer on. The sequence itself is not
+	// returned in the content.
+	Stop []string
+	// ResponseFormat is "json_object" to force structured output, "" to leave it alone.
+	ResponseFormat string
+	// Temperature is sent only when set.
+	Temperature *float64
+}
+
 type thinking struct {
 	Type string `json:"type"`
 }
 
+type responseFormat struct {
+	Type string `json:"type"`
+}
+
 type chatRequest struct {
-	Model     string    `json:"model"`
-	Messages  []Message `json:"messages"`
-	Stream    bool      `json:"stream"`
-	MaxTokens int       `json:"max_tokens,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Stream         bool            `json:"stream"`
+	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Stop           []string        `json:"stop,omitempty"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
 	// deepseek-v4 models reason before answering, and that reasoning eats the
 	// token budget. A chat demo wants the answer, not the deliberation.
 	Thinking *thinking `json:"thinking,omitempty"`
@@ -78,7 +111,8 @@ type chatResponse struct {
 	ID      string `json:"id"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Message Message `json:"message"`
+		Message      Message `json:"message"`
+		FinishReason string  `json:"finish_reason"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
 }
@@ -90,19 +124,42 @@ type Answer struct {
 	Model   string
 	ID      string
 	Usage   Usage
+	// FinishReason is why generation stopped: "stop" when the model or a stop
+	// sequence ended it, "length" when it ran into max_tokens mid-word.
+	FinishReason string
+	// RequestBody is the JSON actually sent, minus the key — the evidence that
+	// the constraints travelled in the request and were not just asked for in prose.
+	RequestBody string
 }
 
-// Ask sends the whole conversation and returns the model's reply.
+// Ask sends the whole conversation with the client's default token cap.
 func (c *Client) Ask(ctx context.Context, messages []Message) (Answer, error) {
-	body, err := json.Marshal(chatRequest{
-		Model:     c.Model,
-		Messages:  messages,
-		Stream:    false,
-		MaxTokens: c.MaxTokens,
-		Thinking:  &thinking{Type: "disabled"},
-	})
+	return c.AskWith(ctx, messages, Options{MaxTokens: c.MaxTokens})
+}
+
+// AskWith sends the conversation under exactly the options given: whatever is
+// left at its zero value is not sent to the API at all.
+func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) (Answer, error) {
+	request := chatRequest{
+		Model:       c.Model,
+		Messages:    messages,
+		Stream:      false,
+		MaxTokens:   opts.MaxTokens,
+		Stop:        opts.Stop,
+		Temperature: opts.Temperature,
+		Thinking:    &thinking{Type: "disabled"},
+	}
+	if opts.ResponseFormat != "" {
+		request.ResponseFormat = &responseFormat{Type: opts.ResponseFormat}
+	}
+
+	body, err := json.Marshal(request)
 	if err != nil {
 		return Answer{}, err
+	}
+	pretty, err := json.MarshalIndent(request, "", "  ")
+	if err != nil {
+		pretty = body
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(body))
@@ -141,7 +198,14 @@ func (c *Client) Ask(ctx context.Context, messages []Message) (Answer, error) {
 	if model == "" {
 		model = c.Model
 	}
-	return Answer{Content: content, Model: model, ID: parsed.ID, Usage: parsed.Usage}, nil
+	return Answer{
+		Content:      content,
+		Model:        model,
+		ID:           parsed.ID,
+		Usage:        parsed.Usage,
+		FinishReason: parsed.Choices[0].FinishReason,
+		RequestBody:  string(pretty),
+	}, nil
 }
 
 // LoadDotEnv fills in variables from a .env file without overriding the real environment.
