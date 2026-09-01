@@ -19,13 +19,16 @@ import (
 
 const defaultQuestion = "Объясни, как работает HTTPS"
 
-const usage = `usage: day-02 [вопрос] [-json] [-custom рычаг,рычаг,...]
+const usage = `usage: day-02 [вопрос] [-json] [-custom рычаг,...] [-repeat N]
 
   -json     печатать тело каждого запроса целиком
   -custom   вместо B/C/D прогнать одну свою комбинацию рядом с A.
             Рычаги: format · marker · stop · json · max=N (0 — не отправлять)
             Пример: -custom format,marker,max=400   (stop выключен — маркер
-            останется в тексте, и видно, что срезает его именно поле stop)`
+            останется в тексте, и видно, что срезает его именно поле stop)
+  -repeat   прогнать один и тот же запрос N раз и проверить, что схема ответа
+            не поплыла. Без -custom берётся режим C (response_format=json_object).
+            Пример: -repeat 10`
 
 type result struct {
 	mode   mode
@@ -39,7 +42,7 @@ func main() {
 	// Hand-rolled instead of the flag package: flag.Parse stops at the first
 	// positional argument, so `day-02 "вопрос" -json` would silently paste the
 	// flag into the question.
-	question, dumpJSON, custom, err := parseArgs(os.Args[1:])
+	question, dumpJSON, custom, repeat, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr, usage)
@@ -53,6 +56,11 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+
+	if repeat > 0 {
+		runRepeat(client, question, custom, repeat, dumpJSON)
+		return
 	}
 
 	modes := defaultModes()
@@ -101,8 +109,9 @@ func report(m mode, answer llm.Answer, err error, dumpJSON bool) {
 }
 
 // parseArgs takes flags from anywhere in the line and treats the rest as the question.
-func parseArgs(args []string) (string, bool, *levers, error) {
+func parseArgs(args []string) (string, bool, *levers, int, error) {
 	dump := false
+	repeat := 0
 	var custom *levers
 	words := make([]string, 0, len(args))
 
@@ -113,25 +122,80 @@ func parseArgs(args []string) (string, bool, *levers, error) {
 			dump = true
 		case a == "-custom" || a == "--custom":
 			if i+1 >= len(args) {
-				return "", false, nil, fmt.Errorf("-custom без списка рычагов")
+				return "", false, nil, 0, fmt.Errorf("-custom без списка рычагов")
 			}
 			i++
 			l, err := parseLevers(args[i])
 			if err != nil {
-				return "", false, nil, err
+				return "", false, nil, 0, err
 			}
 			custom = &l
 		case strings.HasPrefix(a, "-custom="):
 			l, err := parseLevers(strings.TrimPrefix(a, "-custom="))
 			if err != nil {
-				return "", false, nil, err
+				return "", false, nil, 0, err
 			}
 			custom = &l
+		case a == "-repeat" || a == "--repeat":
+			if i+1 >= len(args) {
+				return "", false, nil, 0, fmt.Errorf("-repeat без числа")
+			}
+			i++
+			n, err := parseRepeat(args[i])
+			if err != nil {
+				return "", false, nil, 0, err
+			}
+			repeat = n
+		case strings.HasPrefix(a, "-repeat="):
+			n, err := parseRepeat(strings.TrimPrefix(a, "-repeat="))
+			if err != nil {
+				return "", false, nil, 0, err
+			}
+			repeat = n
 		default:
 			words = append(words, a)
 		}
 	}
-	return strings.TrimSpace(strings.Join(words, " ")), dump, custom, nil
+	return strings.TrimSpace(strings.Join(words, " ")), dump, custom, repeat, nil
+}
+
+func parseRepeat(value string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("не разобрать -repeat %s: нужно целое число от 1", value)
+	}
+	return n, nil
+}
+
+// runRepeat sends the same request N times and reports whether the shape held.
+// Values are expected to differ; that is the point — the format is what must not.
+func runRepeat(client *llm.Client, question string, custom *levers, n int, dumpJSON bool) {
+	l := levers{JSON: true, MaxTokens: 400}
+	if custom != nil {
+		l = *custom
+	}
+	m := l.build("R", "Проверка детерминированности", customControl(l))
+
+	fmt.Printf("Вопрос (один и тот же во всех %d запросах):\n  %s\n\nМодель: %s\nРежим: %s\n",
+		n, question, client.Model, m.control)
+	if dumpJSON {
+		fmt.Printf("\nsystem-промпт:\n%s\n", m.system)
+	}
+
+	checks := make([]schemaResult, 0, n)
+	var failures []string
+	for i := 0; i < n; i++ {
+		answer, err := client.AskWith(context.Background(), []llm.Message{
+			{Role: "system", Content: m.system},
+			{Role: "user", Content: question},
+		}, m.opts)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		checks = append(checks, checkSchema(answer.Content))
+	}
+	repeatReport(checks, failures)
 }
 
 // parseLevers reads "format,marker,stop,json,max=400" into the five controls.

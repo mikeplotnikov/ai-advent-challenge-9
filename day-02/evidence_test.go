@@ -111,12 +111,15 @@ func TestParseArgs(t *testing.T) {
 		{nil, "", false},
 	}
 	for _, c := range cases {
-		question, dump, custom, err := parseArgs(c.args)
+		question, dump, custom, repeat, err := parseArgs(c.args)
 		if err != nil {
 			t.Fatalf("parseArgs(%q): %v", c.args, err)
 		}
 		if custom != nil {
 			t.Errorf("parseArgs(%q) вернул рычаги без -custom", c.args)
+		}
+		if repeat != 0 {
+			t.Errorf("parseArgs(%q) вернул repeat=%d без -repeat", c.args, repeat)
 		}
 		if question != c.question || dump != c.dump {
 			t.Errorf("parseArgs(%q) = (%q, %v), ожидали (%q, %v)",
@@ -126,7 +129,7 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestParseCustom(t *testing.T) {
-	question, _, custom, err := parseArgs([]string{"вопрос", "-custom", "format,marker,max=400"})
+	question, _, custom, _, err := parseArgs([]string{"вопрос", "-custom", "format,marker,max=400"})
 	if err != nil {
 		t.Fatalf("неожиданная ошибка: %v", err)
 	}
@@ -151,13 +154,13 @@ func TestParseCustom(t *testing.T) {
 		t.Error("инструкция про маркер должна остаться в промпте")
 	}
 
-	if _, _, _, err := parseArgs([]string{"-custom", "выдумка"}); err == nil {
+	if _, _, _, _, err := parseArgs([]string{"-custom", "выдумка"}); err == nil {
 		t.Error("неизвестный рычаг должен быть ошибкой")
 	}
-	if _, _, _, err := parseArgs([]string{"-custom", "max=-5"}); err == nil {
+	if _, _, _, _, err := parseArgs([]string{"-custom", "max=-5"}); err == nil {
 		t.Error("отрицательный max должен быть ошибкой")
 	}
-	if _, _, _, err := parseArgs([]string{"-custom"}); err == nil {
+	if _, _, _, _, err := parseArgs([]string{"-custom"}); err == nil {
 		t.Error("-custom без списка должен быть ошибкой")
 	}
 }
@@ -190,5 +193,51 @@ func TestBuildComposesLevers(t *testing.T) {
 	}
 	if bare.system != systemPlain {
 		t.Error("промпт без рычагов должен остаться нейтральным")
+	}
+}
+
+func TestParseRepeat(t *testing.T) {
+	question, _, _, repeat, err := parseArgs([]string{"вопрос", "-repeat", "10"})
+	if err != nil || question != "вопрос" || repeat != 10 {
+		t.Fatalf("= (%q, %d, %v)", question, repeat, err)
+	}
+	if _, _, _, n, err := parseArgs([]string{"-repeat=3"}); err != nil || n != 3 {
+		t.Errorf("-repeat=3 → (%d, %v)", n, err)
+	}
+	for _, bad := range [][]string{{"-repeat", "0"}, {"-repeat", "-2"}, {"-repeat", "много"}, {"-repeat"}} {
+		if _, _, _, _, err := parseArgs(bad); err == nil {
+			t.Errorf("%q должно быть ошибкой", bad)
+		}
+	}
+}
+
+// Ведущий сформулировал суть дня 2 так: «нужно чтобы ты сделал 20 запросов и он
+// тебе 20 раз вернул одну и ту же схему, да с разными данными ок, но формат
+// сохранился». Проверка обязана ловить именно расхождение формы, а не значений.
+func TestCheckSchema(t *testing.T) {
+	good := `{"тема":"HTTPS","шаги":["раз","два","три"],"итог":"вывод"}`
+	if r := checkSchema(good); !r.OK || r.Sample != "HTTPS" {
+		t.Errorf("валидный ответ отвергнут: %+v", r)
+	}
+
+	// Те же ключи, другие значения — это НЕ нарушение схемы.
+	other := `{"тема":"TLS","шаги":["a","b","c"],"итог":"другое"}`
+	if r := checkSchema(other); !r.OK {
+		t.Errorf("разные значения не должны ломать схему: %+v", r)
+	}
+
+	bad := map[string]string{
+		"лишний ключ":     `{"тема":"x","шаги":["a","b","c"],"итог":"y","ещё":1}`,
+		"нет ключа":       `{"тема":"x","шаги":["a","b","c"]}`,
+		"шаги не массив":  `{"тема":"x","шаги":"раз-два-три","итог":"y"}`,
+		"не три шага":     `{"тема":"x","шаги":["a","b"],"итог":"y"}`,
+		"шаг не строка":   `{"тема":"x","шаги":["a","b",7],"итог":"y"}`,
+		"вообще не JSON":  "вот тебе ответ, без всякого JSON",
+		"markdown вокруг": "```json\n{\"тема\":\"x\"}\n```",
+	}
+	for name, content := range bad {
+		if r := checkSchema(content); r.OK {
+			t.Errorf("%s: схема принята, хотя не должна (%+v)", name, r)
+		}
 	}
 }
