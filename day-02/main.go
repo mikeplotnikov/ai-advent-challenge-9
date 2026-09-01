@@ -1,6 +1,8 @@
 // Day 2, CLI — the same question sent four times under different levels of
 // control, so the difference between asking for a shape and enforcing one is
-// visible rather than asserted.
+// visible rather than asserted. With -custom it sends one hand-picked
+// combination instead, which is how the stop sequence gets proven rather than
+// assumed: drop the stop lever and the marker appears in the text.
 package main
 
 import (
@@ -8,41 +10,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
 )
 
-// The stop marker travels twice: the prompt asks the model to end with it, and
-// the API is told to cut on it. If it never shows up in the answer, both worked.
-const stopMarker = "<<<END>>>"
-
 const defaultQuestion = "Объясни, как работает HTTPS"
 
-// Run A asks for nothing beyond an answer: no shape, no length, no ending.
-// Anything else here would make "without constraints" a lie.
-const systemPlain = "Ты ассистент, работающий на модели DeepSeek через официальный API DeepSeek. " +
-	"Отвечай на русском языке."
+const usage = `usage: day-02 [вопрос] [-json] [-custom рычаг,рычаг,...]
 
-const systemShaped = systemPlain + "\n\n" +
-	"Формат ответа: ровно три пункта, пронумерованных «1.», «2.», «3.», каждый с новой строки. " +
-	"Никакого вступления и никакого заключения — только эти три пункта.\n" +
-	"Длина: не больше 20 слов в пункте.\n" +
-	"Закончи ответ отдельной последней строкой " + stopMarker + " и не пиши после неё ничего."
-
-const systemJSON = systemPlain + "\n\n" +
-	"Отвечай строго одним объектом JSON, без markdown и без пояснений вокруг. Схема:\n" +
-	`{"тема": "строка", "шаги": ["строка", "строка", "строка"], "итог": "строка"}` + "\n" +
-	"В «шаги» ровно три элемента, каждый не длиннее 20 слов."
-
-type mode struct {
-	key     string
-	title   string
-	control string
-	system  string
-	opts    llm.Options
-}
+  -json     печатать тело каждого запроса целиком
+  -custom   вместо B/C/D прогнать одну свою комбинацию рядом с A.
+            Рычаги: format · marker · stop · json · max=N (0 — не отправлять)
+            Пример: -custom format,marker,max=400   (stop выключен — маркер
+            останется в тексте, и видно, что срезает его именно поле stop)`
 
 type result struct {
 	mode   mode
@@ -56,7 +39,12 @@ func main() {
 	// Hand-rolled instead of the flag package: flag.Parse stops at the first
 	// positional argument, so `day-02 "вопрос" -json` would silently paste the
 	// flag into the question.
-	question, dumpJSON := parseArgs(os.Args[1:])
+	question, dumpJSON, custom, err := parseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
 	if question == "" {
 		question = defaultQuestion
 	}
@@ -67,41 +55,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	modes := []mode{
-		{
-			key:     "A",
-			title:   "Без ограничений",
-			control: "ничего не задано: ни формата, ни длины, ни условия завершения",
-			system:  systemPlain,
-			opts:    llm.Options{},
-		},
-		{
-			key:     "B",
-			title:   "Ограничения: промпт + API",
-			control: "формат и длина описаны в system, завершение — маркер в промпте и в stop",
-			system:  systemShaped,
-			opts: llm.Options{
-				MaxTokens: 400,
-				Stop:      []string{stopMarker},
-			},
-		},
-		{
-			key:     "C",
-			title:   "Формат средствами API",
-			control: "response_format=json_object: структуру задаёт не просьба, а поле запроса",
-			system:  systemJSON,
-			opts: llm.Options{
-				MaxTokens:      400,
-				ResponseFormat: "json_object",
-			},
-		},
-		{
-			key:     "D",
-			title:   "Длина средствами API",
-			control: "тот же промпт, что в A, но max_tokens=60 — жёсткий потолок генерации",
-			system:  systemPlain,
-			opts:    llm.Options{MaxTokens: 60},
-		},
+	modes := defaultModes()
+	if custom != nil {
+		// A остаётся: без базы сравнивать не с чем.
+		modes = []mode{modes[0], custom.build("X", "Своя комбинация", customControl(*custom))}
 	}
 
 	fmt.Printf("Вопрос (один и тот же во всех прогонах):\n  %s\n\nМодель: %s\n", question, client.Model)
@@ -143,18 +100,99 @@ func report(m mode, answer llm.Answer, err error, dumpJSON bool) {
 	}
 }
 
-// parseArgs takes the flag from anywhere in the line and treats the rest as the question.
-func parseArgs(args []string) (string, bool) {
+// parseArgs takes flags from anywhere in the line and treats the rest as the question.
+func parseArgs(args []string) (string, bool, *levers, error) {
 	dump := false
+	var custom *levers
 	words := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "-json" || a == "--json" {
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-json" || a == "--json":
 			dump = true
+		case a == "-custom" || a == "--custom":
+			if i+1 >= len(args) {
+				return "", false, nil, fmt.Errorf("-custom без списка рычагов")
+			}
+			i++
+			l, err := parseLevers(args[i])
+			if err != nil {
+				return "", false, nil, err
+			}
+			custom = &l
+		case strings.HasPrefix(a, "-custom="):
+			l, err := parseLevers(strings.TrimPrefix(a, "-custom="))
+			if err != nil {
+				return "", false, nil, err
+			}
+			custom = &l
+		default:
+			words = append(words, a)
+		}
+	}
+	return strings.TrimSpace(strings.Join(words, " ")), dump, custom, nil
+}
+
+// parseLevers reads "format,marker,stop,json,max=400" into the five controls.
+func parseLevers(spec string) (levers, error) {
+	var l levers
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(strings.ToLower(part))
+		if part == "" {
 			continue
 		}
-		words = append(words, a)
+		if value, ok := strings.CutPrefix(part, "max="); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || n < 0 {
+				return l, fmt.Errorf("не разобрать max=%s: нужно неотрицательное число", value)
+			}
+			l.MaxTokens = n
+			continue
+		}
+		switch part {
+		case "format":
+			l.Format = true
+		case "marker":
+			l.Marker = true
+		case "stop":
+			l.Stop = true
+		case "json":
+			l.JSON = true
+		default:
+			return l, fmt.Errorf("неизвестный рычаг %q", part)
+		}
 	}
-	return strings.TrimSpace(strings.Join(words, " ")), dump
+	return l, nil
+}
+
+// customControl describes a hand-picked combination the way the fixed modes
+// describe themselves, splitting the prompt-side levers from the API-side ones.
+func customControl(l levers) string {
+	var prompt, api []string
+	if l.Format {
+		prompt = append(prompt, "описание формата")
+	}
+	if l.Marker {
+		prompt = append(prompt, "инструкция закончить "+stopMarker)
+	}
+	if l.JSON {
+		prompt = append(prompt, "схема JSON")
+		api = append(api, "response_format")
+	}
+	if l.Stop {
+		api = append(api, "stop")
+	}
+	if l.MaxTokens > 0 {
+		api = append(api, fmt.Sprintf("max_tokens=%d", l.MaxTokens))
+	}
+	describe := func(what string, items []string) string {
+		if len(items) == 0 {
+			return what + ": ничего"
+		}
+		return what + ": " + strings.Join(items, ", ")
+	}
+	return describe("в промпте", prompt) + " · " + describe("в запросе", api)
 }
 
 // sentFields spells out which controls actually left in the request body, so the

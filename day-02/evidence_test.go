@@ -111,10 +111,84 @@ func TestParseArgs(t *testing.T) {
 		{nil, "", false},
 	}
 	for _, c := range cases {
-		question, dump := parseArgs(c.args)
+		question, dump, custom, err := parseArgs(c.args)
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", c.args, err)
+		}
+		if custom != nil {
+			t.Errorf("parseArgs(%q) вернул рычаги без -custom", c.args)
+		}
 		if question != c.question || dump != c.dump {
 			t.Errorf("parseArgs(%q) = (%q, %v), ожидали (%q, %v)",
 				c.args, question, dump, c.question, c.dump)
 		}
+	}
+}
+
+func TestParseCustom(t *testing.T) {
+	question, _, custom, err := parseArgs([]string{"вопрос", "-custom", "format,marker,max=400"})
+	if err != nil {
+		t.Fatalf("неожиданная ошибка: %v", err)
+	}
+	if question != "вопрос" {
+		t.Errorf("вопрос = %q", question)
+	}
+	if custom == nil {
+		t.Fatal("рычаги не разобраны")
+	}
+	want := levers{Format: true, Marker: true, MaxTokens: 400}
+	if *custom != want {
+		t.Errorf("рычаги = %+v, ожидали %+v", *custom, want)
+	}
+
+	// Ровно тот случай, ради которого песочница и делается: маркер просят в
+	// промпте, но поле stop не отправляют — значит маркер обязан остаться.
+	m := custom.build("X", "Своя комбинация", "")
+	if len(m.opts.Stop) != 0 {
+		t.Errorf("stop не должен уходить в запрос: %v", m.opts.Stop)
+	}
+	if !strings.Contains(m.system, stopMarker) {
+		t.Error("инструкция про маркер должна остаться в промпте")
+	}
+
+	if _, _, _, err := parseArgs([]string{"-custom", "выдумка"}); err == nil {
+		t.Error("неизвестный рычаг должен быть ошибкой")
+	}
+	if _, _, _, err := parseArgs([]string{"-custom", "max=-5"}); err == nil {
+		t.Error("отрицательный max должен быть ошибкой")
+	}
+	if _, _, _, err := parseArgs([]string{"-custom"}); err == nil {
+		t.Error("-custom без списка должен быть ошибкой")
+	}
+}
+
+func TestBuildComposesLevers(t *testing.T) {
+	full := levers{Format: true, Marker: true, Stop: true, MaxTokens: 400}.build("B", "", "")
+	if !strings.Contains(full.system, "ровно три пункта") {
+		t.Error("описание формата не попало в промпт")
+	}
+	if len(full.opts.Stop) != 1 || full.opts.Stop[0] != stopMarker {
+		t.Errorf("stop = %v", full.opts.Stop)
+	}
+	if full.opts.MaxTokens != 400 {
+		t.Errorf("max_tokens = %d", full.opts.MaxTokens)
+	}
+
+	// JSON вытесняет список пунктов: два описания формата в одном промпте
+	// противоречили бы друг другу.
+	both := levers{Format: true, JSON: true}.build("C", "", "")
+	if strings.Contains(both.system, "ровно три пункта") {
+		t.Error("список пунктов и схема JSON не должны стоять в промпте одновременно")
+	}
+	if both.opts.ResponseFormat != "json_object" {
+		t.Errorf("response_format = %q", both.opts.ResponseFormat)
+	}
+
+	bare := levers{}.build("A", "", "")
+	if bare.opts.MaxTokens != 0 || bare.opts.Stop != nil || bare.opts.ResponseFormat != "" {
+		t.Errorf("прогон без рычагов не должен слать ничего: %+v", bare.opts)
+	}
+	if bare.system != systemPlain {
+		t.Error("промпт без рычагов должен остаться нейтральным")
 	}
 }
