@@ -182,18 +182,40 @@ func runRepeat(client *llm.Client, question string, custom *levers, n int, dumpJ
 		fmt.Printf("\nsystem-промпт:\n%s\n", m.system)
 	}
 
-	checks := make([]schemaResult, 0, n)
-	var failures []string
-	for i := 0; i < n; i++ {
+	ask := func() (schemaResult, error) {
 		answer, err := client.AskWith(context.Background(), []llm.Message{
 			{Role: "system", Content: m.system},
 			{Role: "user", Content: question},
 		}, m.opts)
 		if err != nil {
+			return schemaResult{}, err
+		}
+		return checkSchema(answer.Content), nil
+	}
+
+	checks := make([]schemaResult, 0, n)
+	var failures []string
+	for i := 0; i < n; i++ {
+		got, err := ask()
+		if err != nil {
 			failures = append(failures, err.Error())
 			continue
 		}
-		checks = append(checks, checkSchema(answer.Content))
+		got.FirstTry = true
+		// The host's own suggestion for a mismatch: "если не совпадает — на
+		// второй круг". One retry, so the cost of the check stays predictable.
+		if !got.OK {
+			first := got.Detail
+			retry, err := ask()
+			if err != nil {
+				failures = append(failures, err.Error())
+				continue
+			}
+			retry.FirstTry = false
+			retry.FirstFail = first
+			got = retry
+		}
+		checks = append(checks, got)
 	}
 	repeatReport(checks, failures)
 }

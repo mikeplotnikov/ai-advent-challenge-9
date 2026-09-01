@@ -31,6 +31,11 @@ type schemaResult struct {
 	Detail string // why it failed, or the shape that matched
 	Sample string // one field's value, to see whether content varies
 	Body   string // the whole answer, to count how many runs were truly identical
+	// FirstTry is false when the first answer missed the schema and a retry
+	// saved it. response_format guarantees valid JSON, not your schema — this
+	// is where that difference becomes visible.
+	FirstTry  bool
+	FirstFail string // what the discarded first answer got wrong
 }
 
 // checkSchema decides whether one answer matches the declared shape. It looks at
@@ -72,8 +77,9 @@ func checkSchema(content string) schemaResult {
 }
 
 // repeatReport prints what N runs of the same request say about determinism.
-// It reports the shape and the content separately and never claims the values
-// varied when they did not: the whole day is about evidence, not assertion.
+// It reports shape and content separately, separates "right the first time"
+// from "right after a retry", and never claims the values varied when they did
+// not: the whole day is about evidence, not assertion.
 func repeatReport(checks []schemaResult, failures []string) {
 	total := len(checks) + len(failures)
 	fmt.Println()
@@ -81,31 +87,43 @@ func repeatReport(checks []schemaResult, failures []string) {
 	fmt.Printf("ДЕТЕРМИНИРОВАННОСТЬ ФОРМАТА — %d запросов, один и тот же промпт\n", total)
 	fmt.Println(strings.Repeat("═", 72))
 
-	matched := 0
+	matched, firstTry, retried := 0, 0, 0
 	topics := map[string]bool{}
 	bodies := map[string]bool{}
 	for i, c := range checks {
-		mark := "✗"
+		mark, note := "✗", c.Detail
 		if c.OK {
 			mark = "✓"
 			matched++
 			topics[c.Sample] = true
 			bodies[c.Body] = true
+			if c.FirstTry {
+				firstTry++
+			} else {
+				retried++
+				note = c.Detail + "  ← со второй попытки; первая: " + c.FirstFail
+			}
 		}
-		fmt.Printf("%s %s  %s\n", pad(fmt.Sprintf("%2d.", i+1), 4), mark, c.Detail)
+		fmt.Printf("%s %s  %s\n", pad(fmt.Sprintf("%2d.", i+1), 4), mark, note)
 	}
 	for _, f := range failures {
 		fmt.Printf("     ✗  запрос не прошёл: %s\n", f)
 	}
 
 	fmt.Println()
-	fmt.Printf("Схема совпала: %d из %d.\n", matched, total)
+	fmt.Printf("Схема совпала с первой попытки: %d из %d.\n", firstTry, total)
+	if retried > 0 {
+		fmt.Printf("Ещё %d спасены повтором — итого %d из %d.\n", retried, matched, total)
+	}
 	fmt.Printf("Уникальных ответов: %d · уникальных значений «%s»: %d.\n",
 		len(bodies), declaredSchema.Keys[0], len(topics))
 
 	switch {
 	case matched != total:
-		fmt.Println("Формат НЕ детерминирован: часть ответов не легла в схему.")
+		fmt.Println("Формат НЕ детерминирован: часть ответов не легла в схему даже с повтором.")
+	case retried > 0:
+		fmt.Println("response_format гарантирует валидный JSON, но не вашу схему:")
+		fmt.Println("детерминированным формат делает проверка кодом плюс повтор при расхождении.")
 	case len(bodies) > 1:
 		fmt.Println("Формат детерминирован: схема одна на все запросы, содержание разное.")
 	default:
