@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -52,12 +51,12 @@ type result struct {
 }
 
 func main() {
-	dumpJSON := flag.Bool("json", false, "печатать тело каждого запроса целиком")
-	flag.Parse()
-
 	llm.LoadDotEnv(".env")
 
-	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
+	// Hand-rolled instead of the flag package: flag.Parse stops at the first
+	// positional argument, so `day-02 "вопрос" -json` would silently paste the
+	// flag into the question.
+	question, dumpJSON := parseArgs(os.Args[1:])
 	if question == "" {
 		question = defaultQuestion
 	}
@@ -114,7 +113,7 @@ func main() {
 			{Role: "user", Content: question},
 		}, m.opts)
 		results = append(results, result{mode: m, answer: answer, err: err})
-		report(m, answer, err, *dumpJSON)
+		report(m, answer, err, dumpJSON)
 	}
 
 	summary(results)
@@ -136,9 +135,26 @@ func report(m mode, answer llm.Answer, err error, dumpJSON bool) {
 		fmt.Printf("\nтело запроса:\n%s\n", answer.RequestBody)
 	}
 	fmt.Printf("\n%s\n\n", answer.Content)
-	fmt.Printf("finish_reason: %s · %d токенов ответа · %d символов%s\n",
+	fmt.Printf("finish_reason: %s · %d токенов ответа · %d символов\n",
 		answer.FinishReason, answer.Usage.CompletionTokens,
-		utf8.RuneCountInString(answer.Content), evidence(m, answer))
+		utf8.RuneCountInString(answer.Content))
+	for _, line := range evidence(m, answer) {
+		fmt.Printf("  ↳ %s\n", line)
+	}
+}
+
+// parseArgs takes the flag from anywhere in the line and treats the rest as the question.
+func parseArgs(args []string) (string, bool) {
+	dump := false
+	words := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "-json" || a == "--json" {
+			dump = true
+			continue
+		}
+		words = append(words, a)
+	}
+	return strings.TrimSpace(strings.Join(words, " ")), dump
 }
 
 // sentFields spells out which controls actually left in the request body, so the
@@ -163,25 +179,43 @@ func sentFields(o llm.Options) string {
 	return strings.Join(parts, " · ")
 }
 
-// evidence turns each mode's claim into something checkable: the stop sequence
-// really removed the marker, the response_format really produced valid JSON.
-func evidence(m mode, answer llm.Answer) string {
-	switch {
-	case len(m.opts.Stop) > 0:
-		if strings.Contains(answer.Content, stopMarker) {
-			return " · маркер " + stopMarker + " остался в тексте — stop не сработал"
-		}
-		return " · маркера " + stopMarker + " в тексте нет: stop срезал его"
-	case m.opts.ResponseFormat == "json_object":
-		var probe map[string]any
-		if json.Unmarshal([]byte(answer.Content), &probe) != nil {
-			return " · это не разбирается как JSON"
-		}
-		return " · разбирается как валидный JSON"
-	case answer.FinishReason == "length":
-		return " · ответ оборван на потолке токенов"
+// evidence turns each mode's claim into something checkable. It reports every
+// applicable fact rather than one verdict, because a truncated answer would
+// otherwise be blamed on the wrong control: an answer cut at max_tokens carries
+// no stop marker and no closing brace, and saying "stop сработал" or "это не
+// JSON" about it would be exactly the unfounded claim this day exists to avoid.
+func evidence(m mode, answer llm.Answer) []string {
+	truncated := answer.FinishReason == "length"
+	var out []string
+
+	if truncated {
+		out = append(out, "ответ оборван на потолке токенов: max_tokens рубит по границе токена")
 	}
-	return ""
+
+	if len(m.opts.Stop) > 0 {
+		switch {
+		case strings.Contains(answer.Content, stopMarker):
+			out = append(out, "маркер "+stopMarker+" остался в тексте — stop не сработал")
+		case truncated:
+			out = append(out, "до маркера "+stopMarker+" дело не дошло — ответ упёрся в max_tokens")
+		default:
+			out = append(out, "маркера "+stopMarker+" в тексте нет: stop срезал его")
+		}
+	}
+
+	if m.opts.ResponseFormat == "json_object" {
+		var probe map[string]any
+		switch {
+		case json.Unmarshal([]byte(answer.Content), &probe) == nil:
+			out = append(out, "разбирается как валидный JSON")
+		case truncated:
+			out = append(out, "JSON не закрыт: ответ упёрся в max_tokens, формат тут ни при чём")
+		default:
+			out = append(out, "это не разбирается как JSON")
+		}
+	}
+
+	return out
 }
 
 func summary(results []result) {

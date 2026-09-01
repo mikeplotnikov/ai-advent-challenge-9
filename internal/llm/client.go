@@ -57,7 +57,11 @@ func NewWithKeyEnv(preferred string) (*Client, error) {
 		key = os.Getenv("DEEPSEEK_API_KEY")
 	}
 	if key == "" {
-		return nil, fmt.Errorf("ключ не задан: скопируй .env.example в .env и впиши ключ")
+		want := "DEEPSEEK_API_KEY"
+		if preferred != "" {
+			want = preferred + " или DEEPSEEK_API_KEY"
+		}
+		return nil, fmt.Errorf("%s не задан: скопируй .env.example в .env и впиши ключ", want)
 	}
 	model := os.Getenv("DEEPSEEK_MODEL")
 	if model == "" {
