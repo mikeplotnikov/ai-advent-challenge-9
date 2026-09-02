@@ -31,6 +31,11 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// CompletionDetails carries reasoning_tokens when thinking is enabled. Those
+	// tokens are billed as output even though they never appear in the answer.
+	CompletionDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type Client struct {
@@ -88,6 +93,13 @@ type Options struct {
 	ResponseFormat string
 	// Temperature is sent only when set.
 	Temperature *float64
+	// Thinking is the model's built-in reasoning: "enabled" or "disabled".
+	// Empty means "disabled", which is what days 1-2 have always sent — a demo
+	// wants the answer, not the deliberation, and on day 3 an unasked-for
+	// reasoning pass would quietly turn the plain run into chain-of-thought.
+	Thinking string
+	// ReasoningEffort ("high", "max") is sent only alongside enabled thinking.
+	ReasoningEffort string
 }
 
 type thinking struct {
@@ -99,13 +111,14 @@ type responseFormat struct {
 }
 
 type chatRequest struct {
-	Model          string          `json:"model"`
-	Messages       []Message       `json:"messages"`
-	Stream         bool            `json:"stream"`
-	MaxTokens      int             `json:"max_tokens,omitempty"`
-	Stop           []string        `json:"stop,omitempty"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
-	Temperature    *float64        `json:"temperature,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []Message       `json:"messages"`
+	Stream          bool            `json:"stream"`
+	MaxTokens       int             `json:"max_tokens,omitempty"`
+	Stop            []string        `json:"stop,omitempty"`
+	ResponseFormat  *responseFormat `json:"response_format,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 	// deepseek-v4 models reason before answering, and that reasoning eats the
 	// token budget. A chat demo wants the answer, not the deliberation.
 	Thinking *thinking `json:"thinking,omitempty"`
@@ -115,8 +128,14 @@ type chatResponse struct {
 	ID      string `json:"id"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Message      Message `json:"message"`
-		FinishReason string  `json:"finish_reason"`
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+			// ReasoningContent is the chain of thought, returned as its own
+			// field rather than mixed into the answer.
+			ReasoningContent string `json:"reasoning_content"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
 }
@@ -134,6 +153,9 @@ type Answer struct {
 	// RequestBody is the JSON actually sent, minus the key — the evidence that
 	// the constraints travelled in the request and were not just asked for in prose.
 	RequestBody string
+	// Reasoning is what the model thought before answering, present only when
+	// thinking was enabled.
+	Reasoning string
 }
 
 // Ask sends the whole conversation with the client's default token cap.
@@ -144,14 +166,19 @@ func (c *Client) Ask(ctx context.Context, messages []Message) (Answer, error) {
 // AskWith sends the conversation under exactly the options given: whatever is
 // left at its zero value is not sent to the API at all.
 func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) (Answer, error) {
+	mode := opts.Thinking
+	if mode == "" {
+		mode = "disabled"
+	}
 	request := chatRequest{
-		Model:       c.Model,
-		Messages:    messages,
-		Stream:      false,
-		MaxTokens:   opts.MaxTokens,
-		Stop:        opts.Stop,
-		Temperature: opts.Temperature,
-		Thinking:    &thinking{Type: "disabled"},
+		Model:           c.Model,
+		Messages:        messages,
+		Stream:          false,
+		MaxTokens:       opts.MaxTokens,
+		Stop:            opts.Stop,
+		Temperature:     opts.Temperature,
+		ReasoningEffort: opts.ReasoningEffort,
+		Thinking:        &thinking{Type: mode},
 	}
 	if opts.ResponseFormat != "" {
 		request.ResponseFormat = &responseFormat{Type: opts.ResponseFormat}
@@ -195,7 +222,12 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		return Answer{}, fmt.Errorf("модель вернула пустой ответ")
 	}
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	reasoning := strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent)
 	if content == "" {
+		if reasoning != "" {
+			return Answer{}, fmt.Errorf("модель отдала только рассуждение и не дошла до ответа (finish_reason=%s)",
+				parsed.Choices[0].FinishReason)
+		}
 		return Answer{}, fmt.Errorf("модель вернула пустой текст")
 	}
 	model := parsed.Model
@@ -209,6 +241,7 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		Usage:        parsed.Usage,
 		FinishReason: parsed.Choices[0].FinishReason,
 		RequestBody:  string(pretty),
+		Reasoning:    reasoning,
 	}, nil
 }
 
