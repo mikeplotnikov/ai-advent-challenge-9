@@ -22,6 +22,13 @@ type captured struct {
 	replies  []string
 	reasons  []string
 	inTokens []int
+	// statuses and finishes are per-call overrides: "" and 0 mean the defaults,
+	// which is how the failure paths get exercised without a real API.
+	statuses []int
+	finishes []string
+	// inFlight tracks concurrency so the worker cap can be asserted.
+	inFlight int
+	peak     int
 }
 
 func (c *captured) systemOf(i int) string {
@@ -47,12 +54,30 @@ func fakeDeepSeek(t *testing.T, c *captured) *llm.Client {
 		c.mu.Lock()
 		n := len(c.bodies)
 		c.bodies = append(c.bodies, body)
-		reply, reasoning, in := c.replies[n], "", 10*(n+1)
+		reply, reasoning, in := c.replies[n%len(c.replies)], "", 10*(n+1)
 		if n < len(c.reasons) {
 			reasoning = c.reasons[n]
 		}
 		c.inTokens = append(c.inTokens, in)
+		status, finish := http.StatusOK, "stop"
+		if n < len(c.statuses) && c.statuses[n] != 0 {
+			status = c.statuses[n]
+		}
+		if n < len(c.finishes) && c.finishes[n] != "" {
+			finish = c.finishes[n]
+		}
+		c.inFlight++
+		if c.inFlight > c.peak {
+			c.peak = c.inFlight
+		}
 		c.mu.Unlock()
+		defer func() { c.mu.Lock(); c.inFlight--; c.mu.Unlock() }()
+
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			w.Write([]byte(`{"error":"нет"}`))
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -60,7 +85,7 @@ func fakeDeepSeek(t *testing.T, c *captured) *llm.Client {
 			"model": "fake",
 			"choices": []any{map[string]any{
 				"message":       map[string]any{"role": "assistant", "content": reply, "reasoning_content": reasoning},
-				"finish_reason": "stop",
+				"finish_reason": finish,
 			}},
 			"usage": map[string]any{
 				"prompt_tokens": in, "completion_tokens": 100 * (n + 1), "total_tokens": in + 100*(n+1),
@@ -223,5 +248,15 @@ func TestPlainMethodsKeepThinkingDisabled(t *testing.T) {
 				t.Fatalf("способ %s, вызов %d отправил reasoning_effort без thinking", m.key, i+1)
 			}
 		}
+	}
+}
+
+func TestTruncationIsCarriedOutOfTheCall(t *testing.T) {
+	// report() can only say "упёрся в max_tokens" if execute copied the reason.
+	c := &captured{replies: []string{"Считаю очень длинно"}, finishes: []string{"length"}}
+	client := fakeDeepSeek(t, c)
+	got := execute(context.Background(), client, methods()[0], 24)
+	if got.finish != "length" {
+		t.Fatalf("причина остановки не сохранена: %q", got.finish)
 	}
 }

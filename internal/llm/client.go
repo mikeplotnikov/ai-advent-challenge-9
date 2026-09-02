@@ -228,7 +228,15 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 	reasoning := strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent)
 	if content == "" {
 		if reasoning != "" {
-			return Answer{}, fmt.Errorf("модель отдала только рассуждение и не дошла до ответа (finish_reason=%s)",
+			// The provider billed this call: the answer never came, the reasoning
+			// tokens did. Returning the usage alongside the error is what lets a
+			// caller report what the failed attempt cost.
+			return Answer{
+				Usage:        parsed.Usage,
+				FinishReason: parsed.Choices[0].FinishReason,
+				Reasoning:    reasoning,
+				Model:        parsed.Model,
+			}, fmt.Errorf("модель отдала только рассуждение и не дошла до ответа (finish_reason=%s)",
 				parsed.Choices[0].FinishReason)
 		}
 		return Answer{}, fmt.Errorf("модель вернула пустой текст")

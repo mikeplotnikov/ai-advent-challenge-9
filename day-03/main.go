@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -90,10 +91,10 @@ func main() {
 	for _, m := range selected {
 		attempts := runMethod(context.Background(), client, m, truth, *repeat, *workers)
 		outcomes = append(outcomes, outcome{method: m, attempts: attempts})
-		report(m, attempts, client.Model, *repeat == 1 || *full, *full)
+		report(os.Stdout, m, attempts, client.Model, *repeat == 1 || *full, *full)
 	}
 
-	summary(outcomes, client.Model, truth, *repeat)
+	summary(os.Stdout, outcomes, client.Model, truth, *repeat)
 }
 
 // pick keeps the declared order so the comparison always reads A, B, C, D, E.
@@ -155,11 +156,11 @@ func execute(ctx context.Context, c *llm.Client, m method, truth int) attempt {
 			{Role: "user", Content: "Задача:\n" + taskText},
 		}, m.opts)
 		a.calls++
+		a.usage = addUsage(a.usage, written.Usage)
 		if err != nil {
 			a.err, a.elapsed = err, time.Since(start)
 			return a
 		}
-		a.usage = addUsage(a.usage, written.Usage)
 		a.generated = written.Content
 		// The generated prompt may say anything about the answer's shape, so the
 		// one shared output rule is appended — the same rule every other method
@@ -173,11 +174,11 @@ func execute(ctx context.Context, c *llm.Client, m method, truth int) attempt {
 	}, m.opts)
 	a.calls++
 	a.elapsed = time.Since(start)
+	a.usage = addUsage(a.usage, solved.Usage)
 	if err != nil {
 		a.err = err
 		return a
 	}
-	a.usage = addUsage(a.usage, solved.Usage)
 	a.text = solved.Content
 	a.reasoning = solved.Reasoning
 	a.finish = solved.FinishReason
@@ -194,29 +195,29 @@ func addUsage(into, from llm.Usage) llm.Usage {
 	return into
 }
 
-func report(m method, attempts []attempt, model string, verbose, full bool) {
-	fmt.Println()
-	fmt.Println(strings.Repeat("─", 72))
-	fmt.Printf("%s · %s\n", m.key, m.title)
-	fmt.Printf("Идея: %s\n", m.idea)
-	fmt.Printf("Отправлено: %s\n", sentFields(m))
-	fmt.Println(strings.Repeat("─", 72))
+func report(w io.Writer, m method, attempts []attempt, model string, verbose, full bool) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, strings.Repeat("─", 72))
+	fmt.Fprintf(w, "%s · %s\n", m.key, m.title)
+	fmt.Fprintf(w, "Идея: %s\n", m.idea)
+	fmt.Fprintf(w, "Отправлено: %s\n", sentFields(m))
+	fmt.Fprintln(w, strings.Repeat("─", 72))
 
 	if verbose {
 		first := attempts[0]
 		if first.err == nil {
 			if first.generated != "" {
-				fmt.Printf("\nПромпт, который модель написала себе сама:\n%s\n", indent(first.generated))
+				fmt.Fprintf(w, "\nПромпт, который модель написала себе сама:\n%s\n", indent(first.generated))
 			}
 			if first.reasoning != "" {
-				fmt.Printf("\nРассуждение модели (поле reasoning_content, в ответ не попадает):\n%s\n",
+				fmt.Fprintf(w, "\nРассуждение модели (поле reasoning_content, в ответ не попадает):\n%s\n",
 					indent(clip(first.reasoning, 900, full)))
 			}
-			fmt.Printf("\nОтвет:\n%s\n", indent(first.text))
+			fmt.Fprintf(w, "\nОтвет:\n%s\n", indent(first.text))
 		}
 	}
 
-	fmt.Println()
+	fmt.Fprintln(w)
 	ok := 0
 	shown := make([]string, 0, len(attempts))
 	for _, a := range attempts {
@@ -232,10 +233,10 @@ func report(m method, attempts []attempt, model string, verbose, full bool) {
 			ok++
 		}
 	}
-	fmt.Printf("верных: %d из %d · ответы: %s\n", ok, len(attempts), strings.Join(shown, ", "))
+	fmt.Fprintf(w, "верных: %d из %d · ответы: %s\n", ok, len(attempts), strings.Join(shown, ", "))
 	for i, a := range attempts {
 		if a.err != nil {
-			fmt.Printf("  прогон %d — ошибка: %v\n", i+1, a.err)
+			fmt.Fprintf(w, "  прогон %d — ошибка: %v\n", i+1, a.err)
 			continue
 		}
 		mark := "✗ мимо"
@@ -253,7 +254,7 @@ func report(m method, attempts []attempt, model string, verbose, full bool) {
 		if a.finish == "length" {
 			line += " · упёрся в max_tokens"
 		}
-		fmt.Println(line)
+		fmt.Fprintln(w, line)
 	}
 }
 
@@ -279,32 +280,43 @@ func cost(model string, u llm.Usage) (float64, bool) {
 	return float64(u.PromptTokens)/1e6*p[0] + float64(u.CompletionTokens)/1e6*p[1], true
 }
 
-func summary(outcomes []outcome, model string, truth, repeat int) {
-	fmt.Println()
-	fmt.Println(strings.Repeat("═", 72))
-	fmt.Printf("СРАВНЕНИЕ · эталон %d · модель %s · повторов %d\n", truth, model, repeat)
-	fmt.Println(strings.Repeat("═", 72))
+func summary(w io.Writer, outcomes []outcome, model string, truth, repeat int) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, strings.Repeat("═", 72))
+	fmt.Fprintf(w, "СРАВНЕНИЕ · эталон %d · модель %s · повторов %d\n", truth, model, repeat)
+	fmt.Fprintln(w, strings.Repeat("═", 72))
 	// The price ratio is read against the plain method, not against whatever
 	// happens to be first: with -only C,D,E the first row is C, and a column
 	// headed "к A" would then compare everything to the wrong baseline.
 	base := baseline(outcomes)
-	fmt.Printf("%s %s %s %s %s\n",
+	fmt.Fprintf(w, "%s %s %s %s %s\n",
 		pad("Способ", 26), pad("верных", 9), pad("токенов", 10), pad("цена", 15), "к "+base)
 
-	var baseCost float64
-	priced := true
+	// The baseline is read in a first pass: computing it inside the printing loop
+	// would leave every row before A without a ratio.
+	baseCost, priced := 0.0, true
 	for _, o := range outcomes {
-		ok, failed, tokens, spent, n := 0, 0, 0, 0.0, 0
+		if o.method.key != base || len(o.attempts) == 0 {
+			continue
+		}
+		spent := 0.0
 		for _, a := range o.attempts {
-			// An attempt that never reached an answer is still an attempt. Dropping
-			// it from the denominator would report 4/4 for a method whose own block
-			// says "верных: 4 из 5" — and would flatter exactly the method whose
-			// failure mode is running out of budget before it answers.
-			if a.err != nil {
-				failed++
-				continue
+			if c, known := cost(model, a.usage); known {
+				spent += c
 			}
-			n++
+		}
+		baseCost = spent / float64(len(o.attempts))
+	}
+	for _, o := range outcomes {
+		ok, unanswered, tokens, spent := 0, 0, 0, 0.0
+		for _, a := range o.attempts {
+			// An attempt that never reached an answer is still an attempt, and it
+			// still cost tokens. Dropping either from the averages would flatter
+			// exactly the method whose failure mode is spending the whole budget
+			// on reasoning and never answering.
+			if a.err != nil || !a.parsed {
+				unanswered++
+			}
 			tokens += a.usage.CompletionTokens
 			if c, known := cost(model, a.usage); known {
 				spent += c
@@ -315,16 +327,14 @@ func summary(outcomes []outcome, model string, truth, repeat int) {
 				ok++
 			}
 		}
-		total := n + failed
+		total := len(o.attempts)
+		n := total - countErrors(o.attempts)
 		if n == 0 {
-			fmt.Printf("%s %s все прогоны с ошибкой\n",
+			fmt.Fprintf(w, "%s %s все прогоны с ошибкой\n",
 				pad(o.method.key+" · "+o.method.title, 26), pad(fmt.Sprintf("0/%d", total), 9))
 			continue
 		}
-		avgCost := spent / float64(n)
-		if o.method.key == base {
-			baseCost = avgCost
-		}
+		avgCost := spent / float64(total)
 		price := "цена неизвестна"
 		ratio := "—"
 		if priced {
@@ -334,23 +344,25 @@ func summary(outcomes []outcome, model string, truth, repeat int) {
 			}
 		}
 		score := fmt.Sprintf("%d/%d", ok, total)
-		if failed > 0 {
+		if unanswered > 0 {
 			score += "!"
 		}
-		fmt.Printf("%s %s %s %s %s\n",
+		fmt.Fprintf(w, "%s %s %s %s %s\n",
 			pad(o.method.key+" · "+o.method.title, 26),
 			pad(score, 9),
-			pad(fmt.Sprint(tokens/n), 10),
+			pad(fmt.Sprint(tokens/total), 10),
 			pad(price, 15),
 			ratio)
 	}
 	if !priced {
-		fmt.Println("\nЦены нет: модель не в прайс-листе day-03/main.go — это не «бесплатно».")
+		fmt.Fprintln(w, "\nЦены нет: модель не в прайс-листе day-03/main.go — это не «бесплатно».")
 	}
-	fmt.Println()
-	fmt.Println("Точность здесь — не мнение о тексте, а доля совпадений с эталоном.")
-	fmt.Println("Знак «!» рядом с долей означает, что часть прогонов не дошла до ответа.")
-	fmt.Println("Способ рассуждения — единственное, что менялось между прогонами.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Точность здесь — не мнение о тексте, а доля совпадений с эталоном.")
+	fmt.Fprintln(w, "Знак «!» рядом с долей означает, что часть прогонов не дошла до ответа:")
+	fmt.Fprintln(w, "запрос не прошёл или модель так и не написала строку ANSWER. Токены и цена")
+	fmt.Fprintln(w, "усреднены по всем прогонам, включая эти: они тоже оплачены.")
+	fmt.Fprintln(w, "Способ рассуждения — единственное, что менялось между прогонами.")
 }
 
 // baseline picks the plain method when it was run, and the first one otherwise.
@@ -364,6 +376,18 @@ func baseline(outcomes []outcome) string {
 		return outcomes[0].method.key
 	}
 	return "A"
+}
+
+// countErrors counts the attempts whose call never came back at all, as opposed
+// to the ones that answered something unusable.
+func countErrors(attempts []attempt) int {
+	n := 0
+	for _, a := range attempts {
+		if a.err != nil {
+			n++
+		}
+	}
+	return n
 }
 
 func joinInts(xs []int) string {
