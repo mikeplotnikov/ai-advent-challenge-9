@@ -289,45 +289,67 @@ func summary(outcomes []outcome, model string, truth, repeat int) {
 	// headed "к A" would then compare everything to the wrong baseline.
 	base := baseline(outcomes)
 	fmt.Printf("%s %s %s %s %s\n",
-		pad("Способ", 26), pad("верных", 9), pad("токенов", 10), pad("цена", 10), "к "+base)
+		pad("Способ", 26), pad("верных", 9), pad("токенов", 10), pad("цена", 15), "к "+base)
 
 	var baseCost float64
+	priced := true
 	for _, o := range outcomes {
-		ok, tokens, spent, n := 0, 0, 0.0, 0
+		ok, failed, tokens, spent, n := 0, 0, 0, 0.0, 0
 		for _, a := range o.attempts {
+			// An attempt that never reached an answer is still an attempt. Dropping
+			// it from the denominator would report 4/4 for a method whose own block
+			// says "верных: 4 из 5" — and would flatter exactly the method whose
+			// failure mode is running out of budget before it answers.
 			if a.err != nil {
+				failed++
 				continue
 			}
 			n++
 			tokens += a.usage.CompletionTokens
 			if c, known := cost(model, a.usage); known {
 				spent += c
+			} else {
+				priced = false
 			}
 			if a.correct {
 				ok++
 			}
 		}
+		total := n + failed
 		if n == 0 {
-			fmt.Printf("%s все прогоны с ошибкой\n", pad(o.method.key+" · "+o.method.title, 26))
+			fmt.Printf("%s %s все прогоны с ошибкой\n",
+				pad(o.method.key+" · "+o.method.title, 26), pad(fmt.Sprintf("0/%d", total), 9))
 			continue
 		}
 		avgCost := spent / float64(n)
 		if o.method.key == base {
 			baseCost = avgCost
 		}
+		price := "цена неизвестна"
 		ratio := "—"
-		if baseCost > 0 {
-			ratio = fmt.Sprintf("×%.1f", avgCost/baseCost)
+		if priced {
+			price = fmt.Sprintf("$%.4f", avgCost)
+			if baseCost > 0 {
+				ratio = fmt.Sprintf("×%.1f", avgCost/baseCost)
+			}
+		}
+		score := fmt.Sprintf("%d/%d", ok, total)
+		if failed > 0 {
+			score += "!"
 		}
 		fmt.Printf("%s %s %s %s %s\n",
 			pad(o.method.key+" · "+o.method.title, 26),
-			pad(fmt.Sprintf("%d/%d", ok, n), 9),
+			pad(score, 9),
 			pad(fmt.Sprint(tokens/n), 10),
-			pad(fmt.Sprintf("$%.4f", avgCost), 10),
+			pad(price, 15),
 			ratio)
+	}
+	if !priced {
+		fmt.Println("\nЦены нет: модель не в прайс-листе day-03/main.go — это не «бесплатно».")
 	}
 	fmt.Println()
 	fmt.Println("Точность здесь — не мнение о тексте, а доля совпадений с эталоном.")
+	fmt.Println("Знак «!» рядом с долей означает, что часть прогонов не дошла до ответа.")
 	fmt.Println("Способ рассуждения — единственное, что менялось между прогонами.")
 }
 

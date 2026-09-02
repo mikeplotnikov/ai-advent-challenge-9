@@ -171,14 +171,17 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		mode = "disabled"
 	}
 	request := chatRequest{
-		Model:           c.Model,
-		Messages:        messages,
-		Stream:          false,
-		MaxTokens:       opts.MaxTokens,
-		Stop:            opts.Stop,
-		Temperature:     opts.Temperature,
-		ReasoningEffort: opts.ReasoningEffort,
-		Thinking:        &thinking{Type: mode},
+		Model:       c.Model,
+		Messages:    messages,
+		Stream:      false,
+		MaxTokens:   opts.MaxTokens,
+		Stop:        opts.Stop,
+		Temperature: opts.Temperature,
+		Thinking:    &thinking{Type: mode},
+	}
+	// Documented contract: effort rides along with reasoning, never without it.
+	if mode == "enabled" {
+		request.ReasoningEffort = opts.ReasoningEffort
 	}
 	if opts.ResponseFormat != "" {
 		request.ResponseFormat = &responseFormat{Type: opts.ResponseFormat}
