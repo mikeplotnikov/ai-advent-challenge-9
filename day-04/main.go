@@ -245,10 +245,16 @@ type tally struct {
 	correct  int
 	total    int
 	missing  int
-	tokens   int
-	elapsed  time.Duration
-	avgCost  float64
-	priced   bool
+	// truncated counts runs the model was cut off mid-answer. A clipped name is
+	// still a parsed answer, so it enters the diversity metrics as a variant —
+	// and it would do so most often at the highest temperature, which is the
+	// column whose diversity is the headline. Counting it is what keeps the
+	// table from attributing an artefact to the parameter.
+	truncated int
+	tokens    int
+	elapsed   time.Duration
+	avgCost   float64
+	priced    bool
 }
 
 func summarise(c cell, model string) tally {
@@ -270,6 +276,9 @@ func summarise(c cell, model string) tally {
 		}
 		if !r.parsed {
 			t.missing++
+		}
+		if r.finish == "length" {
+			t.truncated++
 		}
 	}
 	if t.total > 0 {

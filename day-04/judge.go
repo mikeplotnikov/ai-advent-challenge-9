@@ -77,7 +77,10 @@ func (s slate) prompt() string {
 	return b.String()
 }
 
-var scoreLine = regexp.MustCompile(`(?m)^\s*\*{0,2}(\d+)\*{0,2}\s*[:.\)]\s*\*{0,2}\s*([1-5])`)
+// The trailing non-digit matters: without it "1: 10" reads as a score of 1,
+// and a judge that ignored the 1-5 instruction and used a 10-point scale would
+// silently come back as "everything is banal" instead of as a parse failure.
+var scoreLine = regexp.MustCompile(`(?m)^\s*\*{0,2}(\d+)\*{0,2}\s*[:.\)]\s*\*{0,2}\s*([1-5])(?:[^0-9]|$)`)
 
 // parseScores reads the judge's reply. It returns what it actually found rather
 // than filling gaps: an unscored variant must stay unscored, or the average

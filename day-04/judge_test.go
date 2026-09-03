@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"math"
 	"strings"
@@ -188,5 +189,116 @@ func TestJudgeReportsAFailedPassInsteadOfSkippingIt(t *testing.T) {
 	}
 	if runs[0].err == nil {
 		t.Fatal("упавший проход судьи отмечен успешным")
+	}
+}
+
+func TestParseScoresRejectsAScaleTheJudgeWasNotAskedFor(t *testing.T) {
+	// A judge that ignores the 1-5 instruction and answers on a 10-point scale
+	// is a realistic deviation. Read as the first digit, "10" became 1 and
+	// every setting came back near 1.0 — the report would have called that
+	// "банально" instead of "судья не оценил".
+	got := parseScores("1: 10\n2: 15\n3: 100", 3)
+	if len(got) != 0 {
+		t.Fatalf("двузначные оценки разобраны как %v, ожидался отказ", got)
+	}
+	// The valid scale still parses, including at the very end of the reply
+	// where there is no trailing character at all.
+	fine := parseScores("1: 1\n2: 5", 2)
+	if fine[0] != 1 || fine[1] != 5 {
+		t.Fatalf("корректные оценки разобраны неверно: %v", fine)
+	}
+	// And a valid score followed by prose on the same line still counts.
+	trailing := parseScores("1: 4 — неплохо", 1)
+	if trailing[0] != 4 {
+		t.Fatalf("оценка с пояснением на той же строке потеряна: %v", trailing)
+	}
+}
+
+func TestJudgeSectionNamesWhichSilenceHappened(t *testing.T) {
+	// Three different silences printed the same line: a setting with no
+	// answers, a judge that returned nothing usable, and a judge that never
+	// answered. A check that cannot distinguish its causes has to name them.
+	board := buildSlate([][]string{{"депо кофе"}}, 1)
+	_ = board
+
+	t.Run("настройка без ответов", func(t *testing.T) {
+		c := &captured{replies: []string{"1: 4"}}
+		client := fakeDeepSeek(t, c)
+		var buf bytes.Buffer
+		judgeSection(context.Background(), &buf, client, []tally{
+			{setting: setting{label: "0"}, answered: []string{"депо кофе"}, total: 1},
+			{setting: setting{label: "1.2"}, answered: nil, total: 1},
+		}, "deepseek-v4-flash", 1, 1)
+		out := buf.String()
+		if !strings.Contains(out, "судье нечего было оценивать") {
+			t.Errorf("настройка без ответов не отличена от молчания судьи:\n%s", out)
+		}
+	})
+
+	t.Run("судья ответил бесполезным текстом", func(t *testing.T) {
+		c := &captured{replies: []string{"Все варианты по-своему хороши."}}
+		client := fakeDeepSeek(t, c)
+		var buf bytes.Buffer
+		judgeSection(context.Background(), &buf, client, []tally{
+			{setting: setting{label: "0"}, answered: []string{"депо кофе", "рельсы и кофе"}, total: 2},
+		}, "deepseek-v4-flash", 1, 1)
+		out := buf.String()
+		if !strings.Contains(out, "не оценил ни один из этих 2 ответов") {
+			t.Errorf("бесполезный ответ судьи не назван своей причиной:\n%s", out)
+		}
+	})
+
+	t.Run("все проходы судьи упали", func(t *testing.T) {
+		c := &captured{replies: []string{"1: 4"}, statuses: []int{500, 500}}
+		client := fakeDeepSeek(t, c)
+		var buf bytes.Buffer
+		judgeSection(context.Background(), &buf, client, []tally{
+			{setting: setting{label: "0"}, answered: []string{"депо кофе"}, total: 1},
+		}, "deepseek-v4-flash", 1, 2)
+		out := buf.String()
+		if !strings.Contains(out, "не отработал ни одного прохода") {
+			t.Errorf("полный отказ судьи не назван:\n%s", out)
+		}
+		if strings.Contains(out, "средняя оценка") {
+			t.Errorf("таблица оценок напечатана при полном отказе судьи:\n%s", out)
+		}
+	})
+}
+
+func TestJudgeSectionAveragesOverPassesThatAnswered(t *testing.T) {
+	// Dividing by the number of passes attempted instead of the number that
+	// answered would silently halve every mean when one pass fails.
+	c := &captured{
+		replies:  []string{"1: 4\n2: 4", "1: 4\n2: 4"},
+		statuses: []int{0, 500},
+	}
+	client := fakeDeepSeek(t, c)
+	var buf bytes.Buffer
+	judgeSection(context.Background(), &buf, client, []tally{
+		{setting: setting{label: "0"}, answered: []string{"депо кофе", "рельсы и кофе"}, total: 2},
+	}, "deepseek-v4-flash", 1, 2)
+	out := buf.String()
+	if !strings.Contains(out, "4.00 из 5") {
+		t.Errorf("средняя оценка посчитана не по ответившим проходам:\n%s", out)
+	}
+	if !strings.Contains(out, "с ошибкой: 1") {
+		t.Errorf("упавший проход не указан в подвале:\n%s", out)
+	}
+}
+
+func TestJudgeSectionKeepsCallingItselfAnOpinion(t *testing.T) {
+	// The day's conclusion about creativity rests on this section being read as
+	// a model's opinion with its own spread, never as a measurement.
+	c := &captured{replies: []string{"1: 2\n2: 3"}}
+	client := fakeDeepSeek(t, c)
+	var buf bytes.Buffer
+	judgeSection(context.Background(), &buf, client, []tally{
+		{setting: setting{label: "0"}, answered: []string{"депо кофе", "рельсы и кофе"}, total: 2},
+	}, "deepseek-v4-flash", 1, 1)
+	out := buf.String()
+	for _, want := range []string{"мнение модели, а не измерение", "собственный шум судьи", "temperature 0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("в судейской секции нет «%s»:\n%s", want, out)
+		}
 	}
 }

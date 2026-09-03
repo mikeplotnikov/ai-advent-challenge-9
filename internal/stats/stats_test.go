@@ -196,3 +196,39 @@ func TestBootstrapRefusesAnImpossibleRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestWilsonBoundsMatchIndependentlyComputedValues(t *testing.T) {
+	// Pins the 95% level itself. Without this, dropping z to 1.645 — a 90%
+	// interval printed under a "95%" heading — passes every other test here:
+	// the rate still sits inside, the bounds stay in [0,1], and more runs still
+	// narrow it.
+	//
+	// The expected values were recomputed from the formula in Python with
+	// 30-digit decimal arithmetic, not copied from this implementation:
+	//
+	//   z = Decimal("1.959964"); p = s/n; den = 1 + z*z/n
+	//   centre = (p + z*z/(2*n)) / den
+	//   half   = z * sqrt(p*(1-p)/n + z*z/(4*n*n)) / den
+	//
+	// The counts are the ones this challenge actually printed: 18/30 and 11/30
+	// are day 4's counting task at temperature 0 and 1.2, 2/30 is its lowest
+	// diversity cell, and 0/30 and 30/30 are the ends where the textbook normal
+	// approximation would put a bound outside [0, 1].
+	cases := []struct {
+		s, n           int
+		wantLo, wantHi float64
+	}{
+		{18, 30, 0.4232, 0.7541},
+		{11, 30, 0.2187, 0.5449},
+		{2, 30, 0.0185, 0.2132},
+		{30, 30, 0.8865, 1.0000},
+		{0, 30, 0.0000, 0.1135},
+	}
+	for _, c := range cases {
+		lo, hi := Wilson(c.s, c.n)
+		if math.Abs(lo-c.wantLo) > 0.0001 || math.Abs(hi-c.wantHi) > 0.0001 {
+			t.Errorf("%d/%d: получено [%.4f, %.4f], ожидалось [%.4f, %.4f]",
+				c.s, c.n, lo, hi, c.wantLo, c.wantHi)
+		}
+	}
+}

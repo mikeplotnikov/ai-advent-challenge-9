@@ -94,7 +94,11 @@ func TestVocabularyRatioCountsWordsAcrossAllAnswers(t *testing.T) {
 func TestVocabularyRatioAndDistanceMoveIndependently(t *testing.T) {
 	// The two metrics answer different questions, which is why they are printed
 	// side by side instead of averaged into one "diversity score". These two
-	// samples have the same pairwise distance profile and different vocabulary.
+	// samples have close pairwise distances (0.593 and 0.556) while their
+	// vocabulary ratios differ by half, so a single averaged score would hide
+	// the difference the second column exists to show. The distances are not
+	// identical, so this shows the metrics are not interchangeable rather than
+	// strictly independent.
 	repeatedWords := []string{"кофе кофе", "кофе кофе", "депо депо"}
 	variedWords := []string{"кофе рельсы", "кофе рельсы", "депо трамвай"}
 	dA, _ := meanPairwiseDistance(repeatedWords)
@@ -106,5 +110,15 @@ func TestVocabularyRatioAndDistanceMoveIndependently(t *testing.T) {
 	}
 	if dA == 0 || dB == 0 {
 		t.Fatalf("дистанции выродились: %.3f и %.3f", dA, dB)
+	}
+	// The point of the fixture: the distances stay close while the vocabulary
+	// ratio moves a long way. If a change made the two columns track each
+	// other, this gap would close.
+	if math.Abs(dA-dB) > 0.1 {
+		t.Fatalf("дистанции разошлись на %.3f — выборка больше не показывает то, "+
+			"для чего сделана", math.Abs(dA-dB))
+	}
+	if vB-vA < 0.2 {
+		t.Fatalf("доли уникальных слов разошлись всего на %.3f", vB-vA)
 	}
 }

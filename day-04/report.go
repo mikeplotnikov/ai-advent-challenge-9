@@ -90,8 +90,12 @@ func accuracyTable(w io.Writer, tallies []tally) {
 	if ok {
 		fmt.Fprintf(w, "База сравнения — «%s».\n", base.setting.label)
 	}
-	fmt.Fprintln(w, "«Не отличить» — это не «одинаково»: это значит, что прогонов мало,")
-	fmt.Fprintln(w, "чтобы разницу можно было утверждать. Знак «!» — часть прогонов без ответа.")
+	fmt.Fprintln(w, "«Не отличить» — это НЕ «одинаково»: это значит, что прогонов мало, чтобы")
+	fmt.Fprintln(w, "разницу можно было утверждать. Отсутствие подтверждённой разницы не")
+	fmt.Fprintln(w, "доказывает отсутствие эффекта — только то, что этими данными он не показан.")
+	fmt.Fprintln(w, "Знак «!» — часть прогонов без ответа. Сравнений здесь несколько, а порог")
+	fmt.Fprintln(w, "0.05 не поправлен на их число: при шести сравнениях одно «подтверждение»")
+	fmt.Fprintln(w, "случайно ожидается примерно в четверти таких прогонов.")
 }
 
 // baseline is temperature 0 when it was run: the day compares the three
@@ -110,9 +114,9 @@ func baseline(tallies []tally) (tally, bool) {
 func diversityTable(w io.Writer, tallies []tally, seed int64) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "РАЗНООБРАЗИЕ")
-	fmt.Fprintf(w, "%s %s %s %s %s %s\n",
+	fmt.Fprintf(w, "%s %s %s %s %s %s %s\n",
 		pad("temperature", 16), pad("различных", 11), pad("повтор", 8),
-		pad("дистанция", 11), pad("95% интервал", 16), "слов уник.")
+		pad("дистанция", 11), pad("bootstrap", 16), pad("слов уник.", 11), "обрезано")
 	for _, t := range tallies {
 		if len(t.answered) == 0 {
 			fmt.Fprintf(w, "%s ни один прогон не дошёл до ответа\n", pad(t.setting.label, 16))
@@ -142,18 +146,27 @@ func diversityTable(w io.Writer, tallies []tally, seed int64) {
 		if ratio, ok := vocabularyRatio(t.answered); ok {
 			vocab = fmt.Sprintf("%.2f", ratio)
 		}
-		fmt.Fprintf(w, "%s %s %s %s %s %s\n",
+		fmt.Fprintf(w, "%s %s %s %s %s %s %s\n",
 			pad(t.setting.label, 16),
 			pad(fmt.Sprintf("%d из %d", distinct(t.answered), len(t.answered)), 11),
 			pad(fmt.Sprint(largestRepeat(t.answered)), 8),
-			pad(distCol, 11), pad(spanCol, 16), vocab)
+			pad(distCol, 11), pad(spanCol, 16), pad(vocab, 11),
+			fmt.Sprint(t.truncated))
 	}
 	fmt.Fprintln(w, "«различных» — сколько разных ответов среди дошедших до ответа прогонов.")
 	fmt.Fprintln(w, "«повтор» — самая большая группа одинаковых ответов; при temperature 0 это")
 	fmt.Fprintln(w, "и есть проверка детерминированности: параметра seed у API нет.")
 	fmt.Fprintln(w, "«дистанция» — средняя нормированная дистанция редактирования по всем парам:")
-	fmt.Fprintln(w, "0 — все ответы совпали, 1 — не совпадает ничего. Интервал — bootstrap.")
+	fmt.Fprintln(w, "0 — все ответы совпали, 1 — не совпадает ничего.")
+	fmt.Fprintln(w, "«bootstrap» — перцентильный интервал по пересэмплированным ответам. Это")
+	fmt.Fprintln(w, "описательная величина, а НЕ калиброванный 95% интервал: пересэмплирование")
+	fmt.Fprintln(w, "с возвращением создаёт пары из одинаковых ответов с нулевой дистанцией,")
+	fmt.Fprintln(w, "поэтому интервал смещён вниз и точечная оценка лежит у его верхнего края.")
 	fmt.Fprintln(w, "«слов уник.» — доля уникальных словоформ во всех ответах вместе.")
+	fmt.Fprintln(w, "«обрезано» — прогоны, которые модель не довела до конца (finish_reason=length).")
+	fmt.Fprintln(w, "Обрезанный ответ попадает в метрики как отдельный вариант, поэтому если тут")
+	fmt.Fprintln(w, "не ноль, разнообразие в этой строке частично объясняется обрезкой, а не")
+	fmt.Fprintln(w, "температурой.")
 }
 
 // costTable answers "what did the setting cost", which is the other half of
@@ -207,6 +220,25 @@ func judgeSection(ctx context.Context, w io.Writer, c *llm.Client, tallies []tal
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "ОЦЕНКА СУДЬИ — это мнение модели, а не измерение")
+
+	live := 0
+	for _, r := range runs {
+		if r.err == nil {
+			live++
+		}
+	}
+	if live == 0 {
+		// Three different silences would otherwise print the same line. Saying
+		// which one happened is the difference between "the judge saw nothing
+		// remarkable" and "the judge never answered".
+		fmt.Fprintf(w, "Судья не отработал ни одного прохода из %d — оценок нет вовсе.\n", len(runs))
+		for _, r := range runs {
+			if r.err != nil {
+				fmt.Fprintf(w, "  проход упал: %v\n", r.err)
+			}
+		}
+		return
+	}
 	fmt.Fprintf(w, "%s %s %s %s\n",
 		pad("temperature", 16), pad("средняя оценка", 16), pad("охват", 12), "по проходам")
 
@@ -241,8 +273,14 @@ func judgeSection(ctx context.Context, w io.Writer, c *llm.Client, tallies []tal
 				scored = covered
 			}
 		}
+		if presented == 0 {
+			fmt.Fprintf(w, "%s ни один прогон не дошёл до ответа — судье нечего было оценивать\n",
+				pad(t.setting.label, 16))
+			continue
+		}
 		if ok == 0 {
-			fmt.Fprintf(w, "%s судья не дал оценок\n", pad(t.setting.label, 16))
+			fmt.Fprintf(w, "%s судья не оценил ни один из этих %d ответов\n",
+				pad(t.setting.label, 16), presented)
 			continue
 		}
 		fmt.Fprintf(w, "%s %s %s %s\n",

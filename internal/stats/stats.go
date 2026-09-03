@@ -91,9 +91,12 @@ func BootstrapCI(n, resamples int, seed int64, statistic func(sample []int) floa
 		}
 		v := statistic(sample)
 		if math.IsNaN(v) {
-			// A resample can be degenerate — n copies of one answer leaves no
-			// pair to measure. Dropping it is honest; folding a zero in would
-			// drag the interval down with a value that was never observed.
+			// A statistic that cannot be computed on a resample is skipped
+			// rather than scored zero: zero is a value, and a missing one is
+			// not. Note what this does NOT cover — the pairwise distance of n
+			// copies of one answer is a real 0, not a missing value, so those
+			// resamples are folded in, and they are what puts the lower bound
+			// at 0.000 wherever one answer dominates. See the caller.
 			continue
 		}
 		values = append(values, v)

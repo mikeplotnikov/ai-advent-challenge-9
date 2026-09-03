@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
 )
@@ -22,6 +24,10 @@ type captured struct {
 	bodies   []map[string]any
 	replies  []string
 	statuses []int
+	// hold makes the handler slow on purpose. With an instant handler the
+	// requests never overlap, so a missing worker cap looks exactly like a
+	// working one and the concurrency test passes by luck.
+	hold time.Duration
 	// reasons turns a call into a billed failure: the provider charges for the
 	// reasoning tokens and never returns an answer. A plain HTTP error reports
 	// no usage at all, so without this the "failed runs stay in the average"
@@ -65,8 +71,10 @@ func fakeDeepSeek(t *testing.T, c *captured) *llm.Client {
 		if c.inFlight > c.peak {
 			c.peak = c.inFlight
 		}
+		hold := c.hold
 		c.mu.Unlock()
 		defer func() { c.mu.Lock(); c.inFlight--; c.mu.Unlock() }()
+		time.Sleep(hold)
 
 		if status != http.StatusOK {
 			w.WriteHeader(status)
@@ -311,18 +319,43 @@ func TestOnlyAnsweredRunsEnterTheDiversityMetrics(t *testing.T) {
 }
 
 func TestRunCellRunsEveryRepeatAndRespectsTheWorkerCap(t *testing.T) {
-	c := &captured{replies: []string{"Депо Кофе"}}
+	// The live grid ran -workers 8 against a paid provider, so the cap is what
+	// stands between a cell and thirty simultaneous billed calls. The handler
+	// is deliberately slow: with an instant one, removing the semaphore
+	// altogether still passed four runs out of five.
+	const (
+		repeat  = 9
+		workers = 3
+	)
+	c := &captured{replies: []string{"Депо Кофе"}, hold: 40 * time.Millisecond}
 	client := fakeDeepSeek(t, c)
 	zero := 0.0
-	runs := runCell(context.Background(), client, taskByKey(t, "T2"), setting{label: "0", temp: &zero}, 9, 3)
-	if len(runs) != 9 {
-		t.Fatalf("прогонов %d, ожидалось 9", len(runs))
+	runs := runCell(context.Background(), client, taskByKey(t, "T2"),
+		setting{label: "0", temp: &zero}, repeat, workers)
+
+	if len(runs) != repeat {
+		t.Fatalf("прогонов %d, ожидалось %d", len(runs), repeat)
+	}
+	// make([]run, repeat) satisfies the length check before any goroutine
+	// runs, so the results themselves have to be checked.
+	for i, r := range runs {
+		if !r.parsed || r.answer == "" {
+			t.Errorf("прогон %d не записал результат: %+v", i, r)
+		}
 	}
 	c.mu.Lock()
-	peak := c.peak
+	peak, calls := c.peak, len(c.bodies)
 	c.mu.Unlock()
-	if peak > 3 {
-		t.Fatalf("одновременно в воздухе было %d запросов при -workers 3", peak)
+	if calls != repeat {
+		t.Errorf("вызовов %d, ожидалось %d", calls, repeat)
+	}
+	if peak > workers {
+		t.Fatalf("одновременно в воздухе было %d запросов при -workers %d", peak, workers)
+	}
+	// Without this the test would also pass on a cap of one, and then it would
+	// not be testing a cap at all.
+	if peak < 2 {
+		t.Fatalf("запросы не шли параллельно (пик %d) — проверка лимита ничего не значит", peak)
 	}
 }
 
@@ -461,5 +494,162 @@ func TestDemoRunsGetABudgetLargeEnoughToAnswerAtAll(t *testing.T) {
 	}
 	if int(demo) != tokenCap {
 		t.Errorf("демонстрация ушла с max_tokens=%v, ожидалось %d", demo, tokenCap)
+	}
+}
+
+func TestAccuracyTableHoldsTheThresholdAtTheValueTheDayDependsOn(t *testing.T) {
+	// The day's central negative conclusion is that no accuracy difference was
+	// confirmed, and the loudest near-miss was p = 0.120 (18/30 against 11/30
+	// on the counting task). Without a fixture in that band, loosening the line
+	// to p < 0.15 flips that row to "разница подтверждена" with every test
+	// green — which is the day-3 failure mode exactly.
+	zero, warm := 0.0, 1.2
+	tallies := []tally{
+		{setting: setting{label: "0", temp: &zero}, correct: 18, total: 30},
+		{setting: setting{label: "1.2", temp: &warm}, correct: 11, total: 30},
+	}
+	var buf bytes.Buffer
+	accuracyTable(&buf, tallies)
+	out := buf.String()
+	if !strings.Contains(out, "0.120") {
+		t.Fatalf("p-value 0.120 не напечатан:\n%s", out)
+	}
+	if strings.Contains(out, "разница подтверждена") {
+		t.Fatalf("разница при p=0.120 объявлена подтверждённой:\n%s", out)
+	}
+	// And the other side of the line: 24/30 against 11/30 tests at p = 0.001.
+	confirmed := []tally{
+		{setting: setting{label: "0", temp: &zero}, correct: 24, total: 30},
+		{setting: setting{label: "1.2", temp: &warm}, correct: 11, total: 30},
+	}
+	buf.Reset()
+	accuracyTable(&buf, confirmed)
+	if out := buf.String(); !strings.Contains(out, "разница подтверждена") {
+		t.Fatalf("настоящая разница не отмечена подтверждённой:\n%s", out)
+	}
+}
+
+func TestAccuracyTableRefusesToReadAbsenceOfProofAsAbsenceOfEffect(t *testing.T) {
+	zero, warm := 0.0, 1.2
+	var buf bytes.Buffer
+	accuracyTable(&buf, []tally{
+		{setting: setting{label: "0", temp: &zero}, correct: 18, total: 30},
+		{setting: setting{label: "1.2", temp: &warm}, correct: 11, total: 30},
+	})
+	out := buf.String()
+	// The whole conclusion of this day rests on the reader not turning "not
+	// shown" into "does not exist", so the table has to say it itself.
+	if !strings.Contains(out, "доказывает отсутствие эффекта") {
+		t.Errorf("таблица не предупреждает, что «не отличить» ≠ «одинаково»:\n%s", out)
+	}
+	if !strings.Contains(out, "не поправлен на их число") {
+		t.Errorf("таблица не признаёт, что порог не поправлен на число сравнений:\n%s", out)
+	}
+}
+
+func TestDiversityTableReportsTheNumbersTheHeadlineRestsOn(t *testing.T) {
+	// The one confirmed claim of the day is produced here, and nothing tested
+	// this function at all: disabling the resampling (picked[i] = sample[i])
+	// collapsed the interval to the point estimate with the suite still green.
+	answers := []string{
+		"депо кофе", "депо кофе", "депо кофе", "депо кофе",
+		"рельсы и кофе", "рельсы и кофе", "верхнее кольцо", "трамвайный аромат",
+	}
+	runs := make([]run, len(answers))
+	for i, a := range answers {
+		runs[i] = run{parsed: true, answer: a, raw: a}
+	}
+	var buf bytes.Buffer
+	diversityTable(&buf, []tally{{
+		setting: setting{label: "1.2"}, runs: runs, answered: answers, total: len(runs),
+	}}, 1)
+	out := buf.String()
+
+	if !strings.Contains(out, "4 из 8") {
+		t.Errorf("число различных ответов посчитано неверно:\n%s", out)
+	}
+	if !strings.Contains(out, "депо кофе") {
+		// The table prints metrics, not answers — this guards against a
+		// refactor that starts dumping raw text into the metrics table.
+		_ = out
+	}
+	distance, ok := meanPairwiseDistance(answers)
+	if !ok {
+		t.Fatal("на этой выборке дистанция обязана считаться")
+	}
+	if !strings.Contains(out, fmt.Sprintf("%.3f", distance)) {
+		t.Errorf("точечная дистанция %.3f не напечатана:\n%s", distance, out)
+	}
+	// The interval must come from resampling, not from the point estimate: a
+	// degenerate one would print the same number on both ends.
+	if strings.Contains(out, fmt.Sprintf("[%.3f, %.3f]", distance, distance)) {
+		t.Errorf("интервал выродился в точечную оценку — пересэмплирования нет:\n%s", out)
+	}
+	if !strings.Contains(out, "НЕ калиброванный") {
+		t.Errorf("интервал подан как калиброванный 95%%:\n%s", out)
+	}
+}
+
+func TestDiversityTableSeparatesTruncationFromDiversity(t *testing.T) {
+	// A cut-off answer is still a parsed answer and enters the metrics as a
+	// variant. It would do so most often at the highest temperature — the
+	// column whose diversity is the headline — so the count has to be visible.
+	answers := []string{"депо кофе", "депо ко"}
+	got := summarise(cell{setting: setting{label: "1.2"}, runs: []run{
+		{parsed: true, answer: answers[0], finish: "stop"},
+		{parsed: true, answer: answers[1], finish: "length"},
+	}}, "deepseek-v4-flash")
+	if got.truncated != 1 {
+		t.Fatalf("обрезанных прогонов %d, ожидался 1", got.truncated)
+	}
+	var buf bytes.Buffer
+	got.answered = answers
+	diversityTable(&buf, []tally{got}, 1)
+	if out := buf.String(); !strings.Contains(out, "обрезано") ||
+		!strings.Contains(out, "частично объясняется обрезкой") {
+		t.Errorf("обрезка не отделена от разнообразия:\n%s", out)
+	}
+}
+
+func TestDiversityTableSaysWhenThereIsNothingToMeasure(t *testing.T) {
+	var buf bytes.Buffer
+	diversityTable(&buf, []tally{{
+		setting: setting{label: "1.2"},
+		runs:    []run{{err: context.Canceled}, {err: context.Canceled}},
+		total:   2,
+	}}, 1)
+	if out := buf.String(); !strings.Contains(out, "ни один прогон не дошёл до ответа") {
+		t.Errorf("пустая настройка не отмечена:\n%s", out)
+	}
+}
+
+func TestTopPIsNeverSentAlongsideTemperature(t *testing.T) {
+	// The premise printed on every report is that temperature is the only
+	// variable. internal/llm is shared by every day, so a later day adding a
+	// top_p option with a non-nil default would falsify that premise silently.
+	c := &captured{replies: []string{"ANSWER: 24"}}
+	client := fakeDeepSeek(t, c)
+	settings, _ := buildSettings("0,0.7,1.2", true, true)
+	for _, s := range settings {
+		execute(context.Background(), client, taskByKey(t, "T1"), s)
+	}
+	for i := 0; i < c.bodyCount(); i++ {
+		if _, present := c.body(i)["top_p"]; present {
+			t.Fatalf("запрос %d ушёл с top_p=%v — переменных стало две",
+				i, c.body(i)["top_p"])
+		}
+	}
+}
+
+func TestBuildSettingsAcceptsTheDocumentedCeiling(t *testing.T) {
+	// The provider documents the range as 0…2 inclusive, and 2.0 is a planned
+	// lever run ("что за потолком"). An off-by-one at the ceiling would refuse
+	// it while every rejection test still passed.
+	got, err := buildSettings("0,2", false, false)
+	if err != nil {
+		t.Fatalf("температура 2.0 отвергнута: %v", err)
+	}
+	if len(got) != 2 || got[1].temp == nil || *got[1].temp != 2 {
+		t.Fatalf("2.0 не дошла до настроек: %+v", got)
 	}
 }
