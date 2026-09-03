@@ -16,17 +16,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/stats"
 )
 
 const defaultModel = "deepseek-v4-pro"
-
-// prices are dollars per 1M tokens, {input, output}, from the provider's own
-// documentation (checked 2026-09-02). Reasoning tokens are part of the output
-// count, so they are already paid for in completion_tokens.
-var prices = map[string][2]float64{
-	"deepseek-v4-pro":   {1.74, 3.48},
-	"deepseek-v4-flash": {0.14, 0.28},
-}
 
 type attempt struct {
 	answer    int
@@ -248,7 +241,7 @@ func report(w io.Writer, m method, attempts []attempt, model string, verbose, fu
 			line += fmt.Sprintf(" (из них %d на рассуждение)", r)
 		}
 		line += fmt.Sprintf(" · %d вызов(а) · %.1f с", a.calls, a.elapsed.Seconds())
-		if c, known := cost(model, a.usage); known {
+		if c, known := llm.Cost(model, a.usage); known {
 			line += fmt.Sprintf(" · $%.4f", c)
 		}
 		if a.finish == "length" {
@@ -270,14 +263,6 @@ func sentFields(m method) string {
 		calls = "2 вызова: сначала пишем промпт, потом решаем по нему"
 	}
 	return strings.Join(parts, " · ") + " · " + calls
-}
-
-func cost(model string, u llm.Usage) (float64, bool) {
-	p, ok := prices[model]
-	if !ok {
-		return 0, false
-	}
-	return float64(u.PromptTokens)/1e6*p[0] + float64(u.CompletionTokens)/1e6*p[1], true
 }
 
 // tally is one method's aggregated result, computed once and then printed twice:
@@ -308,7 +293,7 @@ func summarise(o outcome, model string) tally {
 			t.unanswered++
 		}
 		t.tokens += a.usage.CompletionTokens
-		if c, known := cost(model, a.usage); known {
+		if c, known := llm.Cost(model, a.usage); known {
 			spent += c
 		} else {
 			t.priced = false
@@ -406,7 +391,7 @@ func significance(w io.Writer, tallies []tally, baseKey string, base tally) {
 		if t.total == 0 {
 			continue
 		}
-		lo, hi := wilson(t.correct, t.total)
+		lo, hi := stats.Wilson(t.correct, t.total)
 		rate := fmt.Sprintf("%.0f%%", 100*float64(t.correct)/float64(t.total))
 		span := fmt.Sprintf("[%.0f%%, %.0f%%]", 100*lo, 100*hi)
 
@@ -416,7 +401,7 @@ func significance(w io.Writer, tallies []tally, baseKey string, base tally) {
 				pad("—", 8), "база сравнения")
 			continue
 		}
-		p := fisherTwoSided(base.correct, base.total-base.correct, t.correct, t.total-t.correct)
+		p := stats.FisherTwoSided(base.correct, base.total-base.correct, t.correct, t.total-t.correct)
 		verdict := "не отличить от " + baseKey
 		if p < 0.05 {
 			verdict = "разница подтверждена"

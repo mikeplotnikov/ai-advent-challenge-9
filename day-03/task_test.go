@@ -154,14 +154,14 @@ func TestCostIsReportedOnlyForKnownModels(t *testing.T) {
 	// whether the input and output rates were swapped, and output is the rate
 	// that dominates — reasoning tokens are billed as output.
 	u := llm.Usage{PromptTokens: 2_000_000, CompletionTokens: 1_000_000}
-	got, known := cost("deepseek-v4-pro", u)
+	got, known := llm.Cost("deepseek-v4-pro", u)
 	want := 2*1.74 + 3.48 // 6.96
 	if !known || got < want-0.01 || got > want+0.01 {
 		t.Fatalf("цена pro = %.4f (known=%v), ожидалось ≈%.2f", got, known, want)
 	}
 	// An unknown model must not silently price at zero: a dollar column that
 	// reads $0.0000 would look like a free method, not like a missing price.
-	if _, known := cost("deepseek-v9-unreleased", u); known {
+	if _, known := llm.Cost("deepseek-v9-unreleased", u); known {
 		t.Fatal("для неизвестной модели цена объявлена известной")
 	}
 }

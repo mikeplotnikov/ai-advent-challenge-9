@@ -20,6 +20,25 @@ const (
 	DefaultModel = "deepseek-v4-flash"
 )
 
+// prices are dollars per 1M tokens, {input, output}, from the provider's own
+// documentation (checked 2026-09-02). Reasoning tokens are part of the output
+// count, so they are already paid for in completion_tokens.
+var prices = map[string][2]float64{
+	"deepseek-v4-pro":   {1.74, 3.48},
+	"deepseek-v4-flash": {0.14, 0.28},
+}
+
+// Cost returns what a call cost and whether the model has a price here at all.
+// The second value is not decoration: reporting an unknown model as $0.0000
+// would read as "this method was free" instead of "we do not know".
+func Cost(model string, u Usage) (float64, bool) {
+	p, ok := prices[model]
+	if !ok {
+		return 0, false
+	}
+	return float64(u.PromptTokens)/1e6*p[0] + float64(u.CompletionTokens)/1e6*p[1], true
+}
+
 // Message is one turn of the conversation: system, user or assistant.
 type Message struct {
 	Role    string `json:"role"`
