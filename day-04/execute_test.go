@@ -386,3 +386,80 @@ func TestAccuracyTableRefusesToCallNoiseADifference(t *testing.T) {
 		t.Errorf("разница в один прогон подана как разница:\n%s", out)
 	}
 }
+
+func TestMoneyNeverPrintsARealChargeAsZero(t *testing.T) {
+	// On flash a per-run cost rounds to $0.0000 at four decimals, and "$0.0000"
+	// reads as free. Day 3 closed this hole for an unknown model; the rounding
+	// opens it again for a known one.
+	cases := []struct {
+		name  string
+		value float64
+		known bool
+		want  string
+	}{
+		{"обычная цена", 0.0123, true, "$0.0123"},
+		{"настоящий ноль", 0, true, "$0"},
+		{"мельче округления", 0.00001, true, "меньше $0.0001"},
+		{"на границе округления", 0.00004, true, "меньше $0.0001"},
+	}
+	for _, c := range cases {
+		if got := formatMoney(c.value, c.known); got != c.want {
+			t.Errorf("%s: получено %q, ожидалось %q", c.name, got, c.want)
+		}
+	}
+	got := formatMoney(0.5, false)
+	if strings.Contains(got, "$") {
+		t.Errorf("неизвестная цена показана суммой: %q", got)
+	}
+	if !strings.Contains(got, "неизвестна") {
+		t.Errorf("не сказано, что цена неизвестна: %q", got)
+	}
+}
+
+func TestCostTableAveragesOverEveryRunIncludingTheFailures(t *testing.T) {
+	c := &captured{
+		replies: []string{"ANSWER: 24", ""},
+		reasons: []string{"", "думал и не дошёл"},
+	}
+	client := fakeDeepSeek(t, c)
+	zero := 0.0
+	runs := runCell(context.Background(), client, taskByKey(t, "T1"), setting{label: "0", temp: &zero}, 2, 1)
+	got := summarise(cell{setting: setting{label: "0"}, runs: runs}, "deepseek-v4-flash")
+
+	var buf bytes.Buffer
+	costTable(&buf, []tally{got})
+	out := buf.String()
+	// 100 tokens answered plus 50 billed-but-unanswered, over two runs.
+	if !strings.Contains(out, "75") {
+		t.Errorf("средние токены посчитаны не по всем прогонам:\n%s", out)
+	}
+	if !strings.Contains(out, "включая прогоны без ответа") {
+		t.Errorf("таблица не говорит, что в среднее вошли неудачные прогоны:\n%s", out)
+	}
+}
+
+func TestDemoRunsGetABudgetLargeEnoughToAnswerAtAll(t *testing.T) {
+	// The open task's 60-token cap is plenty for one line and nowhere near
+	// enough for a reasoning pass. Left on that cap, a demo run would spend the
+	// budget thinking and never answer — demonstrating truncation instead of
+	// the silent ignore it exists to demonstrate.
+	c := &captured{replies: []string{"Депо Кофе"}}
+	client := fakeDeepSeek(t, c)
+	openTask := taskByKey(t, "T2")
+	if openTask.maxTokens >= tokenCap {
+		t.Fatalf("предпосылка теста сломана: у творческой задачи лимит %d", openTask.maxTokens)
+	}
+	zero := 0.0
+	execute(context.Background(), client, openTask, setting{label: "0", temp: &zero})
+	execute(context.Background(), client, openTask,
+		setting{label: "0 + thinking", temp: &zero, thinking: "enabled"})
+
+	measured, _ := c.body(0)["max_tokens"].(float64)
+	demo, _ := c.body(1)["max_tokens"].(float64)
+	if int(measured) != openTask.maxTokens {
+		t.Errorf("замер ушёл с max_tokens=%v, ожидалось %d", measured, openTask.maxTokens)
+	}
+	if int(demo) != tokenCap {
+		t.Errorf("демонстрация ушла с max_tokens=%v, ожидалось %d", demo, tokenCap)
+	}
+}

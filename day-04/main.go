@@ -197,11 +197,20 @@ func runCell(ctx context.Context, c *llm.Client, t task, s setting, repeat, work
 
 func execute(ctx context.Context, c *llm.Client, t task, s setting) run {
 	start := time.Now()
+	// The open task runs on a 60-token cap, which is plenty for one line and
+	// nowhere near enough for a reasoning pass. A demo run left on that cap
+	// would spend the budget thinking, never answer, and demonstrate truncation
+	// instead of the thing it exists to demonstrate. The cap is constant inside
+	// the demo, so its own 0-against-1.2 comparison is unaffected.
+	maxTokens := t.maxTokens
+	if s.demo() && maxTokens < tokenCap {
+		maxTokens = tokenCap
+	}
 	answer, err := c.AskWith(ctx, []llm.Message{
 		{Role: "system", Content: t.system},
 		{Role: "user", Content: t.prompt},
 	}, llm.Options{
-		MaxTokens:   t.maxTokens,
+		MaxTokens:   maxTokens,
 		Temperature: s.temp,
 		Thinking:    s.thinking,
 	})
@@ -237,6 +246,7 @@ type tally struct {
 	total    int
 	missing  int
 	tokens   int
+	elapsed  time.Duration
 	avgCost  float64
 	priced   bool
 }
@@ -249,6 +259,7 @@ func summarise(c cell, model string) tally {
 		// stay in the average. Dropping it would make the settings that fail
 		// look cheap.
 		t.tokens += r.usage.TotalTokens
+		t.elapsed += r.elapsed
 		if price, known := llm.Cost(model, r.usage); known {
 			spent += price
 		} else {

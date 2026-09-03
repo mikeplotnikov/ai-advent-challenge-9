@@ -40,6 +40,7 @@ func reportTask(ctx context.Context, w io.Writer, c *llm.Client, t task, cells [
 	}
 	diversityTable(w, main, seed)
 
+	costTable(w, main)
 	if t.kind == open && judgePasses > 0 {
 		judgeSection(ctx, w, c, main, model, seed, judgePasses)
 	}
@@ -155,6 +156,42 @@ func diversityTable(w io.Writer, tallies []tally, seed int64) {
 	fmt.Fprintln(w, "«слов уник.» — доля уникальных словоформ во всех ответах вместе.")
 }
 
+// costTable answers "what did the setting cost", which is the other half of
+// every conclusion here: a temperature that buys accuracy is only interesting
+// next to what it charged in tokens and seconds.
+func costTable(w io.Writer, tallies []tally) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "ТОКЕНЫ, ВРЕМЯ И ЦЕНА · в среднем на прогон, включая прогоны без ответа")
+	fmt.Fprintf(w, "%s %s %s %s\n",
+		pad("temperature", 16), pad("токенов", 10), pad("секунд", 9), "цена")
+	for _, t := range tallies {
+		if t.total == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "%s %s %s %s\n",
+			pad(t.setting.label, 16),
+			pad(fmt.Sprint(t.tokens/t.total), 10),
+			pad(fmt.Sprintf("%.1f", t.elapsed.Seconds()/float64(t.total)), 9),
+			formatMoney(t.avgCost, t.priced))
+	}
+}
+
+// formatMoney never lets a real charge print as $0.0000. Day 3 closed this hole
+// for an unknown model; on flash the per-run cost is small enough that the
+// rounding does it too, and "free" is the one thing it is not.
+func formatMoney(v float64, known bool) string {
+	switch {
+	case !known:
+		return "цена неизвестна: модель не в прайс-листе"
+	case v == 0:
+		return "$0"
+	case v < 0.00005:
+		return "меньше $0.0001"
+	default:
+		return fmt.Sprintf("$%.4f", v)
+	}
+}
+
 func judgeSection(ctx context.Context, w io.Writer, c *llm.Client, tallies []tally,
 	model string, seed int64, passes int) {
 
@@ -222,11 +259,7 @@ func judgeSection(ctx context.Context, w io.Writer, c *llm.Client, tallies []tal
 	if failed > 0 {
 		fmt.Fprintf(w, ", из них с ошибкой: %d", failed)
 	}
-	if priced {
-		fmt.Fprintf(w, " · стоимость судьи: $%.4f", spent)
-	} else {
-		fmt.Fprint(w, " · цена судьи неизвестна: модель не в прайс-листе")
-	}
+	fmt.Fprintf(w, " · стоимость судьи: %s", formatMoney(spent, priced))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "«Разброс по проходам» — собственный шум судьи. Разница между температурами,")
 	fmt.Fprintln(w, "которая меньше этого разброса, ничего не значит.")
@@ -260,6 +293,8 @@ func demoSection(w io.Writer, t task, demo []tally, seed int64) {
 	fmt.Fprintln(w, "they will have no effect on the model's output.»")
 	fmt.Fprintln(w, "— https://api-docs.deepseek.com/guides/thinking_mode (проверено 03.09.2026)")
 	fmt.Fprintln(w, "Ошибки в ответ действительно нет — и разницы между 0 и 1.2 тоже быть не должно.")
+	fmt.Fprintf(w, "Лимит токенов в демонстрации поднят до %d: рассуждение не влезло бы в лимит\n", tokenCap)
+	fmt.Fprintln(w, "творческой задачи, и вместо игнорирования параметра мы увидели бы обрезку.")
 	diversityTable(w, demo, seed)
 	if t.kind == exact {
 		accuracyTable(w, demo)
