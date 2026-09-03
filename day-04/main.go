@@ -101,7 +101,12 @@ func main() {
 		os.Exit(2)
 	}
 
-	client, err := llm.NewWithKeyEnv("DEEPSEEK_API_KEY_DAY4")
+	// Day 4 shares day 3's key — the owner's call on 2026-09-03: a key per day
+	// does not scale over seven weeks of tasks. The variable name is historical.
+	// NewWithKeyEnv still falls back to DEEPSEEK_API_KEY, which is right for a
+	// CLI: the person running it knows which key he is holding. The public
+	// endpoint has no such fallback.
+	client, err := llm.NewWithKeyEnv("DEEPSEEK_API_KEY_DAY3")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
