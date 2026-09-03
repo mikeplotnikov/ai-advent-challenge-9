@@ -218,9 +218,6 @@ func TestJudgeSectionNamesWhichSilenceHappened(t *testing.T) {
 	// Three different silences printed the same line: a setting with no
 	// answers, a judge that returned nothing usable, and a judge that never
 	// answered. A check that cannot distinguish its causes has to name them.
-	board := buildSlate([][]string{{"депо кофе"}}, 1)
-	_ = board
-
 	t.Run("настройка без ответов", func(t *testing.T) {
 		c := &captured{replies: []string{"1: 4"}}
 		client := fakeDeepSeek(t, c)

@@ -568,10 +568,10 @@ func TestDiversityTableReportsTheNumbersTheHeadlineRestsOn(t *testing.T) {
 	if !strings.Contains(out, "4 из 8") {
 		t.Errorf("число различных ответов посчитано неверно:\n%s", out)
 	}
-	if !strings.Contains(out, "депо кофе") {
-		// The table prints metrics, not answers — this guards against a
-		// refactor that starts dumping raw text into the metrics table.
-		_ = out
+	// The metrics table prints numbers, not answers: the answers have their own
+	// section, and mixing them in would make the columns unreadable.
+	if strings.Contains(out, "депо кофе") {
+		t.Errorf("в таблицу метрик попали сами ответы:\n%s", out)
 	}
 	distance, ok := meanPairwiseDistance(answers)
 	if !ok {
