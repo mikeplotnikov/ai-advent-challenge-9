@@ -280,89 +280,155 @@ func cost(model string, u llm.Usage) (float64, bool) {
 	return float64(u.PromptTokens)/1e6*p[0] + float64(u.CompletionTokens)/1e6*p[1], true
 }
 
+// tally is one method's aggregated result, computed once and then printed twice:
+// the comparison table and the significance table read the same numbers.
+type tally struct {
+	method     method
+	correct    int
+	total      int
+	unanswered int
+	errored    int
+	tokens     int
+	avgCost    float64
+	priced     bool
+}
+
+func summarise(o outcome, model string) tally {
+	t := tally{method: o.method, total: len(o.attempts), priced: true}
+	spent := 0.0
+	for _, a := range o.attempts {
+		// An attempt that never reached an answer is still an attempt, and it
+		// still cost tokens. Dropping either from the averages would flatter
+		// exactly the method whose failure mode is spending the whole budget
+		// on reasoning and never answering.
+		if a.err != nil {
+			t.errored++
+		}
+		if a.err != nil || !a.parsed {
+			t.unanswered++
+		}
+		t.tokens += a.usage.CompletionTokens
+		if c, known := cost(model, a.usage); known {
+			spent += c
+		} else {
+			t.priced = false
+		}
+		if a.correct {
+			t.correct++
+		}
+	}
+	if t.total > 0 {
+		t.avgCost = spent / float64(t.total)
+	}
+	return t
+}
+
 func summary(w io.Writer, outcomes []outcome, model string, truth, repeat int) {
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, strings.Repeat("═", 72))
-	fmt.Fprintf(w, "СРАВНЕНИЕ · эталон %d · модель %s · повторов %d\n", truth, model, repeat)
-	fmt.Fprintln(w, strings.Repeat("═", 72))
 	// The price ratio is read against the plain method, not against whatever
 	// happens to be first: with -only C,D,E the first row is C, and a column
 	// headed "к A" would then compare everything to the wrong baseline.
 	base := baseline(outcomes)
+	tallies := make([]tally, 0, len(outcomes))
+	priced := true
+	var baseTally tally
+	for _, o := range outcomes {
+		t := summarise(o, model)
+		if !t.priced {
+			priced = false
+		}
+		if t.method.key == base {
+			baseTally = t
+		}
+		tallies = append(tallies, t)
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, strings.Repeat("═", 72))
+	fmt.Fprintf(w, "СРАВНЕНИЕ · эталон %d · модель %s · повторов %d\n", truth, model, repeat)
+	fmt.Fprintln(w, strings.Repeat("═", 72))
 	fmt.Fprintf(w, "%s %s %s %s %s\n",
 		pad("Способ", 26), pad("верных", 9), pad("токенов", 10), pad("цена", 15), "к "+base)
 
-	// The baseline is read in a first pass: computing it inside the printing loop
-	// would leave every row before A without a ratio.
-	baseCost, priced := 0.0, true
-	for _, o := range outcomes {
-		if o.method.key != base || len(o.attempts) == 0 {
-			continue
-		}
-		spent := 0.0
-		for _, a := range o.attempts {
-			if c, known := cost(model, a.usage); known {
-				spent += c
-			}
-		}
-		baseCost = spent / float64(len(o.attempts))
-	}
-	for _, o := range outcomes {
-		ok, unanswered, tokens, spent := 0, 0, 0, 0.0
-		for _, a := range o.attempts {
-			// An attempt that never reached an answer is still an attempt, and it
-			// still cost tokens. Dropping either from the averages would flatter
-			// exactly the method whose failure mode is spending the whole budget
-			// on reasoning and never answering.
-			if a.err != nil || !a.parsed {
-				unanswered++
-			}
-			tokens += a.usage.CompletionTokens
-			if c, known := cost(model, a.usage); known {
-				spent += c
-			} else {
-				priced = false
-			}
-			if a.correct {
-				ok++
-			}
-		}
-		total := len(o.attempts)
-		n := total - countErrors(o.attempts)
-		if n == 0 {
+	for _, t := range tallies {
+		answered := t.total - t.errored
+		if answered == 0 {
 			fmt.Fprintf(w, "%s %s все прогоны с ошибкой\n",
-				pad(o.method.key+" · "+o.method.title, 26), pad(fmt.Sprintf("0/%d", total), 9))
+				pad(t.method.key+" · "+t.method.title, 26), pad(fmt.Sprintf("0/%d", t.total), 9))
 			continue
 		}
-		avgCost := spent / float64(total)
-		price := "цена неизвестна"
-		ratio := "—"
+		price, ratio := "цена неизвестна", "—"
 		if priced {
-			price = fmt.Sprintf("$%.4f", avgCost)
-			if baseCost > 0 {
-				ratio = fmt.Sprintf("×%.1f", avgCost/baseCost)
+			price = fmt.Sprintf("$%.4f", t.avgCost)
+			if baseTally.avgCost > 0 {
+				ratio = fmt.Sprintf("×%.1f", t.avgCost/baseTally.avgCost)
 			}
 		}
-		score := fmt.Sprintf("%d/%d", ok, total)
-		if unanswered > 0 {
+		score := fmt.Sprintf("%d/%d", t.correct, t.total)
+		if t.unanswered > 0 {
 			score += "!"
 		}
 		fmt.Fprintf(w, "%s %s %s %s %s\n",
-			pad(o.method.key+" · "+o.method.title, 26),
+			pad(t.method.key+" · "+t.method.title, 26),
 			pad(score, 9),
-			pad(fmt.Sprint(tokens/total), 10),
+			pad(fmt.Sprint(t.tokens/t.total), 10),
 			pad(price, 15),
 			ratio)
 	}
 	if !priced {
 		fmt.Fprintln(w, "\nЦены нет: модель не в прайс-листе day-03/main.go — это не «бесплатно».")
 	}
+
+	significance(w, tallies, base, baseTally)
+
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Точность здесь — не мнение о тексте, а доля совпадений с эталоном.")
 	fmt.Fprintln(w, "Знак «!» рядом с долей означает, что часть прогонов не дошла до ответа:")
 	fmt.Fprintln(w, "запрос не прошёл или модель так и не написала строку ANSWER. Токены и цена")
 	fmt.Fprintln(w, "усреднены по всем прогонам, включая эти: они тоже оплачены.")
 	fmt.Fprintln(w, "Способ рассуждения — единственное, что менялось между прогонами.")
+}
+
+// significance answers the question the first table cannot: is the gap between
+// two methods bigger than the noise of a coin that lands differently each run.
+// Without it, 6/10 against 5/10 reads as "worse" when it is the same result.
+func significance(w io.Writer, tallies []tally, baseKey string, base tally) {
+	if len(tallies) < 2 || base.total == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, strings.Repeat("═", 72))
+	fmt.Fprintf(w, "ОТЛИЧИМА ЛИ РАЗНИЦА · точный тест Фишера против %s, интервалы Уилсона 95%%\n", baseKey)
+	fmt.Fprintln(w, strings.Repeat("═", 72))
+	fmt.Fprintf(w, "%s %s %s %s %s\n",
+		pad("Способ", 26), pad("доля", 7), pad("95% интервал", 16), pad("p", 8), "вывод")
+
+	for _, t := range tallies {
+		if t.total == 0 {
+			continue
+		}
+		lo, hi := wilson(t.correct, t.total)
+		rate := fmt.Sprintf("%.0f%%", 100*float64(t.correct)/float64(t.total))
+		span := fmt.Sprintf("[%.0f%%, %.0f%%]", 100*lo, 100*hi)
+
+		if t.method.key == baseKey {
+			fmt.Fprintf(w, "%s %s %s %s %s\n",
+				pad(t.method.key+" · "+t.method.title, 26), pad(rate, 7), pad(span, 16),
+				pad("—", 8), "база сравнения")
+			continue
+		}
+		p := fisherTwoSided(base.correct, base.total-base.correct, t.correct, t.total-t.correct)
+		verdict := "не отличить от " + baseKey
+		if p < 0.05 {
+			verdict = "разница подтверждена"
+		}
+		fmt.Fprintf(w, "%s %s %s %s %s\n",
+			pad(t.method.key+" · "+t.method.title, 26), pad(rate, 7), pad(span, 16),
+			pad(fmt.Sprintf("%.3f", p), 8), verdict)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "«Не отличить» — это не «одинаково»: это значит, что прогонов слишком мало,")
+	fmt.Fprintln(w, "чтобы разницу можно было утверждать. Чтобы отличить 60% от 90%, нужно")
+	fmt.Fprintln(w, "около 30 прогонов на способ; при 10 такая пара даёт p≈0.30.")
 }
 
 // baseline picks the plain method when it was run, and the first one otherwise.

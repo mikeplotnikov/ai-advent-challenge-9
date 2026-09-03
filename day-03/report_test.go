@@ -110,10 +110,19 @@ func TestSummaryReadsThePriceRatioAgainstThePlainMethod(t *testing.T) {
 	if !strings.Contains(out, "к A") {
 		t.Fatalf("база сравнения не A:\n%s", out)
 	}
+	// "E ·" now appears twice: once in the price table and once in the
+	// significance table. Only the priced row carries the ratio.
+	checked := false
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "E ·") && !strings.Contains(line, "×3.") {
-			t.Fatalf("цена E посчитана не относительно A: %q", line)
+		if strings.HasPrefix(line, "E ·") && strings.Contains(line, "$") {
+			checked = true
+			if !strings.Contains(line, "×3.") {
+				t.Fatalf("цена E посчитана не относительно A: %q", line)
+			}
 		}
+	}
+	if !checked {
+		t.Fatal("строка E с ценой не найдена в сводной таблице")
 	}
 }
 
@@ -248,5 +257,64 @@ func TestFailedAttemptStillReportsWhatItSpent(t *testing.T) {
 	}
 	if got.usage.CompletionTokens == 0 {
 		t.Fatal("оплаченные токены неудавшегося прогона потеряны")
+	}
+}
+
+func summaryOfPair(t *testing.T, aCorrect, aTotal, xCorrect, xTotal int) string {
+	t.Helper()
+	build := func(m method, correct, total int) outcome {
+		var attempts []attempt
+		for i := 0; i < total; i++ {
+			attempts = append(attempts, attemptWith(i < correct, true, nil, 500))
+		}
+		return outcome{method: m, attempts: attempts}
+	}
+	all := methods()
+	var buf bytes.Buffer
+	summary(&buf, []outcome{build(all[0], aCorrect, aTotal), build(all[1], xCorrect, xTotal)},
+		"deepseek-v4-pro", 24, aTotal)
+	return buf.String()
+}
+
+func TestSummaryRefusesToCallNoiseADifference(t *testing.T) {
+	// This is the mistake the day 3 submission actually made: 6/10 against 5/10
+	// was reported as "хуже", and Fisher's exact test on that pair gives p=1.0.
+	out := summaryOfPair(t, 6, 10, 5, 10)
+	if !strings.Contains(out, "ОТЛИЧИМА ЛИ РАЗНИЦА") {
+		t.Fatalf("таблицы значимости нет вовсе:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "B ·") && strings.Contains(line, "1.000") {
+			if !strings.Contains(line, "не отличить") {
+				t.Fatalf("разница в один прогон объявлена реальной: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatalf("строка со сравнением не найдена:\n%s", out)
+}
+
+func TestSummaryConfirmsARealDifference(t *testing.T) {
+	// The same 60% against 90%, but on thirty runs instead of ten: p=0.015.
+	out := summaryOfPair(t, 18, 30, 27, 30)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "B ·") && strings.Contains(line, "0.015") {
+			if !strings.Contains(line, "разница подтверждена") {
+				t.Fatalf("подтверждённая разница названа шумом: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatalf("строка со сравнением не найдена:\n%s", out)
+}
+
+func TestSummaryShowsThatMoreRunsNarrowTheInterval(t *testing.T) {
+	small := summaryOfPair(t, 6, 10, 6, 10)
+	big := summaryOfPair(t, 18, 30, 18, 30)
+	if !strings.Contains(small, "[31%, 83%]") {
+		t.Fatalf("интервал для 6/10 не тот:\n%s", small)
+	}
+	if !strings.Contains(big, "[42%, 75%]") {
+		t.Fatalf("интервал для 18/30 не тот:\n%s", big)
 	}
 }
