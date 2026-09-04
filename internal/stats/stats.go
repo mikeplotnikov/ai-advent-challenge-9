@@ -123,3 +123,40 @@ func percentile(sorted []float64, q float64) float64 {
 	frac := pos - float64(lo)
 	return sorted[lo]*(1-frac) + sorted[hi]*frac
 }
+
+// Holm reports, for each p-value given, whether it survives the Holm-Bonferroni
+// step-down procedure at level alpha. The result is in the same order as the input.
+//
+// It exists because day 4 named this hole and did not close it: its report made
+// six comparisons against a flat 0.05 threshold, and noted that with six of them
+// one false "confirmed" is expected in roughly a quarter of such runs. Day 5 makes
+// two dozen, where a flat threshold is not a rounding error but a promise the
+// numbers cannot keep.
+//
+// Holm rather than plain Bonferroni because it is uniformly more powerful at the
+// same guarantee: the smallest p-value is tested against alpha/m, the next against
+// alpha/(m-1), and so on, stopping at the first failure — everything from there
+// down is rejected too, which is what makes the family-wide error rate hold.
+func Holm(p []float64, alpha float64) []bool {
+	type indexed struct {
+		p float64
+		i int
+	}
+	order := make([]indexed, len(p))
+	for i, v := range p {
+		order[i] = indexed{p: v, i: i}
+	}
+	sort.Slice(order, func(a, b int) bool { return order[a].p < order[b].p })
+
+	survives := make([]bool, len(p))
+	m := len(p)
+	for rank, item := range order {
+		threshold := alpha / float64(m-rank)
+		if item.p > threshold {
+			// Step-down: once one fails, every larger p-value fails with it.
+			break
+		}
+		survives[item.i] = true
+	}
+	return survives
+}

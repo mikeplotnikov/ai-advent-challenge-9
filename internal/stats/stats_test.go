@@ -232,3 +232,48 @@ func TestWilsonBoundsMatchIndependentlyComputedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestHolmIsStricterThanAFlatThresholdAndOrderPreserving(t *testing.T) {
+	// Four comparisons. 0.01 passes 0.05/4 = 0.0125; 0.02 would pass a flat 0.05
+	// and does not pass 0.05/3 = 0.0167, so the step-down stops there and the two
+	// larger ones fail with it — which is the whole point of the correction.
+	p := []float64{0.20, 0.01, 0.04, 0.02}
+	got := Holm(p, 0.05)
+	want := []bool{false, true, false, false}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("p=%.3f (позиция %d): %v, ожидалось %v", p[i], i, got[i], want[i])
+		}
+	}
+}
+
+func TestHolmAcceptsEveryComparisonWhenAllAreOverwhelming(t *testing.T) {
+	p := []float64{0.0001, 0.0002, 0.0003}
+	for i, ok := range Holm(p, 0.05) {
+		if !ok {
+			t.Errorf("p=%g не прошёл, хотя мал даже для alpha/m", p[i])
+		}
+	}
+}
+
+func TestHolmOnASingleComparisonIsJustTheThreshold(t *testing.T) {
+	if got := Holm([]float64{0.049}, 0.05); !got[0] {
+		t.Error("единственное сравнение с p=0.049 должно проходить при alpha=0.05")
+	}
+	if got := Holm([]float64{0.051}, 0.05); got[0] {
+		t.Error("единственное сравнение с p=0.051 не должно проходить")
+	}
+}
+
+func TestHolmHandlesTiesAndEmptyInput(t *testing.T) {
+	// Ties must not let two comparisons share one slot: with m=2 and both at 0.03,
+	// the first is tested against 0.025 and fails, so neither survives.
+	for i, ok := range Holm([]float64{0.03, 0.03}, 0.05) {
+		if ok {
+			t.Errorf("позиция %d: связка p=0.03 при m=2 не должна проходить", i)
+		}
+	}
+	if got := Holm(nil, 0.05); len(got) != 0 {
+		t.Errorf("для пустого входа вернулось %d значений", len(got))
+	}
+}

@@ -18,6 +18,8 @@ import (
 )
 
 func main() {
+	grid := flag.Bool("grid", false, "боевая сетка: все классы на всех ступенях")
+	out := flag.String("out", "", "куда положить отчёт в markdown (по умолчанию — только stdout)")
 	pilot := flag.Bool("pilot", false, "отбор классов задач: какие вообще различают ступени")
 	repeat := flag.Int("repeat", 5, "прогонов на клетку в пилоте")
 	onlyTasks := flag.String("tasks", "", "классы через запятую, например T0,T1")
@@ -28,6 +30,30 @@ func main() {
 
 	llm.LoadDotEnv(".env")
 	registerFreePrices()
+
+	if *grid {
+		if *repeat < 1 {
+			fmt.Fprintln(os.Stderr, "-repeat должен быть не меньше 1")
+			os.Exit(2)
+		}
+		run, err := runGrid(*repeat, *onlyTasks)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		writeReport(run, os.Stdout)
+		if *out != "" {
+			file, err := os.Create(*out)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			defer file.Close()
+			writeReport(run, file)
+			fmt.Fprintf(os.Stderr, "отчёт записан в %s\n", *out)
+		}
+		return
+	}
 
 	if *pilot {
 		if *repeat < 1 {
