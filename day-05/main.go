@@ -21,6 +21,9 @@ func main() {
 	dumpTasks := flag.Bool("dump", false, "выгрузить определения задач, лесенку и прайс-лист в JSON")
 	grid := flag.Bool("grid", false, "боевая сетка: все классы на всех ступенях")
 	out := flag.String("out", "", "куда положить отчёт в markdown (по умолчанию — только stdout)")
+	journalPath := flag.String("journal", "day-05/journal.jsonl",
+		"журнал вызовов: прерванный прогон продолжается с него, а не начинается заново")
+	reportOnly := flag.Bool("report-only", false, "собрать отчёт из журнала, ничего не вызывая")
 	pilot := flag.Bool("pilot", false, "отбор классов задач: какие вообще различают ступени")
 	repeat := flag.Int("repeat", 5, "прогонов на клетку в пилоте")
 	onlyTasks := flag.String("tasks", "", "классы через запятую, например T0,T1")
@@ -40,12 +43,39 @@ func main() {
 		return
 	}
 
+	if *reportOnly {
+		chosen, err := pickTasks(tasks(), *onlyTasks)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		run, warnings, err := loadRun(*journalPath, chosen, *repeat)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
+		}
+		writeReport(run, os.Stdout)
+		if *out != "" {
+			file, err := os.Create(*out)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			defer file.Close()
+			writeReport(run, file)
+		}
+		return
+	}
+
 	if *grid {
 		if *repeat < 1 {
 			fmt.Fprintln(os.Stderr, "-repeat должен быть не меньше 1")
 			os.Exit(2)
 		}
-		run, err := runGrid(*repeat, *onlyTasks)
+		run, err := runGrid(*repeat, *onlyTasks, *journalPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

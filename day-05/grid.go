@@ -21,6 +21,17 @@ type gridRun struct {
 
 func (g gridRun) cell(t task, r rung) cell { return g.cells[t.key][r.id] }
 
+// countOutcomes is how far a run has got, journalled calls included.
+func countOutcomes(g gridRun) int {
+	n := 0
+	for _, byRung := range g.cells {
+		for _, c := range byRung {
+			n += len(c.outcomes)
+		}
+	}
+	return n
+}
+
 func (g *gridRun) record(t task, r rung, o outcome) {
 	if g.cells == nil {
 		g.cells = map[string]map[string]cell{}
@@ -60,13 +71,34 @@ func (g gridRun) crossedPeakBoundary() bool {
 // Cloud rungs interleave call by call. They have no residency to protect, and
 // blocking them would attribute any network or provider slowdown to whichever rung
 // happened to be running through it.
-func runGrid(repeat int, onlyTasks string) (gridRun, error) {
+func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 	chosen, err := pickTasks(tasks(), onlyTasks)
 	if err != nil {
 		return gridRun{}, err
 	}
 
+	j, err := openJournal(journalPath)
+	if err != nil {
+		return gridRun{}, err
+	}
+	defer j.close()
+
+	// A journal that already holds calls is a paused run, not a fresh one. What is
+	// on disk is loaded back so the report covers the whole measurement, and only
+	// the remainder of each cell is called.
 	run := gridRun{repeat: repeat, tasks: chosen, rungs: ladder, startedAt: time.Now()}
+	if len(j.have) > 0 {
+		loaded, warnings, err := loadRun(journalPath, chosen, repeat)
+		if err != nil {
+			return gridRun{}, err
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
+		}
+		run = loaded
+		fmt.Fprintf(os.Stderr, "продолжаю прерванный прогон: в журнале %s уже %d вызовов\n",
+			journalPath, countOutcomes(run))
+	}
 
 	var local, cloud []rung
 	for _, r := range ladder {
@@ -78,18 +110,23 @@ func runGrid(repeat int, onlyTasks string) (gridRun, error) {
 	}
 
 	total := repeat * len(chosen) * len(ladder)
+	already := countOutcomes(run)
 	fmt.Fprintf(os.Stderr, "СЕТКА · %d прогонов на клетку · %d классов × %d ступеней = %d вызовов\n",
 		repeat, len(chosen), len(ladder), total)
+	if already > 0 {
+		fmt.Fprintf(os.Stderr, "осталось сделать %d — остальное уже в журнале\n", total-already)
+	}
 	fmt.Fprintf(os.Stderr, "локальные блоками (модель держится в памяти), облачные с чередованием\n\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
-	done := 0
+	done := already
+	startedAt := time.Now()
 	report := func(r rung, t task) {
 		done++
-		elapsed := time.Since(run.startedAt)
-		per := elapsed / time.Duration(done)
+		elapsed := time.Since(startedAt)
+		per := elapsed / time.Duration(max(1, done-already))
 		left := (per * time.Duration(total-done)).Round(time.Minute).String()
 		fmt.Fprintf(os.Stderr, "\r%d/%d · %-18s %-3s · прошло %s · осталось ~%s      ",
 			done, total, r.id, t.key, elapsed.Round(time.Second), left)
@@ -102,10 +139,20 @@ func runGrid(repeat int, onlyTasks string) (gridRun, error) {
 		if err != nil {
 			return run, fmt.Errorf("%s: %w", r.id, err)
 		}
-		warm(ctx, client, r)
+		warmed := false
 		for _, t := range chosen {
-			for i := 0; i < repeat; i++ {
-				run.record(t, r, runOnce(ctx, client, t))
+			for len(run.cell(t, r).outcomes) < repeat {
+				// Warming is skipped entirely when a rung has nothing left to do, so
+				// resuming does not reload weights for models it will not call.
+				if !warmed {
+					warm(ctx, client, r)
+					warmed = true
+				}
+				o := runOnce(ctx, client, t)
+				run.record(t, r, o)
+				if err := j.append(t.key, r.id, o); err != nil {
+					return run, fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
+				}
 				report(r, t)
 			}
 		}
@@ -123,7 +170,14 @@ func runGrid(repeat int, onlyTasks string) (gridRun, error) {
 	for i := 0; i < repeat; i++ {
 		for _, t := range chosen {
 			for _, r := range cloud {
-				run.record(t, r, runOnce(ctx, clients[r.id], t))
+				if len(run.cell(t, r).outcomes) >= repeat {
+					continue
+				}
+				o := runOnce(ctx, clients[r.id], t)
+				run.record(t, r, o)
+				if err := j.append(t.key, r.id, o); err != nil {
+					return run, fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
+				}
 				report(r, t)
 			}
 		}
