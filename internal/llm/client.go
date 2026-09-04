@@ -20,23 +20,170 @@ const (
 	DefaultModel = "deepseek-v4-flash"
 )
 
-// prices are dollars per 1M tokens, {input, output}, from the provider's own
-// documentation (checked 2026-09-02). Reasoning tokens are part of the output
-// count, so they are already paid for in completion_tokens.
-var prices = map[string][2]float64{
-	"deepseek-v4-pro":   {1.74, 3.48},
-	"deepseek-v4-flash": {0.14, 0.28},
+// Price is the three rates a provider charges per 1M tokens. Input is split
+// because a repeated prompt is served from the provider's cache at a fraction of
+// the price, and a grid that sends the same prompt thirty times is almost all
+// cache hits: pricing those at the miss rate overstates the bill by ~30x.
+type Price struct {
+	CacheHit  float64
+	CacheMiss float64
+	Output    float64
 }
 
-// Cost returns what a call cost and whether the model has a price here at all.
-// The second value is not decoration: reporting an unknown model as $0.0000
-// would read as "this method was free" instead of "we do not know".
-func Cost(model string, u Usage) (float64, bool) {
-	p, ok := prices[model]
+// Pricing is what one model costs, at both rates the provider bills at.
+// Free is not "price 0" and not "price unknown": a model running on the owner's
+// own machine costs no dollars by construction, and day 5's task asks for cost
+// only "if the model is paid". Printing $0.0000 for a local model, an unpriced
+// one and a genuinely free one identically would erase that difference.
+type Pricing struct {
+	Free    bool
+	OffPeak Price
+	Peak    Price
+}
+
+// pricing is quoted, not derived. Source: the provider's published table at
+// https://api-docs.deepseek.com/quick_start/pricing/ — fetched 2026-09-04,
+// sha256 cf2c6fb2dd8a32a538f12a8176175b8809a3516326a5cb30dfe52d63c490a968.
+// Both rate sets are written out as the page prints them rather than computed
+// from its sentence "off-peak rates are half of the peak rates", so no
+// arithmetic of ours sits between the source and this table.
+//
+// This table replaced {1.74, 3.48} for pro and {0.14, 0.28} for flash, recorded
+// on 2026-09-02, which match no row of the published page. Which of the two
+// happened — the earlier reading was wrong, or the provider changed its prices —
+// cannot be told apart from here, and the page itself warns that "product prices
+// may vary". day-03/RESULTS.md keeps the dollars it was submitted with.
+var pricing = map[string]Pricing{
+	"deepseek-v4-flash": {
+		OffPeak: Price{CacheHit: 0.007, CacheMiss: 0.22, Output: 0.66},
+		Peak:    Price{CacheHit: 0.014, CacheMiss: 0.44, Output: 1.32},
+	},
+	"deepseek-v4-pro": {
+		OffPeak: Price{CacheHit: 0.022, CacheMiss: 0.66, Output: 1.98},
+		Peak:    Price{CacheHit: 0.044, CacheMiss: 1.32, Output: 3.96},
+	},
+	"deepseek-v4-flash-vision-exp": {
+		OffPeak: Price{CacheHit: 0.007, CacheMiss: 0.22, Output: 0.66},
+		Peak:    Price{CacheHit: 0.014, CacheMiss: 0.44, Output: 1.32},
+	},
+}
+
+// IsPeak reports whether the provider's higher rates were in force at t.
+//
+// Quoted rule: "Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC, Monday
+// through Friday (all other hours are off-peak)."
+//
+// The page does not say which side of an endpoint belongs to which band, so the
+// ranges are read half-open here — 04:00:00 UTC prices as off-peak. A call
+// landing exactly on a boundary is the one case this function cannot settle from
+// the source, and it is deliberately not hidden: a run that straddles 01:00 or
+// 06:00 UTC has to say so in its report.
+func IsPeak(t time.Time) bool {
+	u := t.UTC()
+	if d := u.Weekday(); d == time.Saturday || d == time.Sunday {
+		return false
+	}
+	h := u.Hour()
+	return (h >= 1 && h < 4) || (h >= 6 && h < 10)
+}
+
+// FreeModel registers a model that costs nothing to call — a local server. The
+// day that runs a ladder of local models owns that list, not this package: what
+// is on the owner's disk is not a property of the provider's API.
+func FreeModel(model string) {
+	pricing[model] = Pricing{Free: true}
+}
+
+// CostAt returns what one call cost, at the rates in force when it was made,
+// and whether the model has a price here at all. The second value is not
+// decoration: reporting an unknown model as $0.0000 would read as "this call was
+// free" instead of "we do not know".
+//
+// Input tokens the provider did not classify are billed at the CACHE MISS rate.
+// That is the expensive end on purpose — an unreported split must never quietly
+// price as the cheap one, or a missing field turns into a discount.
+func CostAt(model string, u Usage, when time.Time) (float64, bool) {
+	p, ok := pricing[model]
 	if !ok {
 		return 0, false
 	}
-	return float64(u.PromptTokens)/1e6*p[0] + float64(u.CompletionTokens)/1e6*p[1], true
+	if p.Free {
+		return 0, true
+	}
+	rate := p.OffPeak
+	if IsPeak(when) {
+		rate = p.Peak
+	}
+	hit, miss := u.PromptCacheHitTokens, u.PromptCacheMissTokens
+	if hit+miss != u.PromptTokens {
+		hit, miss = 0, u.PromptTokens
+	}
+	return float64(hit)/1e6*rate.CacheHit +
+		float64(miss)/1e6*rate.CacheMiss +
+		float64(u.CompletionTokens)/1e6*rate.Output, true
+}
+
+// Cost prices a call at the rates in force right now. Callers that recorded when
+// the call happened should use CostAt: a grid run across 01:00 or 06:00 UTC on a
+// weekday is billed at two different rates, and pricing it all at "now" is wrong
+// in whichever direction the run ended.
+func Cost(model string, u Usage) (float64, bool) {
+	return CostAt(model, u, time.Now())
+}
+
+// IsFree reports whether the model is one that costs nothing by construction,
+// so a report can print "$0, local" instead of a rounded-to-zero price.
+func IsFree(model string) bool {
+	p, ok := pricing[model]
+	return ok && p.Free
+}
+
+// Dialect is how a provider spells "answer without reasoning first". The
+// spelling is neither cosmetic nor guessable. Measured 2026-09-04 against ollama
+// 0.33.2 and qwen3:1.7b, one prompt ("Сколько будет 17 умножить на 23?"), every
+// call returning HTTP 200:
+//
+//	/api/chat, nothing sent                          reasoned, 971 output tokens
+//	/api/chat, "think": false                        did NOT reason, 89 tokens
+//	/v1/chat/completions, nothing sent               reasoned, 667 output tokens
+//	/v1/chat/completions, "think": false             reasoned, 1063 output tokens
+//	/v1/chat/completions, "reasoning": {enabled:false}  reasoned, 1061 output tokens
+//	/v1/chat/completions, "reasoning_effort": "none" did NOT reason, 89 tokens
+//
+// Two spellings out of three are accepted on the OpenAI-compatible endpoint and
+// do nothing at all — no error, no warning, an 11x difference in what the call
+// generates. So the switch is never assumed to have worked: Answer.Reasoned
+// reports what actually came back, and a comparison across providers has to
+// check it rather than trust the request it sent.
+type Dialect string
+
+const (
+	// DialectDeepSeek switches reasoning off with thinking: {"type": "disabled"}.
+	DialectDeepSeek Dialect = "deepseek"
+	// DialectOllama switches it off with reasoning_effort: "none". A local
+	// server needs no credential; its docs call the key "required but ignored".
+	DialectOllama Dialect = "ollama"
+)
+
+// OllamaURL is the OpenAI-compatible endpoint of a local ollama server. One
+// dialect and one transport for every rung of the ladder is the point: when the
+// only thing that differs between two measurements is the model name, the
+// difference measured is the model.
+const OllamaURL = "http://127.0.0.1:11434/v1/chat/completions"
+
+// NewLocal builds a client against a local ollama server. No key is read from
+// the environment: there is none, and inventing an empty one would make a
+// missing DEEPSEEK_API_KEY look like a local model.
+func NewLocal(model string) *Client {
+	return &Client{
+		APIKey:    "ollama", // required by the endpoint, ignored by it
+		Model:     model,
+		URL:       OllamaURL,
+		Dialect:   DialectOllama,
+		MaxTokens: 1500,
+		// A 14B model on this machine answers in tens of seconds, not seconds.
+		HTTP: &http.Client{Timeout: 600 * time.Second},
+	}
 }
 
 // Message is one turn of the conversation: system, user or assistant.
@@ -50,6 +197,15 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// PromptCacheHitTokens and PromptCacheMissTokens split the input by whether
+	// the provider had the prefix cached: "the API response includes two fields
+	// in the usage section to indicate cache status: prompt_cache_hit_tokens for
+	// tokens that hit the cache, and prompt_cache_miss_tokens for tokens that did
+	// not" (https://api-docs.deepseek.com/guides/kv_cache, checked 2026-09-04).
+	// They are the difference between a repeated prompt costing $0.007 and $0.22
+	// per 1M, and days 1-4 never read them.
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 	// CompletionDetails carries reasoning_tokens when thinking is enabled. Those
 	// tokens are billed as output even though they never appear in the answer.
 	CompletionDetails struct {
@@ -58,9 +214,12 @@ type Usage struct {
 }
 
 type Client struct {
-	APIKey    string
-	Model     string
-	URL       string
+	APIKey string
+	Model  string
+	URL    string
+	// Dialect selects how this provider is told not to reason. Empty means
+	// DeepSeek, which is what days 1-4 were built against.
+	Dialect   Dialect
 	MaxTokens int
 	HTTP      *http.Client
 }
@@ -151,8 +310,12 @@ type chatResponse struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 			// ReasoningContent is the chain of thought, returned as its own
-			// field rather than mixed into the answer.
+			// field rather than mixed into the answer. The two providers spell it
+			// differently — DeepSeek reasoning_content, ollama reasoning — and both
+			// are read so that "did this model reason?" is answered by the response
+			// instead of by the request that hoped it would not.
 			ReasoningContent string `json:"reasoning_content"`
+			ReasoningAlt     string `json:"reasoning"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -177,6 +340,13 @@ type Answer struct {
 	Reasoning string
 }
 
+// Reasoned reports whether the model deliberated before answering. A run that
+// asked for no reasoning and got some has not measured what it set out to: the
+// comparison would be between one model thinking and another not.
+func (a Answer) Reasoned() bool {
+	return strings.TrimSpace(a.Reasoning) != ""
+}
+
 // Ask sends the whole conversation with the client's default token cap.
 func (c *Client) Ask(ctx context.Context, messages []Message) (Answer, error) {
 	return c.AskWith(ctx, messages, Options{MaxTokens: c.MaxTokens})
@@ -196,11 +366,21 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		MaxTokens:   opts.MaxTokens,
 		Stop:        opts.Stop,
 		Temperature: opts.Temperature,
-		Thinking:    &thinking{Type: mode},
 	}
-	// Documented contract: effort rides along with reasoning, never without it.
-	if mode == "enabled" {
-		request.ReasoningEffort = opts.ReasoningEffort
+	switch c.Dialect {
+	case DialectOllama:
+		// "none" is the only spelling of this that the endpoint acts on; see Dialect.
+		if mode == "disabled" {
+			request.ReasoningEffort = "none"
+		} else {
+			request.ReasoningEffort = opts.ReasoningEffort
+		}
+	default:
+		request.Thinking = &thinking{Type: mode}
+		// Documented contract: effort rides along with reasoning, never without it.
+		if mode == "enabled" {
+			request.ReasoningEffort = opts.ReasoningEffort
+		}
 	}
 	if opts.ResponseFormat != "" {
 		request.ResponseFormat = &responseFormat{Type: opts.ResponseFormat}
@@ -245,6 +425,9 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 	}
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
 	reasoning := strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent)
+	if reasoning == "" {
+		reasoning = strings.TrimSpace(parsed.Choices[0].Message.ReasoningAlt)
+	}
 	if content == "" {
 		if reasoning != "" {
 			// The provider billed this call: the answer never came, the reasoning

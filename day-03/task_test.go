@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
@@ -153,15 +154,26 @@ func TestCostIsReportedOnlyForKnownModels(t *testing.T) {
 	// Deliberately asymmetric: with equal counts the sum would be the same
 	// whether the input and output rates were swapped, and output is the rate
 	// that dominates — reasoning tokens are billed as output.
-	u := llm.Usage{PromptTokens: 2_000_000, CompletionTokens: 1_000_000}
-	got, known := llm.Cost("deepseek-v4-pro", u)
-	want := 2*1.74 + 3.48 // 6.96
+	//
+	// The expected number changed on 2026-09-04, when the price table was
+	// re-read off the provider's published page: pro is $0.66 per 1M input
+	// (cache miss) and $1.98 per 1M output off-peak, not the $1.74/$3.48 this
+	// test was written against. RESULTS.md keeps the dollars day 3 was submitted
+	// with; this assertion tracks the table, not the submission.
+	//
+	// CostAt with a fixed instant, not Cost: the provider doubles every rate on
+	// weekdays 01:00-04:00 and 06:00-10:00 UTC, so a test written against
+	// time.Now() passes in the evening and fails in the morning.
+	offPeak := time.Date(2026, 9, 4, 17, 0, 0, 0, time.UTC)
+	u := llm.Usage{PromptTokens: 2_000_000, PromptCacheMissTokens: 2_000_000, CompletionTokens: 1_000_000}
+	got, known := llm.CostAt("deepseek-v4-pro", u, offPeak)
+	want := 2*0.66 + 1.98 // 3.30
 	if !known || got < want-0.01 || got > want+0.01 {
 		t.Fatalf("цена pro = %.4f (known=%v), ожидалось ≈%.2f", got, known, want)
 	}
 	// An unknown model must not silently price at zero: a dollar column that
 	// reads $0.0000 would look like a free method, not like a missing price.
-	if _, known := llm.Cost("deepseek-v9-unreleased", u); known {
+	if _, known := llm.CostAt("deepseek-v9-unreleased", u, offPeak); known {
 		t.Fatal("для неизвестной модели цена объявлена известной")
 	}
 }
