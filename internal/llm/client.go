@@ -36,9 +36,9 @@ const (
 // from $0.000063 to $0.000009 per call — 7x on the input side. Which of the two
 // a given day is in cannot be assumed; it has to be read off the usage fields.
 type Price struct {
-	CacheHit  float64
-	CacheMiss float64
-	Output    float64
+	CacheHit  float64 `json:"cacheHit"`
+	CacheMiss float64 `json:"cacheMiss"`
+	Output    float64 `json:"output"`
 }
 
 // Pricing is what one model costs, at both rates the provider bills at.
@@ -47,9 +47,9 @@ type Price struct {
 // only "if the model is paid". Printing $0.0000 for a local model, an unpriced
 // one and a genuinely free one identically would erase that difference.
 type Pricing struct {
-	Free    bool
-	OffPeak Price
-	Peak    Price
+	Free    bool  `json:"free"`
+	OffPeak Price `json:"offPeak"`
+	Peak    Price `json:"peak"`
 }
 
 // pricing is quoted, not derived. Source: the provider's published table at
@@ -493,4 +493,18 @@ func LoadDotEnv(path string) {
 			os.Setenv(key, value)
 		}
 	}
+}
+
+// PricingTable returns a copy of the price table so another implementation can be
+// checked against it instead of being trusted to have copied it correctly. The
+// showcase runs a JS mirror of each day, and day 4's mirror carried its own hand-
+// written copy of the prices: two copies of a number that must agree is one copy
+// too many. The map is rebuilt on every call so a caller cannot reach in and edit
+// what everything else prices against.
+func PricingTable() map[string]Pricing {
+	out := make(map[string]Pricing, len(pricing))
+	for model, p := range pricing {
+		out[model] = p
+	}
+	return out
 }

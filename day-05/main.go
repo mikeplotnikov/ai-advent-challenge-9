@@ -18,6 +18,7 @@ import (
 )
 
 func main() {
+	dumpTasks := flag.Bool("dump", false, "выгрузить определения задач, лесенку и прайс-лист в JSON")
 	grid := flag.Bool("grid", false, "боевая сетка: все классы на всех ступенях")
 	out := flag.String("out", "", "куда положить отчёт в markdown (по умолчанию — только stdout)")
 	pilot := flag.Bool("pilot", false, "отбор классов задач: какие вообще различают ступени")
@@ -30,6 +31,14 @@ func main() {
 
 	llm.LoadDotEnv(".env")
 	registerFreePrices()
+
+	if *dumpTasks {
+		if err := writeDump(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *grid {
 		if *repeat < 1 {
