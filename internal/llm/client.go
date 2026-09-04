@@ -22,8 +22,19 @@ const (
 
 // Price is the three rates a provider charges per 1M tokens. Input is split
 // because a repeated prompt is served from the provider's cache at a fraction of
-// the price, and a grid that sends the same prompt thirty times is almost all
-// cache hits: pricing those at the miss rate overstates the bill by ~30x.
+// the price — but only past a threshold, and the threshold is the whole story.
+//
+// Measured against deepseek-v4-flash on 2026-09-04, the same prompt sent three
+// times in a row:
+//
+//	23-token prompt:   0 of 23 cached on every call — never any hit at all
+//	285-token prompt:  call 1 cached 0, calls 2 and 3 cached 256 of 285
+//
+// 256 is four times 64, and 285 is not a multiple of 64: the cache works in
+// 64-token blocks and the remainder is always billed as a miss. So a grid of
+// short identical prompts gets no discount whatsoever, while a long one drops
+// from $0.000063 to $0.000009 per call — 7x on the input side. Which of the two
+// a given day is in cannot be assumed; it has to be read off the usage fields.
 type Price struct {
 	CacheHit  float64
 	CacheMiss float64
