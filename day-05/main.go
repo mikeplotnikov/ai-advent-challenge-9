@@ -18,13 +18,28 @@ import (
 )
 
 func main() {
-	only := flag.String("only", "", "прогнать одну модель по id вместо всей лесенки")
+	pilot := flag.Bool("pilot", false, "отбор классов задач: какие вообще различают ступени")
+	repeat := flag.Int("repeat", 5, "прогонов на клетку в пилоте")
+	onlyTasks := flag.String("tasks", "", "классы через запятую, например T0,T1")
+	only := flag.String("only", "", "смоук: прогнать одну модель по id вместо всей лесенки")
 	prompt := flag.String("prompt", "Сколько будет 17 умножить на 23? Ответь только числом.",
-		"запрос, одинаковый для всех ступеней")
+		"смоук: запрос, одинаковый для всех ступеней")
 	flag.Parse()
 
 	llm.LoadDotEnv(".env")
 	registerFreePrices()
+
+	if *pilot {
+		if *repeat < 1 {
+			fmt.Fprintln(os.Stderr, "-repeat должен быть не меньше 1")
+			os.Exit(2)
+		}
+		if err := runPilot(*repeat, *onlyTasks); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	fmt.Printf("Запрос (байт-в-байт одинаковый для всех ступеней):\n  %s\n\n", *prompt)
 
@@ -118,5 +133,3 @@ func oneLine(s string, limit int) string {
 	}
 	return string(r[:limit]) + "…"
 }
-
-var _ = os.Stderr
