@@ -89,11 +89,8 @@ func runGrid(repeat int, onlyTasks string) (gridRun, error) {
 	report := func(r rung, t task) {
 		done++
 		elapsed := time.Since(run.startedAt)
-		left := "—"
-		if done > 0 {
-			per := elapsed / time.Duration(done)
-			left = (per * time.Duration(total-done)).Round(time.Minute).String()
-		}
+		per := elapsed / time.Duration(done)
+		left := (per * time.Duration(total-done)).Round(time.Minute).String()
 		fmt.Fprintf(os.Stderr, "\r%d/%d · %-18s %-3s · прошло %s · осталось ~%s      ",
 			done, total, r.id, t.key, elapsed.Round(time.Second), left)
 	}

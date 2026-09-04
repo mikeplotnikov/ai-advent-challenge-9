@@ -33,6 +33,7 @@ type dumpedRung struct {
 	Params  string `json:"params"`
 	Quant   string `json:"quant"`
 	Context string `json:"context"`
+	Memory  string `json:"memory"`
 	Local   bool   `json:"local"`
 }
 
@@ -101,7 +102,7 @@ func writeDump(w io.Writer) error {
 	for _, r := range ladder {
 		d.Rungs = append(d.Rungs, dumpedRung{
 			ID: r.id, Tier: r.tier, Params: r.params, Quant: r.quant,
-			Context: r.context, Local: r.local,
+			Context: r.context, Memory: r.memory, Local: r.local,
 		})
 	}
 	// Two instants, both Fridays, one in each band: 17:00 UTC is off-peak and
@@ -119,7 +120,10 @@ func writeDump(w io.Writer) error {
 		{"deepseek-v4-flash", llm.Usage{PromptTokens: 285, CompletionTokens: 100}, off, "разбивки нет — весь вход по ставке cache miss"},
 		{"deepseek-v4-pro", llm.Usage{PromptTokens: 285, PromptCacheHitTokens: 256, PromptCacheMissTokens: 29, CompletionTokens: 100}, on, "peak: все ставки вдвое"},
 		{"deepseek-v4-pro", llm.Usage{PromptTokens: 285, PromptCacheHitTokens: 256, PromptCacheMissTokens: 29, CompletionTokens: 100}, weekend, "суббота — peak-окон нет"},
+		{"deepseek-v4-flash", llm.Usage{PromptTokens: 285, CompletionTokens: 100}, on, "разбивки нет и peak — дорогая ставка обеих полос"},
 		{"deepseek-v4-flash", llm.Usage{PromptTokens: 100, PromptCacheHitTokens: 40, CompletionTokens: 10}, off, "разбивка не сходится с общим числом — считаем по miss"},
+		{"deepseek-v4-flash", llm.Usage{PromptCacheHitTokens: 256, PromptCacheMissTokens: 29, CompletionTokens: 10}, off, "разбивка есть, общего числа нет — считаем по miss, не по нулю"},
+		{"deepseek-v4-flash", llm.Usage{PromptTokens: -50, CompletionTokens: 10}, off, "отрицательные токены — не скидка, а ноль"},
 		{"deepseek-v9-unreleased", llm.Usage{PromptTokens: 10, CompletionTokens: 10}, off, "модели нет в прайсе — цена неизвестна, не ноль"},
 		{"qwen3:1.7b", llm.Usage{PromptTokens: 100, CompletionTokens: 500}, on, "локальная — бесплатна по построению, и это известно"},
 	} {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/stats"
 )
 
@@ -25,6 +26,29 @@ type comparison struct {
 	usableA int
 	usableB int
 	holm    bool
+}
+
+// share formats a hit rate, or says the cell was never measured. A percentage is a
+// claim about observations; with no observations there is nothing to claim.
+func share(c cell) string {
+	if !c.measured() {
+		return "не измерено"
+	}
+	rate, _, _ := c.rate()
+	return fmt.Sprintf("%.0f%%", rate*100)
+}
+
+// reasonedCells lists every cell where the reasoning switch did not take.
+func reasonedCells(run gridRun) []string {
+	var out []string
+	for _, t := range run.tasks {
+		for _, r := range run.rungs {
+			if _, _, _, reasoned, _ := run.cell(t, r).counts(); reasoned > 0 {
+				out = append(out, fmt.Sprintf("%s на %s (%d из %d)", t.key, shortID(r.id), reasoned, run.repeat))
+			}
+		}
+	}
+	return out
 }
 
 func rungByID(id string) (rung, bool) {
@@ -114,7 +138,13 @@ func writeReport(run gridRun, w io.Writer) {
 	p("Прогон `go run ./day-05 -grid -repeat %d`, %s–%s, %s.\n",
 		run.repeat, run.startedAt.Format("2006-01-02 15:04"), run.finishedAt.Format("15:04"),
 		run.finishedAt.Sub(run.startedAt).Round(time.Minute))
-	p("Размышление выключено на всех ступенях и проверено по ответу, не по запросу.\n")
+	if leaked := reasonedCells(run); len(leaked) == 0 {
+		p("Размышление выключено на всех ступенях, и это проверено по ответу, а не по запросу.\n")
+	} else {
+		p("⚠ **Размышление отключилось не везде.** Выключение проверяется по ответу, и вот где\n")
+		p("оно не сработало: %s. Эти клетки с остальными не сравнимы — сравнивались бы\n", strings.Join(leaked, ", "))
+		p("одновременно модель и режим.\n")
+	}
 	p("Локальные ступени — блоками с прогревом, облачные — с чередованием вызовов.\n\n")
 
 	if run.crossedPeakBoundary() {
@@ -125,6 +155,7 @@ func writeReport(run gridRun, w io.Writer) {
 	}
 
 	writeLadder(run, p)
+	writeWindows(run, p)
 
 	all := family(run)
 	for _, t := range run.tasks {
@@ -147,6 +178,41 @@ func writeLadder(run gridRun, p func(string, ...any)) {
 			where = "локально, ollama"
 		}
 		p("| `%s` | %s | %s | %s | %s | %s |\n", r.id, r.tier, r.params, r.quant, r.context, where)
+	}
+	p("\n")
+}
+
+// writeWindows says when each rung was measured. The local rungs run in blocks and
+// the cloud ones interleave, so the blocks are not simultaneous — and if the run
+// crossed a rate change, this is where a reader sees which side each rung fell on.
+func writeWindows(run gridRun, p func(string, ...any)) {
+	p("## Когда что мерялось\n\n")
+	p("| Ступень | Первый вызов | Последний | Полоса тарифа |\n")
+	p("|---|---|---|---|\n")
+	for _, r := range run.rungs {
+		var first, last time.Time
+		for _, t := range run.tasks {
+			f, l := run.cell(t, r).window()
+			if !f.IsZero() && (first.IsZero() || f.Before(first)) {
+				first = f
+			}
+			if l.After(last) {
+				last = l
+			}
+		}
+		if first.IsZero() {
+			p("| `%s` | — | — | не мерялась |\n", shortID(r.id))
+			continue
+		}
+		band := "off-peak"
+		if llm.IsPeak(first) || llm.IsPeak(last) {
+			band = "затронут peak"
+		}
+		if llm.IsFree(r.id) {
+			band = "неприменима — бесплатная"
+		}
+		p("| `%s` | %s | %s | %s |\n", shortID(r.id),
+			first.UTC().Format("15:04:05")+" UTC", last.UTC().Format("15:04:05")+" UTC", band)
 	}
 	p("\n")
 }
@@ -186,6 +252,14 @@ func writeClass(run gridRun, t task, all []comparison, p func(string, ...any)) {
 	p("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range run.rungs {
 		c := run.cell(t, r)
+		if !c.measured() {
+			// Nothing came back. Printing 0% here would read identically to a rung
+			// that answered wrong thirty times, and those are different statements.
+			_, _, _, _, failed := c.counts()
+			p("| `%s` | — | **не измерено** | — | — | — | — | — | — | — | %s |\n",
+				shortID(r.id), fmt.Sprintf("провалов: %d", failed))
+			continue
+		}
 		rate, correct, usable := c.rate()
 		lo, hi := stats.Wilson(correct, usable)
 		tps, tpsN := c.tokensPerSecond(20)
@@ -204,7 +278,7 @@ func writeClass(run gridRun, t task, all []comparison, p func(string, ...any)) {
 		p("| `%s` | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %.1f | %s | %.1f | %d | %d | %s | %s | %s |\n",
 			shortID(r.id), correct, usable, rate*100, lo*100, hi*100,
 			c.medianSeconds(), secCI, c.slowest(), c.avgOutputTokens(), c.avgChars(), tpsCell,
-			money(c.costPerCall), money(c.costPerCorrect))
+			money(r.id, c.costPerCall), money(r.id, c.costPerCorrect))
 	}
 	p("\n")
 
@@ -212,15 +286,20 @@ func writeClass(run gridRun, t task, all []comparison, p func(string, ...any)) {
 	writeComparisons(t, all, p)
 }
 
-func money(f func() (float64, bool)) string {
+// money never lets "free by construction", "billed nothing" and "we do not know"
+// print the same way. A local rung genuinely costs nothing; a paid rung that came
+// back with empty usage was billed something we failed to record, and printing
+// plain "$0" for it would read as the former.
+func money(model string, f func() (float64, bool)) string {
 	v, ok := f()
-	if !ok {
-		return "—"
-	}
-	if v == 0 {
-		return "$0"
-	}
-	if v < 0.000005 {
+	switch {
+	case llm.IsFree(model):
+		return "$0 · локальная"
+	case !ok:
+		return "неизвестна"
+	case v == 0:
+		return "$0 · токены не пришли"
+	case v < 0.000005:
 		return "<$0.00001"
 	}
 	return fmt.Sprintf("$%.5f", v)
@@ -291,16 +370,16 @@ func writeSummary(run gridRun, p func(string, ...any)) {
 		if t.kind == open {
 			continue
 		}
-		rw, _, _ := run.cell(t, weak).rate()
-		rm, _, _ := run.cell(t, mid).rate()
-		rs, _, _ := run.cell(t, strong).rate()
+		rw := share(run.cell(t, weak))
+		rm := share(run.cell(t, mid))
+		rs := share(run.cell(t, strong))
 		ratio := "—"
 		cm, okM := run.cell(t, mid).costPerCorrect()
 		cs, okS := run.cell(t, strong).costPerCorrect()
 		if okM && okS && cm > 0 {
 			ratio = fmt.Sprintf("×%.1f", cs/cm)
 		}
-		p("| %s · %s | %.0f%% | %.0f%% | %.0f%% | %s |\n", t.key, t.title, rw*100, rm*100, rs*100, ratio)
+		p("| %s · %s | %s | %s | %s | %s |\n", t.key, t.title, rw, rm, rs, ratio)
 	}
 	p("\n")
 

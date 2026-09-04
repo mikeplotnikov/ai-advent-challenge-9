@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // The classes. The host allowed reusing what earlier days already tested —
@@ -202,6 +203,13 @@ func checkSchema(raw string) (bool, bool) {
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		return false, false // never produced a JSON object at all
 	}
+	// A literal "null" unmarshals into a nil map without error here, while
+	// JSON.parse gives null and the JS mirror rejects it. Without this the two
+	// implementations disagree about whether "null" counts as having produced an
+	// object — a divergence with no visible symptom until it matters.
+	if got == nil {
+		return false, false
+	}
 	if len(got) != len(schemaKeys) {
 		return false, true
 	}
@@ -221,35 +229,95 @@ func checkSchema(raw string) (bool, bool) {
 
 // --- answer extraction ------------------------------------------------------
 
-// Models decorate the line they were told to write: "**ANSWER:** 24" and
-// "ANSWER: **24**" are both common, and a strict pattern would score a correct
-// answer as no answer at all.
-var (
-	numberLine = regexp.MustCompile(`(?i)\*{0,2}ANSWER\*{0,2}\s*:\s*\*{0,2}\s*(-?\d+)`)
-	letterLine = regexp.MustCompile(`(?i)\*{0,2}ANSWER\*{0,2}\s*:\s*\*{0,2}\s*«?"?([\p{Cyrillic}])`)
+// The output rule asks for a last line that begins with ANSWER, a colon, and then
+// "только сам ответ и ничего больше". So the whole tail of that line is read and
+// then required to BE the answer — not searched for an answer inside.
+//
+// The difference is not academic. The first version captured the first number
+// after the colon, so "ANSWER: 3 + 12 + 4 = 19" scored as the wrong answer 3 on a
+// class whose truth is 19, and "ANSWER: ве" scored as a correct "в". One of those
+// deflates a weak rung's accuracy and the other inflates it, and both then travel
+// into the Fisher p-values and the Holm correction. Writing working on the answer
+// line is not an edge case for a small model — it is the behaviour this day exists
+// to measure — so it has to land in the "did not answer in the required form"
+// column, which is counted separately and never added to wrong answers.
+var answerLine = regexp.MustCompile(`(?im)\*{0,2}ANSWER\*{0,2}\s*:\s*(.*)$`)
+
+const (
+	// Decoration models wrap the answer in. Stripped because where the answer is
+	// written down says nothing about the model's ability, and a strict reading
+	// would score "**24**" as no answer at all.
+	emphasis    = "*`_"
+	quoteMarks  = "«»\"'“”„"
+	sentenceEnd = ".!?;,: "
 )
 
-// lastMatch takes the last match, not the first: a model that works out loud
-// writes intermediate ANSWER lines, and the one it ends on is what it commits to.
-func lastMatch(re *regexp.Regexp, text string) (string, bool) {
-	found := re.FindAllStringSubmatch(text, -1)
+// answerTail returns what followed the last ANSWER: on its own line, stripped of
+// decoration. The second value is false when there is no such line at all.
+//
+// The whitespace after the colon is allowed to span a line break: a model that
+// writes the answer on the next line has added layout, not content, and the rule
+// this enforces is about content. "ANSWER:" with nothing after it still fails,
+// which is what the placeholder echo from the pilot looked like once the slot
+// itself was gone.
+func answerTail(text string) (string, bool) {
+	found := answerLine.FindAllStringSubmatch(text, -1)
 	if len(found) == 0 {
 		return "", false
 	}
-	return found[len(found)-1][1], true
+	// The last one, not the first: a model that works out loud writes intermediate
+	// ANSWER lines, and the one it ends on is what it commits to.
+	tail := strings.TrimSpace(found[len(found)-1][1])
+	// Repeated until it stops changing, because decoration nests in any order:
+	// "**«19».**" needs emphasis, then a quote, then a full stop, then emphasis
+	// again. One pass leaves "19»" — a correct answer scored as no answer. It
+	// terminates because every pass either shortens the string or ends the loop.
+	for {
+		before := tail
+		tail = strings.TrimSpace(strings.Trim(tail, emphasis))
+		tail = strings.TrimSpace(strings.Trim(tail, quoteMarks))
+		tail = strings.TrimSpace(strings.TrimRight(tail, sentenceEnd))
+		if tail == before {
+			return tail, true
+		}
+	}
 }
 
-// exactCheck builds a checker that compares against a computed truth. The two
-// return values keep "wrote no ANSWER line" apart from "wrote the wrong number":
-// the weak rungs fail both ways, and merging them would hide which.
-func exactCheck(re *regexp.Regexp, truth string, fold bool) func(string) (bool, bool) {
+var wholeNumber = regexp.MustCompile(`^-?\d+$`)
+
+// numericAnswer requires the tail to be a number and nothing else.
+func numericAnswer(text string) (string, bool) {
+	tail, ok := answerTail(text)
+	if !ok || !wholeNumber.MatchString(tail) {
+		return "", false
+	}
+	return tail, true
+}
+
+// letterAnswer requires the tail to be exactly one Cyrillic letter. A Latin "o"
+// looks identical to a Cyrillic "о" and is a different letter, so the class is
+// checked rather than the shape.
+func letterAnswer(text string) (string, bool) {
+	tail, ok := answerTail(text)
+	if !ok {
+		return "", false
+	}
+	runes := []rune(tail)
+	if len(runes) != 1 || !unicode.Is(unicode.Cyrillic, runes[0]) {
+		return "", false
+	}
+	return strings.ToLower(tail), true
+}
+
+// exactCheck builds a checker that compares a parsed answer against a computed
+// truth. The two return values keep "wrote nothing in the required form" apart
+// from "wrote the wrong answer": the weak rungs fail both ways, and merging them
+// would hide which.
+func exactCheck(parse func(string) (string, bool), truth string) func(string) (bool, bool) {
 	return func(raw string) (bool, bool) {
-		got, ok := lastMatch(re, raw)
+		got, ok := parse(raw)
 		if !ok {
 			return false, false
-		}
-		if fold {
-			got = strings.ToLower(got)
 		}
 		return got == truth, true
 	}
@@ -275,7 +343,7 @@ func tasks() []task {
 			prompt:    fmt.Sprintf("Заказ: %s. Сколько всего единиц товара в заказе?", orderText()),
 			maxTokens: tokenCap,
 			truth:     total,
-			check:     exactCheck(numberLine, total, false),
+			check:     exactCheck(numericAnswer, total),
 		},
 		{
 			key: "T1", title: "Счётная задача",
@@ -289,7 +357,7 @@ func tasks() []task {
 				rangeEnd, divisibleBy, digitSumBy, forbiddenDigit),
 			maxTokens: tokenCap,
 			truth:     counting,
-			check:     exactCheck(numberLine, counting, false),
+			check:     exactCheck(numericAnswer, counting),
 		},
 		{
 			key: "T2", title: "Буквенная задача",
@@ -300,7 +368,7 @@ func tasks() []task {
 				ordinalFromEnd(letterPosition), letterWord),
 			maxTokens: tokenCap,
 			truth:     letter,
-			check:     exactCheck(letterLine, letter, true),
+			check:     exactCheck(letterAnswer, letter),
 		},
 		{
 			key: "T3", title: "Соблюдение схемы",

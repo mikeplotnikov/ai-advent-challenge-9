@@ -277,3 +277,22 @@ func TestHolmHandlesTiesAndEmptyInput(t *testing.T) {
 		t.Errorf("для пустого входа вернулось %d значений", len(got))
 	}
 }
+
+func TestHolmAcceptsWhatBonferroniWouldReject(t *testing.T) {
+	// Every earlier Holm test here passes with the threshold mutated to a flat
+	// alpha/m, which is Bonferroni — so the suite could not tell the two apart while
+	// the report claims to apply Holm.
+	//
+	// With m = 2 and alpha = 0.05, Bonferroni tests both against 0.025 and rejects
+	// 0.03. Holm tests the smaller against 0.05/2 = 0.025 and the larger against
+	// 0.05/1 = 0.05, so both survive. That gap is the whole reason to prefer it.
+	got := Holm([]float64{0.02, 0.03}, 0.05)
+	if !got[0] || !got[1] {
+		t.Fatalf("Holm отверг то, что должен принять: %v", got)
+	}
+	for i, p := range []float64{0.02, 0.03} {
+		if p > 0.05/2 && got[i] == false {
+			t.Errorf("p=%.3f отвергнут по плоскому порогу alpha/m — это Бонферрони, не Holm", p)
+		}
+	}
+}

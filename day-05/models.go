@@ -35,6 +35,10 @@ type rung struct {
 	quant   string
 	context string
 	local   bool
+	// memory is what `ollama ps` reported resident right after a live call on the
+	// owner's machine. Measured, not derived from the file size — and it is the
+	// "ресурсоёмкость" the task asks for, which a cloud model has no answer to.
+	memory string
 }
 
 // ladder is ordered weakest-first as we label it, and the labels are what the
@@ -42,32 +46,32 @@ type rung struct {
 var ladder = []rung{
 	{
 		id: "qwen3:1.7b", tier: "слабая", local: true,
-		params: "1.7B", quant: "q4_K_M", context: "40K",
+		params: "1.7B", quant: "q4_K_M", context: "40K", memory: "1.9 GB",
 		why: "самая маленькая ступень, которая ещё отвечает по делу; 1.4 ГБ на диске, $0",
 	},
 	{
 		id: "qwen3:4b", tier: "+ступень", local: true,
-		params: "4B", quant: "q4_K_M", context: "256K",
+		params: "4B", quant: "q4_K_M", context: "256K", memory: "3.2 GB",
 		why: "точка кривой «сколько даёт размер», в задании не требуется",
 	},
 	{
 		id: "qwen3:8b", tier: "+ступень", local: true,
-		params: "8B", quant: "q4_K_M", context: "40K",
+		params: "8B", quant: "q4_K_M", context: "40K", memory: "5.9 GB",
 		why: "точка кривой «сколько даёт размер», в задании не требуется",
 	},
 	{
 		id: "qwen3:14b", tier: "+ступень", local: true,
-		params: "14B", quant: "q4_K_M", context: "40K",
+		params: "14B", quant: "q4_K_M", context: "40K", memory: "9.6 GB",
 		why: "крупнейшая, влезающая в 11.8 GiB Metal на этой машине",
 	},
 	{
 		id: "deepseek-v4-flash", tier: "средняя",
-		params: "—", quant: "—", context: "1M",
+		params: "—", quant: "—", context: "1M", memory: "—",
 		why: "облако, cache-miss $0.22 / выход $0.66 за 1M off-peak",
 	},
 	{
 		id: "deepseek-v4-pro", tier: "сильная",
-		params: "—", quant: "—", context: "1M",
+		params: "—", quant: "—", context: "1M", memory: "—",
 		why: "облако, цена ×3 к flash при том же контексте",
 	},
 }

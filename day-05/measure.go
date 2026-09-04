@@ -39,6 +39,12 @@ func (c cell) n() int { return len(c.outcomes) }
 
 func (c cell) counts() (correct, unparsed, truncated, reasoned, failed int) {
 	for _, o := range c.outcomes {
+		// Counted regardless of whether the call succeeded: a run whose reasoning
+		// switch failed is not comparable even if it also failed to return an
+		// answer, and that is the case most likely to arrive as an error.
+		if o.reasoned {
+			reasoned++
+		}
 		if o.err != nil {
 			failed++
 			continue
@@ -51,9 +57,6 @@ func (c cell) counts() (correct, unparsed, truncated, reasoned, failed int) {
 		}
 		if o.truncated {
 			truncated++
-		}
-		if o.reasoned {
-			reasoned++
 		}
 	}
 	return
@@ -111,13 +114,14 @@ func (c cell) avgOutputTokens() int {
 	return sum / n
 }
 
+// cost sums what the provider charged, including calls that came back as errors.
+// A model that burned its whole budget without producing an answer was still
+// billed for it, and a dollar column that quietly dropped those would understate
+// exactly the runs that cost the most.
 func (c cell) cost() (float64, bool) {
 	total := 0.0
 	known := false
 	for _, o := range c.outcomes {
-		if o.err != nil {
-			continue
-		}
 		if v, ok := llm.CostAt(c.rung.id, o.usage, o.at); ok {
 			total += v
 			known = true
@@ -125,6 +129,11 @@ func (c cell) cost() (float64, bool) {
 	}
 	return total, known
 }
+
+// measured reports whether anything came back at all. Without it a rung whose every
+// call failed prints as 0% next to a rung that genuinely answered wrong thirty
+// times, and those are not the same statement.
+func (c cell) measured() bool { return len(c.usable()) > 0 }
 
 // runOnce sends one class to one rung a single time. Both runs go through here,
 // so the pilot that picks the classes and the grid that measures them cannot
@@ -137,11 +146,18 @@ func runOnce(ctx context.Context, client *llm.Client, t task) outcome {
 	started := time.Now()
 	answer, err := client.AskWith(ctx, messages, llm.Options{MaxTokens: t.maxTokens})
 	o := outcome{elapsed: time.Since(started), at: started, err: err}
+	// Usage and the reasoning flag are read even when the call failed. The client
+	// deliberately returns both when a model spent its whole budget reasoning and
+	// never reached an answer — which is the most likely shape of a reasoning
+	// switch that did not take, and exactly the case this day must not miss.
+	// Recording it as a bare transport failure would hide the defect and the money
+	// the provider charged for it.
+	o.usage = answer.Usage
+	o.reasoned = answer.Reasoned()
 	if err != nil {
 		return o
 	}
 	o.raw = answer.Content
-	o.usage = answer.Usage
 	o.truncated = answer.FinishReason == "length"
 	o.reasoned = answer.Reasoned()
 	if t.kind == open {
@@ -260,6 +276,8 @@ func (c cell) costPerCorrect() (float64, bool) {
 	return total / float64(correct), true
 }
 
+// costPerCall divides the whole bill by the calls that produced an answer: what a
+// reader wants is the price of getting an answer, not the price of a request.
 func (c cell) costPerCall() (float64, bool) {
 	total, known := c.cost()
 	if !known || len(c.usable()) == 0 {

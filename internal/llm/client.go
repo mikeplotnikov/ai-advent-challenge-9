@@ -125,13 +125,19 @@ func CostAt(model string, u Usage, when time.Time) (float64, bool) {
 	if IsPeak(when) {
 		rate = p.Peak
 	}
-	hit, miss := u.PromptCacheHitTokens, u.PromptCacheMissTokens
-	if hit+miss != u.PromptTokens {
-		hit, miss = 0, u.PromptTokens
+	// Negative counts are not a discount. They are a broken response, and the only
+	// safe reading of one is zero.
+	hit, miss, prompt := atLeastZero(u.PromptCacheHitTokens), atLeastZero(u.PromptCacheMissTokens), atLeastZero(u.PromptTokens)
+	if hit+miss != prompt {
+		// The split is not trustworthy, so every input token is billed at the miss
+		// rate — and "every" means the larger of the two figures. A response that
+		// reports a split but no total would otherwise price its input at nothing,
+		// which is the cheap end this branch exists to avoid.
+		hit, miss = 0, max(prompt, hit+miss)
 	}
 	return float64(hit)/1e6*rate.CacheHit +
 		float64(miss)/1e6*rate.CacheMiss +
-		float64(u.CompletionTokens)/1e6*rate.Output, true
+		float64(atLeastZero(u.CompletionTokens))/1e6*rate.Output, true
 }
 
 // Cost prices a call at the rates in force right now. Callers that recorded when
@@ -144,6 +150,13 @@ func Cost(model string, u Usage) (float64, bool) {
 
 // IsFree reports whether the model is one that costs nothing by construction,
 // so a report can print "$0, local" instead of a rounded-to-zero price.
+func atLeastZero(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 func IsFree(model string) bool {
 	p, ok := pricing[model]
 	return ok && p.Free

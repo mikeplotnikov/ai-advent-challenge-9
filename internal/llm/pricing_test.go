@@ -30,6 +30,8 @@ func TestPeakWindowsFollowTheQuotedRule(t *testing.T) {
 		{time.Date(2026, 9, 4, 4, 0, 0, 0, time.UTC), false, "04:00 читается как off-peak"},
 		{time.Date(2026, 9, 4, 5, 30, 0, 0, time.UTC), false, "пауза между окнами"},
 		{time.Date(2026, 9, 4, 6, 0, 0, 0, time.UTC), true, "начало второго окна"},
+		{time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC), true, "предпоследний час второго окна"},
+		{time.Date(2026, 9, 4, 9, 59, 0, 0, time.UTC), true, "последняя минута второго окна"},
 		{time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC), false, "10:00 читается как off-peak"},
 		{time.Date(2026, 9, 5, 7, 0, 0, 0, time.UTC), false, "суббота — выходной, окон нет"},
 		{time.Date(2026, 9, 6, 2, 0, 0, 0, time.UTC), false, "воскресенье — тоже"},
@@ -141,5 +143,115 @@ func TestZeroUsageCostsNothingButIsStillKnown(t *testing.T) {
 	got, known := CostAt("deepseek-v4-pro", Usage{}, offPeak)
 	if !known || got != 0 {
 		t.Fatalf("пустой вызов: цена %.6f, known=%v", got, known)
+	}
+}
+
+func TestPricedModelsAreNotReportedAsFree(t *testing.T) {
+	// IsFree returning ok — true for anything in the table — passes every other test
+	// in this file. Both call sites print "$0, модель локальная" on it, so a priced
+	// pro call would be published as free and the real spend would vanish from the
+	// record.
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"} {
+		if IsFree(model) {
+			t.Errorf("%s объявлена бесплатной", model)
+		}
+	}
+}
+
+func TestEveryQuotedRateIsChargedSomewhere(t *testing.T) {
+	// Each rate is exercised on its own, against the figure quoted from the
+	// provider's page. Ratio tests alone let a rate be wrong by a consistent factor
+	// in both bands and stay green — and pro's cache-hit rate was reachable only
+	// through ratios, so 0.022 could have been 0.22 with the suite passing.
+	million := func(hit, miss, out int) Usage {
+		return Usage{
+			PromptTokens:          hit + miss,
+			PromptCacheHitTokens:  hit,
+			PromptCacheMissTokens: miss,
+			CompletionTokens:      out,
+		}
+	}
+	const m = 1_000_000
+	cases := []struct {
+		model string
+		usage Usage
+		when  time.Time
+		want  float64
+		what  string
+	}{
+		{"deepseek-v4-flash", million(m, 0, 0), offPeak, 0.007, "flash, вход из кэша, off-peak"},
+		{"deepseek-v4-flash", million(m, 0, 0), onPeak, 0.014, "flash, вход из кэша, peak"},
+		{"deepseek-v4-flash", million(0, m, 0), offPeak, 0.22, "flash, вход мимо кэша, off-peak"},
+		{"deepseek-v4-flash", million(0, m, 0), onPeak, 0.44, "flash, вход мимо кэша, peak"},
+		{"deepseek-v4-flash", million(0, 0, m), offPeak, 0.66, "flash, выход, off-peak"},
+		{"deepseek-v4-flash", million(0, 0, m), onPeak, 1.32, "flash, выход, peak"},
+		{"deepseek-v4-pro", million(m, 0, 0), offPeak, 0.022, "pro, вход из кэша, off-peak"},
+		{"deepseek-v4-pro", million(m, 0, 0), onPeak, 0.044, "pro, вход из кэша, peak"},
+		{"deepseek-v4-pro", million(0, m, 0), offPeak, 0.66, "pro, вход мимо кэша, off-peak"},
+		{"deepseek-v4-pro", million(0, m, 0), onPeak, 1.32, "pro, вход мимо кэша, peak"},
+		{"deepseek-v4-pro", million(0, 0, m), offPeak, 1.98, "pro, выход, off-peak"},
+		{"deepseek-v4-pro", million(0, 0, m), onPeak, 3.96, "pro, выход, peak"},
+	}
+	for _, c := range cases {
+		got, known := CostAt(c.model, c.usage, c.when)
+		if !known || got < c.want-1e-9 || got > c.want+1e-9 {
+			t.Errorf("%s: %.6f (known=%v), ожидалось %.6f", c.what, got, known, c.want)
+		}
+	}
+}
+
+func TestUnreportedSplitIsExpensiveInBothBands(t *testing.T) {
+	// The fourth combination: no split reported, during peak. Nothing else covered
+	// it, so a refactor that picked the fallback rate before the band — the natural
+	// shape once this branch grows — would hand out a half-price discount exactly
+	// when the rates are highest.
+	u := Usage{PromptTokens: 1_000_000}
+	off, _ := CostAt("deepseek-v4-flash", u, offPeak)
+	on, _ := CostAt("deepseek-v4-flash", u, onPeak)
+	if off < 0.22-1e-9 || off > 0.22+1e-9 {
+		t.Errorf("без разбивки off-peak: %.6f, ожидалась ставка miss 0.22", off)
+	}
+	if on < 0.44-1e-9 || on > 0.44+1e-9 {
+		t.Errorf("без разбивки peak: %.6f, ожидалась ставка miss 0.44", on)
+	}
+}
+
+func TestMalformedUsageNeverBecomesADiscount(t *testing.T) {
+	// Shapes no provider has returned to us, and the direction of the mistake is the
+	// point: an input token whose classification is broken must cost the expensive
+	// rate, never nothing.
+	cases := []struct {
+		name  string
+		usage Usage
+		want  float64
+	}{
+		{
+			// The split arrived, the total did not. Resetting to PromptTokens would
+			// price 285 input tokens at zero.
+			name:  "разбивка без общего числа",
+			usage: Usage{PromptCacheHitTokens: 256, PromptCacheMissTokens: 29},
+			want:  285.0 / 1e6 * 0.22,
+		},
+		{
+			name:  "разбивка не сходится с общим числом",
+			usage: Usage{PromptTokens: 100, PromptCacheHitTokens: 40},
+			want:  100.0 / 1e6 * 0.22,
+		},
+		{
+			name:  "отрицательный вход",
+			usage: Usage{PromptTokens: -50, CompletionTokens: 10},
+			want:  10.0 / 1e6 * 0.66,
+		},
+		{
+			name:  "отрицательный выход",
+			usage: Usage{PromptTokens: 10, PromptCacheMissTokens: 10, CompletionTokens: -5},
+			want:  10.0 / 1e6 * 0.22,
+		},
+	}
+	for _, c := range cases {
+		got, known := CostAt("deepseek-v4-flash", c.usage, offPeak)
+		if !known || got < c.want-1e-12 || got > c.want+1e-12 {
+			t.Errorf("%s: %.9f (known=%v), ожидалось %.9f", c.name, got, known, c.want)
+		}
 	}
 }

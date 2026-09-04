@@ -54,10 +54,6 @@ func TestLetterFromEndCountsRunesNotBytes(t *testing.T) {
 			t.Errorf("позиция %d с конца: %q, ожидалась %q", i+1, got, string(want))
 		}
 	}
-	// Position 1 is the last letter, and the word ends in "о".
-	if got, _ := letterFromEnd("делопроизводство", 1); got != "о" {
-		t.Errorf("последняя буква = %q, ожидалась «о»", got)
-	}
 }
 
 func TestLetterFromEndRefusesPositionsOutsideTheWord(t *testing.T) {
@@ -92,55 +88,92 @@ func TestOrderTextAndTotalCannotDriftApart(t *testing.T) {
 }
 
 func TestExactCheckSeparatesNoAnswerFromWrongAnswer(t *testing.T) {
-	check := exactCheck(numberLine, "24", false)
+	check := exactCheck(numericAnswer, "19")
 	cases := []struct {
 		name            string
 		raw             string
 		correct, parsed bool
 	}{
-		{"чистый ответ", "ANSWER: 24", true, true},
-		{"жирная разметка вокруг метки", "**ANSWER:** 24", true, true},
-		{"жирная разметка вокруг числа", "ANSWER: **24**", true, true},
-		{"нижний регистр", "answer: 24", true, true},
-		{"с рассуждением до ответа", "Считаем...\nИтого\nANSWER: 24", true, true},
-		{"неверное число — форма соблюдена", "ANSWER: 25", false, true},
-		{"строки ANSWER нет вовсе", "Ответ: двадцать четыре", false, false},
+		{"чистый ответ", "ANSWER: 19", true, true},
+		{"без пробела после двоеточия", "ANSWER:19", true, true},
+		{"жирная разметка вокруг метки", "**ANSWER:** 19", true, true},
+		{"жирная разметка вокруг числа", "ANSWER: **19**", true, true},
+		{"нижний регистр метки", "answer: 19", true, true},
+		{"точка в конце", "ANSWER: 19.", true, true},
+		{"с рассуждением до ответа", "Считаем 3+12+4\nANSWER: 19", true, true},
+		{"отрицательное число", "ANSWER: -19", false, true},
+
+		// The defect this parser was rewritten for. Working on the answer line is
+		// not a wrong answer — it is a format failure, and the number inside it must
+		// not be mistaken for the answer in either direction.
+		{"выкладка на строке ответа", "ANSWER: 3 + 12 + 4 = 19", false, false},
+		{"единицы измерения после числа", "ANSWER: 19 шт.", false, false},
+		{"слово перед числом", "ANSWER: всего 19", false, false},
+		// Whitespace after the colon may span the line break: what the rule forbids
+		// is extra content on the answer line, not extra layout.
+		{"ответ на следующей строке", "ANSWER:\n19", true, true},
+		{"перевод строки, но с единицами", "ANSWER:\n19 шт.", false, false},
+
+		{"неверное число, форма соблюдена", "ANSWER: 20", false, true},
+		{"строки ANSWER нет вовсе", "Ответ: девятнадцать", false, false},
+		{"число без метки", "19", false, false},
 		{"пустой ответ", "", false, false},
-		{"число есть, метки нет", "24", false, false},
 	}
 	for _, c := range cases {
 		correct, parsed := check(c.raw)
 		if correct != c.correct || parsed != c.parsed {
-			t.Errorf("%s: получили correct=%v parsed=%v, ожидалось %v/%v",
-				c.name, correct, parsed, c.correct, c.parsed)
+			t.Errorf("%s (%q): получили correct=%v parsed=%v, ожидалось %v/%v",
+				c.name, c.raw, correct, parsed, c.correct, c.parsed)
 		}
 	}
 }
 
 func TestExactCheckTakesTheLastAnswerLine(t *testing.T) {
-	// A model that works out loud writes intermediate ANSWER lines; the one it
-	// ends on is what it commits to. Taking the first would score a corrected
-	// answer as wrong.
-	check := exactCheck(numberLine, "24", false)
+	// A model that works out loud writes intermediate ANSWER lines; the one it ends
+	// on is what it commits to. Taking the first would score a corrected answer as
+	// wrong.
+	check := exactCheck(numericAnswer, "24")
 	if correct, parsed := check("ANSWER: 25\nнет, пересчитаю\nANSWER: 24"); !correct || !parsed {
 		t.Errorf("последняя строка ANSWER не выиграла: correct=%v parsed=%v", correct, parsed)
 	}
+	// And the last line still has to obey the form: a corrected answer buried in
+	// working is a format failure, not a right answer.
+	if correct, parsed := check("ANSWER: 25\nANSWER: итого 24"); correct || parsed {
+		t.Errorf("выкладка в последней строке зачтена: correct=%v parsed=%v", correct, parsed)
+	}
 }
 
-func TestLetterCheckFoldsCaseButNotIdentity(t *testing.T) {
-	check := exactCheck(letterLine, "о", true)
-	for _, raw := range []string{"ANSWER: о", "ANSWER: О", `ANSWER: "о"`, "ANSWER: «о»"} {
-		if correct, parsed := check(raw); !correct || !parsed {
-			t.Errorf("%q: correct=%v parsed=%v", raw, correct, parsed)
+func TestLetterAnswerRequiresExactlyOneCyrillicLetter(t *testing.T) {
+	check := exactCheck(letterAnswer, "в")
+	cases := []struct {
+		name            string
+		raw             string
+		correct, parsed bool
+	}{
+		{"одна буква", "ANSWER: в", true, true},
+		{"верхний регистр", "ANSWER: В", true, true},
+		{"в кавычках", `ANSWER: "в"`, true, true},
+		{"в ёлочках", "ANSWER: «в»", true, true},
+		{"с точкой", "ANSWER: В.", true, true},
+		{"жирная", "ANSWER: **в**", true, true},
+
+		{"другая буква — форма соблюдена", "ANSWER: с", false, true},
+
+		// Two letters used to parse as the first one, so "ве" scored as a correct
+		// "в". That inflated a rung's accuracy on the class most likely to produce it.
+		{"две буквы", "ANSWER: ве", false, false},
+		{"слово перед буквой", "ANSWER: буква в", false, false},
+		{"фраза", "ANSWER: это в", false, false},
+		{"латинская o вместо кириллической", "ANSWER: o", false, false},
+		{"цифра вместо буквы", "ANSWER: 7", false, false},
+		{"пусто после метки", "ANSWER:", false, false},
+	}
+	for _, c := range cases {
+		correct, parsed := check(c.raw)
+		if correct != c.correct || parsed != c.parsed {
+			t.Errorf("%s (%q): получили correct=%v parsed=%v, ожидалось %v/%v",
+				c.name, c.raw, correct, parsed, c.correct, c.parsed)
 		}
-	}
-	if correct, parsed := check("ANSWER: с"); correct || !parsed {
-		t.Errorf("другая буква зачтена верной: correct=%v parsed=%v", correct, parsed)
-	}
-	// A Latin "o" looks identical and is a different letter. Folding case must not
-	// turn into folding alphabets.
-	if correct, _ := check("ANSWER: o"); correct {
-		t.Error("латинская «o» зачтена как кириллическая «о»")
 	}
 }
 
@@ -151,6 +184,8 @@ func TestCheckSchemaScoresShapeAndNothingElse(t *testing.T) {
 		correct, parsed bool
 	}{
 		{"ровно три поля", `{"город":"Саратов","население":901361,"страна":"Россия"}`, true, true},
+		// An absurd population still passes: there is no ground truth for the value,
+		// and checking it would smuggle an unverifiable factual claim into a hit rate.
 		{"в ограждении ```json", "```json\n{\"город\":\"Саратов\",\"население\":1,\"страна\":\"Россия\"}\n```", true, true},
 		{"в простом ограждении", "```\n{\"город\":\"С\",\"население\":1,\"страна\":\"Р\"}\n```", true, true},
 		{"с пробелами и переводами строк", "\n  {\"город\":\"С\",\"население\":1,\"страна\":\"Р\"}  \n", true, true},
@@ -169,15 +204,6 @@ func TestCheckSchemaScoresShapeAndNothingElse(t *testing.T) {
 			t.Errorf("%s: получили correct=%v parsed=%v, ожидалось %v/%v",
 				c.name, correct, parsed, c.correct, c.parsed)
 		}
-	}
-}
-
-func TestSchemaClassNeverClaimsTheValueIsRight(t *testing.T) {
-	// There is no ground truth for the population, so an answer with an absurd
-	// value must still pass the shape check. The day must not smuggle an
-	// unverifiable factual claim into a hit rate.
-	if correct, _ := checkSchema(`{"город":"Саратов","население":1,"страна":"Россия"}`); !correct {
-		t.Error("схема забракована из-за значения, которого мы не проверяем")
 	}
 }
 
@@ -265,6 +291,45 @@ func TestNoSystemPromptCarriesACopyableePlaceholder(t *testing.T) {
 				t.Errorf("%s: в запросе есть копируемая заглушка %q:\n  %s",
 					task.key, slot, task.prompt)
 			}
+		}
+	}
+}
+
+func TestAnswerTailStripsDecorationInAnyNesting(t *testing.T) {
+	// Decoration nests in whatever order the model felt like, and a single pass of
+	// trims leaves the inner layer behind: "**«19».**" came out as "19»", which the
+	// numeric check then rejected as no answer at all. That turns a correct answer
+	// into a format defect, which is the opposite of what the split is for.
+	cases := map[string]string{
+		"ANSWER: 19":         "19",
+		"ANSWER: **19**":     "19",
+		"ANSWER: «19»":       "19",
+		"ANSWER: **«19».**":  "19",
+		"ANSWER: `«19»`.":    "19",
+		"ANSWER: **«в».**":   "в",
+		"ANSWER: _19_":       "19",
+		"ANSWER: 3 + 4 = 19": "3 + 4 = 19",
+	}
+	for raw, want := range cases {
+		got, ok := answerTail(raw)
+		if !ok || got != want {
+			t.Errorf("%q -> %q (ok=%v), ожидалось %q", raw, got, ok, want)
+		}
+	}
+	if _, ok := answerTail("никакой метки"); ok {
+		t.Error("строка без ANSWER объявлена разобранной")
+	}
+}
+
+func TestSchemaCheckerRejectsALiteralNull(t *testing.T) {
+	// "null" unmarshals into a nil map without an error, so without an explicit
+	// guard it would be reported as "produced an object, wrong keys" here while the
+	// JS mirror reports "produced no object at all". The parity test cannot see a
+	// case neither side is asked about, so the case lives here too.
+	for _, raw := range []string{"null", " null ", "```json\nnull\n```"} {
+		correct, parsed := checkSchema(raw)
+		if correct || parsed {
+			t.Errorf("%q: correct=%v parsed=%v, ожидалось false/false", raw, correct, parsed)
 		}
 	}
 }
