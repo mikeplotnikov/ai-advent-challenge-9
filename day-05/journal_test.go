@@ -23,27 +23,32 @@ func tempJournal(t *testing.T, lines ...string) string {
 	return path
 }
 
-func TestJournalCountsWhatEachCellAlreadyHolds(t *testing.T) {
+func TestJournalReportsWhetherThisIsAResumedRun(t *testing.T) {
+	// The only thing openJournal has to decide is "was this run interrupted", which
+	// gates whether the journal is loaded back at all. How many calls each cell still
+	// owes is planCalls's job, from the run loadRun rebuilds — two counters over one
+	// file can disagree, and the one deciding would not be the one under test.
 	path := tempJournal(t,
 		`{"task":"T1","rung":"qwen3:1.7b","correct":true,"parsed":true}`,
-		`{"task":"T1","rung":"qwen3:1.7b","correct":false,"parsed":true}`,
 		`{"task":"T1","rung":"deepseek-v4-pro","correct":true,"parsed":true}`,
-		``, // a blank line must not count as a call
+		``, // a blank line is not a call
 	)
 	j, err := openJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer j.close()
+	if j.entries != 2 {
+		t.Errorf("учтено %d записей, ожидалось 2", j.entries)
+	}
 
-	if got := j.done("T1", "qwen3:1.7b"); got != 2 {
-		t.Errorf("в клетке T1/1.7b учтено %d вызовов, ожидалось 2", got)
+	fresh, err := openJournal(filepath.Join(t.TempDir(), "new.jsonl"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := j.done("T1", "deepseek-v4-pro"); got != 1 {
-		t.Errorf("в клетке T1/pro учтено %d, ожидалось 1", got)
-	}
-	if got := j.done("T2", "qwen3:1.7b"); got != 0 {
-		t.Errorf("в пустой клетке учтено %d, ожидалось 0", got)
+	defer fresh.close()
+	if fresh.entries != 0 {
+		t.Errorf("в новом журнале уже %d записей", fresh.entries)
 	}
 }
 
@@ -59,21 +64,6 @@ func TestJournalRefusesToStartFreshOnACorruptFile(t *testing.T) {
 		t.Fatal("битый журнал принят молча")
 	} else if !strings.Contains(err.Error(), "строка 2") {
 		t.Errorf("ошибка не называет строку: %v", err)
-	}
-}
-
-func TestJournalCreatesTheFileWhenThereIsNone(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "journal.jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	j, err := openJournal(path)
-	if err != nil {
-		t.Fatalf("новый журнал не открылся: %v", err)
-	}
-	defer j.close()
-	if got := j.done("T1", "qwen3:1.7b"); got != 0 {
-		t.Errorf("в новом журнале уже %d вызовов", got)
 	}
 }
 
@@ -100,8 +90,8 @@ func TestAppendedCallSurvivesAndIsCountedOnReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.close()
-	if got := reopened.done("T1", "qwen3:1.7b"); got != 1 {
-		t.Fatalf("после перезапуска учтено %d вызовов, ожидался 1", got)
+	if reopened.entries != 1 {
+		t.Fatalf("после перезапуска учтено %d записей, ожидалась 1", reopened.entries)
 	}
 
 	run, warnings, err := loadRun(path, tasks(), 30)

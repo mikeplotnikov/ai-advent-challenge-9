@@ -60,17 +60,77 @@ func (g gridRun) crossedPeakBoundary() bool {
 	return len(seen) > 1
 }
 
-// runGrid measures every class on every rung. Two phases, for a reason that is a
-// property of this machine rather than a preference:
+// plannedCall is one call a run still owes: which class, on which rung.
+type plannedCall struct {
+	task task
+	rung rung
+}
+
+// splitLadder groups the ladder the way the run has to execute it.
 //
-// Local rungs run in blocks, one model at a time. All four weigh 20.6 GB resident
-// against 11.8 GiB of GPU memory, so they cannot be held at once; interleaving them
-// would evict and reload weights between calls and every second measured would be
-// load time. Within a block the model stays warm.
+// Three tiers are what day 5 asks for; the extra local sizes are a curve we chose to
+// add. So the assignment finishes first — an interruption after the cloud phase leaves
+// a complete weak/medium/strong comparison, where the earlier ordering would have left
+// three local models and nothing to compare them against.
+func splitLadder() (requiredLocal, bonusLocal, cloud []rung) {
+	for _, r := range ladder {
+		switch {
+		case !r.local:
+			cloud = append(cloud, r)
+		case r.tier == "слабая":
+			requiredLocal = append(requiredLocal, r)
+		default:
+			bonusLocal = append(bonusLocal, r)
+		}
+	}
+	return
+}
+
+// planCalls is what a run still has to do, in the order it has to do it. It is the
+// whole of the resume decision, in one place and with no I/O, because that decision
+// is the reason the journal exists: a resumed run must call the remainder of each
+// cell and not redo it. It used to live as two loop conditions written two different
+// ways, which no test could reach.
 //
-// Cloud rungs interleave call by call. They have no residency to protect, and
-// blocking them would attribute any network or provider slowdown to whichever rung
+// Local rungs are planned in blocks, one model at a time: all four weigh 20.6 GB
+// resident against 11.8 GiB of GPU memory, so they cannot be held at once, and
+// interleaving them would reload weights between calls until every second measured
+// was load time. Cloud rungs interleave call by call — they have no residency to
+// protect, and blocking them would attribute a network slowdown to whichever rung
 // happened to be running through it.
+func planCalls(run gridRun, chosen []task, repeat int) []plannedCall {
+	requiredLocal, bonusLocal, cloud := splitLadder()
+
+	var plan []plannedCall
+	blocks := func(rungs []rung) {
+		for _, r := range rungs {
+			for _, t := range chosen {
+				for done := len(run.cell(t, r).outcomes); done < repeat; done++ {
+					plan = append(plan, plannedCall{task: t, rung: r})
+				}
+			}
+		}
+	}
+
+	blocks(requiredLocal)
+	for cycle := 0; cycle < repeat; cycle++ {
+		for _, t := range chosen {
+			for _, r := range cloud {
+				// One call per cycle per cell, skipping the cycles the journal already
+				// covers. A cell holding five calls joins from cycle five, which leaves
+				// exactly the remainder and keeps the interleaving intact.
+				if cycle >= len(run.cell(t, r).outcomes) {
+					plan = append(plan, plannedCall{task: t, rung: r})
+				}
+			}
+		}
+	}
+	blocks(bonusLocal)
+	return plan
+}
+
+// runGrid measures every class on every rung, or the remainder of that if a journal
+// says the run was interrupted. It walks the plan and does no deciding of its own.
 func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 	chosen, err := pickTasks(tasks(), onlyTasks)
 	if err != nil {
@@ -83,11 +143,10 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 	}
 	defer j.close()
 
-	// A journal that already holds calls is a paused run, not a fresh one. What is
-	// on disk is loaded back so the report covers the whole measurement, and only
-	// the remainder of each cell is called.
+	// A journal that already holds calls is a paused run, not a fresh one. What is on
+	// disk is loaded back so the report covers the whole measurement.
 	run := gridRun{repeat: repeat, tasks: chosen, rungs: ladder, startedAt: time.Now()}
-	if len(j.have) > 0 {
+	if j.entries > 0 {
 		loaded, warnings, err := loadRun(journalPath, chosen, repeat)
 		if err != nil {
 			return gridRun{}, err
@@ -100,120 +159,68 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 			journalPath, countOutcomes(run))
 	}
 
-	// Three tiers are the assignment; the extra local sizes are a curve we added.
-	// So the assignment finishes first: the required local rung, then the two cloud
-	// rungs, then the bonus sizes. An interruption after the first two phases leaves
-	// a complete weak/medium/strong comparison — the earlier ordering would have left
-	// three local models and nothing to compare them against.
-	var requiredLocal, bonusLocal, cloud []rung
-	for _, r := range ladder {
-		switch {
-		case !r.local:
-			cloud = append(cloud, r)
-		case r.tier == "слабая":
-			requiredLocal = append(requiredLocal, r)
-		default:
-			bonusLocal = append(bonusLocal, r)
-		}
-	}
-
+	plan := planCalls(run, chosen, repeat)
 	total := repeat * len(chosen) * len(ladder)
 	already := countOutcomes(run)
+
 	fmt.Fprintf(os.Stderr, "СЕТКА · %d прогонов на клетку · %d классов × %d ступеней = %d вызовов\n",
 		repeat, len(chosen), len(ladder), total)
-	if already > 0 {
-		fmt.Fprintf(os.Stderr, "осталось сделать %d — остальное уже в журнале\n", total-already)
-	}
 	fmt.Fprintf(os.Stderr, "порядок: обязательная тройка (слабая → облачные), затем бонусные размеры\n")
-	fmt.Fprintf(os.Stderr, "локальные блоками (модель держится в памяти), облачные с чередованием\n\n")
+	if already > 0 {
+		fmt.Fprintf(os.Stderr, "осталось сделать %d — остальное уже в журнале\n", len(plan))
+	}
+	fmt.Fprintln(os.Stderr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
 	defer cancel()
 
-	done := already
+	// Named cachedClient, not clientFor: a closure called clientFor would shadow the
+	// package function it means to wrap and call itself forever.
+	clients := map[string]*llm.Client{}
+	cachedClient := func(r rung) (*llm.Client, error) {
+		if c, ok := clients[r.id]; ok {
+			return c, nil
+		}
+		c, err := clientFor(r)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", r.id, err)
+		}
+		clients[r.id] = c
+		return c, nil
+	}
+
 	startedAt := time.Now()
-	report := func(r rung, t task) {
+	done := already
+	warmedRung := ""
+
+	for _, call := range plan {
+		client, err := cachedClient(call.rung)
+		if err != nil {
+			return run, err
+		}
+		// Warming happens once per contiguous local block, and never for a rung the
+		// plan has nothing left to call: a resumed run must not load weights for a
+		// model it will not use.
+		if call.rung.local && warmedRung != call.rung.id {
+			warm(ctx, client, call.rung)
+			warmedRung = call.rung.id
+		}
+
+		o := runOnce(ctx, client, call.task)
+		run.record(call.task, call.rung, o)
+		if err := j.append(call.task.key, call.rung.id, o); err != nil {
+			return run, fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
+		}
+
 		done++
 		elapsed := time.Since(startedAt)
 		per := elapsed / time.Duration(max(1, done-already))
 		left := (per * time.Duration(total-done)).Round(time.Minute).String()
 		fmt.Fprintf(os.Stderr, "\r%d/%d · %-18s %-3s · прошло %s · осталось ~%s      ",
-			done, total, r.id, t.key, elapsed.Round(time.Second), left)
-	}
-
-	// Local rungs run in blocks, ascending in size so the biggest model loads last
-	// and the server has already evicted the smaller ones.
-	runLocal := func(rungs []rung) error {
-		for _, r := range rungs {
-			client, err := clientFor(r)
-			if err != nil {
-				return fmt.Errorf("%s: %w", r.id, err)
-			}
-			if err := runLocalRung(ctx, client, r, chosen, repeat, &run, j, report); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	if err := runLocal(requiredLocal); err != nil {
-		return run, err
-	}
-
-	// Cloud rungs interleave call by call.
-	clients := map[string]*llm.Client{}
-	for _, r := range cloud {
-		client, err := clientFor(r)
-		if err != nil {
-			return run, fmt.Errorf("%s: %w", r.id, err)
-		}
-		clients[r.id] = client
-	}
-	for i := 0; i < repeat; i++ {
-		for _, t := range chosen {
-			for _, r := range cloud {
-				if len(run.cell(t, r).outcomes) >= repeat {
-					continue
-				}
-				o := runOnce(ctx, clients[r.id], t)
-				run.record(t, r, o)
-				if err := j.append(t.key, r.id, o); err != nil {
-					return run, fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
-				}
-				report(r, t)
-			}
-		}
-	}
-
-	// Bonus sizes last: everything the assignment requires is already measured.
-	if err := runLocal(bonusLocal); err != nil {
-		return run, err
+			done, total, call.rung.id, call.task.key, elapsed.Round(time.Second), left)
 	}
 
 	run.finishedAt = time.Now()
 	fmt.Fprintln(os.Stderr)
 	return run, nil
-}
-
-// runLocalRung measures every class on one local rung, keeping its weights resident
-// for the whole block. Warming happens only if the rung actually has calls left, so
-// a resumed run does not load a model it will not use.
-func runLocalRung(ctx context.Context, client *llm.Client, r rung, chosen []task, repeat int,
-	run *gridRun, j *journal, report func(rung, task)) error {
-	warmed := false
-	for _, t := range chosen {
-		for len(run.cell(t, r).outcomes) < repeat {
-			if !warmed {
-				warm(ctx, client, r)
-				warmed = true
-			}
-			o := runOnce(ctx, client, t)
-			run.record(t, r, o)
-			if err := j.append(t.key, r.id, o); err != nil {
-				return fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
-			}
-			report(r, t)
-		}
-	}
-	return nil
 }

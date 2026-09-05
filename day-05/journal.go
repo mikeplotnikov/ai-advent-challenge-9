@@ -39,18 +39,19 @@ type journalEntry struct {
 type journal struct {
 	path string
 	file *os.File
-	// counts how many calls each cell already holds, so a resumed run knows what is
-	// left rather than what was done.
-	have map[string]int
+	// entries is how many calls the file already held when it was opened — used only
+	// to decide whether this is a resumed run. What each cell still owes is worked
+	// out by planCalls from the run loadRun rebuilds, not counted here: two counters
+	// over the same file can disagree, and the one that decides would not be the one
+	// under test.
+	entries int
 }
-
-func cellKey(taskKey, rungID string) string { return taskKey + "\x00" + rungID }
 
 // openJournal loads whatever is already on disk and opens the file for appending.
 // A journal that cannot be parsed is a hard error, not a warning: silently starting
 // from zero is how four hours get thrown away twice.
 func openJournal(path string) (*journal, error) {
-	j := &journal{path: path, have: map[string]int{}}
+	j := &journal{path: path}
 
 	existing, err := os.Open(path)
 	switch {
@@ -68,7 +69,7 @@ func openJournal(path string) (*journal, error) {
 			if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
 				return nil, fmt.Errorf("%s, строка %d: %w", path, line, err)
 			}
-			j.have[cellKey(e.Task, e.Rung)]++
+			j.entries++
 		}
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
@@ -90,14 +91,6 @@ func (j *journal) close() error {
 		return nil
 	}
 	return j.file.Close()
-}
-
-// done reports how many calls the journal already holds for this cell.
-func (j *journal) done(taskKey, rungID string) int {
-	if j == nil {
-		return 0
-	}
-	return j.have[cellKey(taskKey, rungID)]
 }
 
 // append writes one call and flushes it. Flushing every line costs a syscall per
