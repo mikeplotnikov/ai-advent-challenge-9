@@ -100,12 +100,20 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 			journalPath, countOutcomes(run))
 	}
 
-	var local, cloud []rung
+	// Three tiers are the assignment; the extra local sizes are a curve we added.
+	// So the assignment finishes first: the required local rung, then the two cloud
+	// rungs, then the bonus sizes. An interruption after the first two phases leaves
+	// a complete weak/medium/strong comparison — the earlier ordering would have left
+	// three local models and nothing to compare them against.
+	var requiredLocal, bonusLocal, cloud []rung
 	for _, r := range ladder {
-		if r.local {
-			local = append(local, r)
-		} else {
+		switch {
+		case !r.local:
 			cloud = append(cloud, r)
+		case r.tier == "слабая":
+			requiredLocal = append(requiredLocal, r)
+		default:
+			bonusLocal = append(bonusLocal, r)
 		}
 	}
 
@@ -116,6 +124,7 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 	if already > 0 {
 		fmt.Fprintf(os.Stderr, "осталось сделать %d — остальное уже в журнале\n", total-already)
 	}
+	fmt.Fprintf(os.Stderr, "порядок: обязательная тройка (слабая → облачные), затем бонусные размеры\n")
 	fmt.Fprintf(os.Stderr, "локальные блоками (модель держится в памяти), облачные с чередованием\n\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
@@ -132,33 +141,26 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 			done, total, r.id, t.key, elapsed.Round(time.Second), left)
 	}
 
-	// Phase 1: local, blocked per rung, ascending in size so the biggest model is
-	// loaded last and the server has already evicted the smaller ones.
-	for _, r := range local {
-		client, err := clientFor(r)
-		if err != nil {
-			return run, fmt.Errorf("%s: %w", r.id, err)
-		}
-		warmed := false
-		for _, t := range chosen {
-			for len(run.cell(t, r).outcomes) < repeat {
-				// Warming is skipped entirely when a rung has nothing left to do, so
-				// resuming does not reload weights for models it will not call.
-				if !warmed {
-					warm(ctx, client, r)
-					warmed = true
-				}
-				o := runOnce(ctx, client, t)
-				run.record(t, r, o)
-				if err := j.append(t.key, r.id, o); err != nil {
-					return run, fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
-				}
-				report(r, t)
+	// Local rungs run in blocks, ascending in size so the biggest model loads last
+	// and the server has already evicted the smaller ones.
+	runLocal := func(rungs []rung) error {
+		for _, r := range rungs {
+			client, err := clientFor(r)
+			if err != nil {
+				return fmt.Errorf("%s: %w", r.id, err)
+			}
+			if err := runLocalRung(ctx, client, r, chosen, repeat, &run, j, report); err != nil {
+				return err
 			}
 		}
+		return nil
 	}
 
-	// Phase 2: cloud, interleaved.
+	if err := runLocal(requiredLocal); err != nil {
+		return run, err
+	}
+
+	// Cloud rungs interleave call by call.
 	clients := map[string]*llm.Client{}
 	for _, r := range cloud {
 		client, err := clientFor(r)
@@ -183,7 +185,35 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 		}
 	}
 
+	// Bonus sizes last: everything the assignment requires is already measured.
+	if err := runLocal(bonusLocal); err != nil {
+		return run, err
+	}
+
 	run.finishedAt = time.Now()
 	fmt.Fprintln(os.Stderr)
 	return run, nil
+}
+
+// runLocalRung measures every class on one local rung, keeping its weights resident
+// for the whole block. Warming happens only if the rung actually has calls left, so
+// a resumed run does not load a model it will not use.
+func runLocalRung(ctx context.Context, client *llm.Client, r rung, chosen []task, repeat int,
+	run *gridRun, j *journal, report func(rung, task)) error {
+	warmed := false
+	for _, t := range chosen {
+		for len(run.cell(t, r).outcomes) < repeat {
+			if !warmed {
+				warm(ctx, client, r)
+				warmed = true
+			}
+			o := runOnce(ctx, client, t)
+			run.record(t, r, o)
+			if err := j.append(t.key, r.id, o); err != nil {
+				return fmt.Errorf("журнал не записался, дальше идти нельзя: %w", err)
+			}
+			report(r, t)
+		}
+	}
+	return nil
 }
