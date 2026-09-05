@@ -465,7 +465,14 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 			}, fmt.Errorf("модель отдала только рассуждение и не дошла до ответа (finish_reason=%s)",
 				parsed.Choices[0].FinishReason)
 		}
-		return Answer{}, fmt.Errorf("модель вернула пустой текст")
+		// Same reasoning as the branch above, and it was missing here: the prompt
+		// tokens were billed whether or not anything came back. Discarding the usage
+		// would drop that charge from the report while the neighbouring case keeps it.
+		return Answer{
+			Usage:        parsed.Usage,
+			FinishReason: parsed.Choices[0].FinishReason,
+			Model:        parsed.Model,
+		}, fmt.Errorf("модель вернула пустой текст (finish_reason=%s)", parsed.Choices[0].FinishReason)
 	}
 	model := parsed.Model
 	if model == "" {

@@ -147,6 +147,9 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 	// disk is loaded back so the report covers the whole measurement.
 	run := gridRun{repeat: repeat, tasks: chosen, rungs: ladder, startedAt: time.Now()}
 	if j.entries > 0 {
+		// loadRun sets startedAt and finishedAt from the entries themselves, which is
+		// what the report has to print: when the measurement happened, not when this
+		// process started.
 		loaded, warnings, err := loadRun(journalPath, chosen, repeat)
 		if err != nil {
 			return gridRun{}, err
@@ -220,7 +223,12 @@ func runGrid(repeat int, onlyTasks, journalPath string) (gridRun, error) {
 			done, total, call.rung.id, call.task.key, elapsed.Round(time.Second), left)
 	}
 
-	run.finishedAt = time.Now()
+	// Only stamped when this invocation actually measured something. Re-running -grid
+	// against a finished journal calls nothing, and overwriting the journal-derived
+	// window with the current time would make the report claim it was measured now.
+	if len(plan) > 0 {
+		run.finishedAt = time.Now()
+	}
 	fmt.Fprintln(os.Stderr)
 	return run, nil
 }
