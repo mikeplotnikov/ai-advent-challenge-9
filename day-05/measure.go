@@ -159,7 +159,11 @@ func runOnce(ctx context.Context, client *llm.Client, t task) outcome {
 	}
 	o.raw = answer.Content
 	o.truncated = answer.FinishReason == "length"
-	o.reasoned = answer.Reasoned()
+	// Either spelling counts: a separate reasoning field, or the thinking left inside
+	// content behind a </think> tag. The second was invisible to this flag until the
+	// grid measured 88 calls of it.
+	_, thought := stripThinking(answer.Content)
+	o.reasoned = answer.Reasoned() || thought
 	if t.kind == open {
 		o.parsed = strings.TrimSpace(answer.Content) != ""
 		return o

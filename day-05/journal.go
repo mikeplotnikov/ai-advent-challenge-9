@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
@@ -158,8 +159,19 @@ func loadRun(path string, chosen []task, repeat int) (gridRun, []string, error) 
 		}
 		o := outcome{
 			at: e.At, elapsed: time.Duration(e.ElapsedMs) * time.Millisecond,
-			usage: e.Usage, correct: e.Correct, parsed: e.Parsed,
-			truncated: e.Truncated, reasoned: e.Reasoned, raw: e.Raw,
+			usage: e.Usage, truncated: e.Truncated, raw: e.Raw,
+		}
+		// The verdict is re-derived from the answer rather than read back from the
+		// file. The journal is evidence — what the model actually said — and what that
+		// says about the model is a function of the current checker. It is what let a
+		// checker fix re-score a finished four-hour run instead of requiring another
+		// one, and it means a report cannot disagree with the code that produced it.
+		_, thought := stripThinking(e.Raw)
+		o.reasoned = e.Reasoned || thought
+		if t.kind == open {
+			o.parsed = strings.TrimSpace(e.Raw) != ""
+		} else {
+			o.correct, o.parsed = t.check(e.Raw)
 		}
 		if e.Error != "" {
 			o.err = fmt.Errorf("%s", e.Error)

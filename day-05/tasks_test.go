@@ -333,3 +333,85 @@ func TestSchemaCheckerRejectsALiteralNull(t *testing.T) {
 		}
 	}
 }
+
+func TestStripThinkingSeparatesDeliberationFromTheAnswer(t *testing.T) {
+	// Shapes taken from the grid's own journal: qwen3:4b closes its thinking with
+	// </think> and never opens it — the chat template eats the opening tag.
+	cases := []struct {
+		name    string
+		raw     string
+		answer  string
+		thought bool
+	}{
+		{"чистый ответ", "ANSWER: 19", "ANSWER: 19", false},
+		{
+			name:    "рассуждение без открывающего тега, как у 4b",
+			raw:     "Хорошо, разберёмся. Три плюс двенадцать плюс четыре.\n</think>\n\n ANSWER: 19",
+			answer:  "ANSWER: 19",
+			thought: true,
+		},
+		{
+			name:    "JSON после рассуждения",
+			raw:     "Саратов в России, население примерно...\n</think>\n\n{\"город\": \"Саратов\"}",
+			answer:  `{"город": "Саратов"}`,
+			thought: true,
+		},
+		{
+			name:    "оба тега на месте",
+			raw:     "<think>думаю</think>\nANSWER: 19",
+			answer:  "ANSWER: 19",
+			thought: true,
+		},
+		{
+			name:    "открыл и не закрыл — ответа нет вовсе",
+			raw:     "<think>я всё ещё думаю и меня оборвали",
+			answer:  "",
+			thought: true,
+		},
+		{
+			name:    "несколько закрывающих — берём последний",
+			raw:     "первый круг</think>второй круг</think>ANSWER: 19",
+			answer:  "ANSWER: 19",
+			thought: true,
+		},
+	}
+	for _, c := range cases {
+		answer, thought := stripThinking(c.raw)
+		if answer != c.answer || thought != c.thought {
+			t.Errorf("%s: получили (%q, %v), ожидалось (%q, %v)",
+				c.name, answer, thought, c.answer, c.thought)
+		}
+	}
+}
+
+func TestAnAnswerAfterThinkingIsScoredOnTheAnswer(t *testing.T) {
+	// The defect this closed: the schema class scored qwen3:4b 0 of 30 while its JSON
+	// was correct every time, because prose preceded it. What is measured has to be
+	// the answer; that the thinking was there is reported separately.
+	correct, parsed := checkSchema(
+		"Саратов — город в России, население порядка миллиона.\n</think>\n\n" +
+			`{"город": "Саратов", "население": 1213000, "страна": "Россия"}`)
+	if !correct || !parsed {
+		t.Errorf("JSON после рассуждения не зачтён: correct=%v parsed=%v", correct, parsed)
+	}
+
+	check := exactCheck(numericAnswer, "19")
+	if got, gotParsed := check("Считаю: 3+12+4.\n</think>\n\nANSWER: 19"); !got || !gotParsed {
+		t.Errorf("число после рассуждения не зачтено: correct=%v parsed=%v", got, gotParsed)
+	}
+}
+
+func TestAnAnswerLineInsideTheThinkingIsNotTaken(t *testing.T) {
+	// A model reasoning out loud writes candidate ANSWER lines while it works. Cutting
+	// the deliberation off before parsing is what keeps a rehearsal from being scored
+	// as the commitment.
+	check := exactCheck(numericAnswer, "19")
+	correct, parsed := check("Может, ANSWER: 20? Нет.\n</think>\n\nANSWER: 19")
+	if !correct || !parsed {
+		t.Errorf("взят ответ из рассуждения, а не итоговый: correct=%v parsed=%v", correct, parsed)
+	}
+	// And when the thinking is all there is, there is no answer to take from it.
+	if _, gotParsed := check("<think>ANSWER: 19 наверное"); gotParsed {
+		t.Error("ответ извлечён из незакрытого рассуждения")
+	}
+}

@@ -191,7 +191,8 @@ var schemaKeys = []string{"город", "население", "страна"}
 // as one JSON object, does it carry exactly the required keys, and is the numeric
 // field actually a number rather than a string that looks like one.
 func checkSchema(raw string) (bool, bool) {
-	text := strings.TrimSpace(raw)
+	stripped, _ := stripThinking(raw)
+	text := strings.TrimSpace(stripped)
 	// A fenced block is still an answer that obeyed the schema; the fence is
 	// formatting, and stripping it is not the same as forgiving wrong keys.
 	text = strings.TrimPrefix(text, "```json")
@@ -225,6 +226,42 @@ func checkSchema(raw string) (bool, bool) {
 		}
 	}
 	return true, true
+}
+
+// --- the model thinking inside its own answer ----------------------------------
+
+// stripThinking separates a model's deliberation from its answer.
+//
+// Measured on this day's own grid: 88 of qwen3:4b's 150 calls came back with the
+// thinking inside `content`, closed by a `</think>` tag and followed by the real
+// answer. The opening tag never appears — the chat template consumes it. Every other
+// rung: zero. So `reasoning_effort: "none"` stops the reasoning being split into its
+// own field on that model without stopping the model reasoning.
+//
+// That broke two things at once. The guard built to catch "the switch did not take"
+// inspects the separate field, so it reported all 88 as reasoning-off — a false
+// negative in exactly the check meant to prevent this. And the schema class, which
+// requires the whole answer to be the JSON, scored 0 of 30 on a model whose JSON was
+// correct, because prose preceded it.
+//
+// Hence both halves: the deliberation is cut off before anything is scored, so what
+// is measured is the answer; and the fact that it was there is returned, so the
+// report can say the cell is not comparable. Stripping without saying so would hide
+// the confound the whole day is built to avoid.
+//
+// Cutting before parsing also closes a subtler hole: a model reasoning out loud can
+// write an "ANSWER:" line inside its thinking, and the parser would have taken it.
+func stripThinking(raw string) (answer string, thought bool) {
+	const closing = "</think>"
+	if i := strings.LastIndex(raw, closing); i >= 0 {
+		return strings.TrimSpace(raw[i+len(closing):]), true
+	}
+	if strings.Contains(raw, "<think>") {
+		// Opened and never closed: the model was still thinking when it ran out of
+		// budget, so there is no answer in there at all.
+		return "", true
+	}
+	return raw, false
 }
 
 // --- answer extraction ------------------------------------------------------
@@ -261,6 +298,7 @@ const (
 // which is what the placeholder echo from the pilot looked like once the slot
 // itself was gone.
 func answerTail(text string) (string, bool) {
+	text, _ = stripThinking(text)
 	found := answerLine.FindAllStringSubmatch(text, -1)
 	if len(found) == 0 {
 		return "", false
