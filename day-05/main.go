@@ -24,6 +24,8 @@ func main() {
 	journalPath := flag.String("journal", "day-05/journal.jsonl",
 		"журнал вызовов: прерванный прогон продолжается с него, а не начинается заново")
 	reportOnly := flag.Bool("report-only", false, "собрать отчёт из журнала, ничего не вызывая")
+	resultsJSON := flag.String("results-json", "",
+		"выгрузить итоги прогона в JSON по этому пути — их показывает страница витрины")
 	pilot := flag.Bool("pilot", false, "отбор классов задач: какие вообще различают ступени")
 	repeat := flag.Int("repeat", 5, "прогонов на клетку в пилоте")
 	onlyTasks := flag.String("tasks", "", "классы через запятую, например T0,T1")
@@ -66,6 +68,19 @@ func main() {
 			}
 			defer file.Close()
 			writeReport(run, file)
+		}
+		if *resultsJSON != "" {
+			file, err := os.Create(*resultsJSON)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			defer file.Close()
+			if err := writeResultsJSON(run, file); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "итоги выгружены в %s\n", *resultsJSON)
 		}
 		return
 	}
