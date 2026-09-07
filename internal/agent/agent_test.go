@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
@@ -400,4 +401,107 @@ func TestMessagesForDoesNotAliasTheStack(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The host's own operational test of "агент — отдельная сущность, а не просто один
+// вызов API", sharpened in the challenge chat on the evening of 2026-09-07 while a
+// participant defended a CLI utility that did everything procedurally:
+//
+//	[2164] «есть ли какая-то сущность которая централизованно всем этим управляет»
+//	[2165] «То есть не процедурный подход, а объектный»
+//	[2175] «Если тебе нужно будет моментально заспавнить 100 агентов с разными
+//	        конфигами у тебя это можно сделать?»
+//	[2177] «у тебя на это поднимется 100 инстансов апликухи?»
+//	[2179] «лучше чтобы инстанс был один, а уже внутри было поднято сто инстансов агента»
+//
+// So the property is: one process, one transport, a hundred agents that differ in
+// configuration and do not leak state into each other. The package was built this way
+// and passed on the first run — but "was built this way" is a claim, and this project
+// does not ship claims it has not checked. Run with -race: the failure mode this is
+// really guarding against is shared mutable state, which a sequential test would miss.
+func TestManyAgentsInOneProcessDoNotShareState(t *testing.T) {
+	const n = 100
+	shared := &countingCaller{}
+
+	agents := make([]*Agent, n)
+	for i := range agents {
+		temp := float64(i) / float64(n)
+		a, err := New(shared, Config{
+			Name:         fmt.Sprintf("агент-%d", i),
+			SystemPrompt: fmt.Sprintf("роль-%d", i),
+			Temperature:  &temp,
+			MaxTurns:     i%5 + 1,
+		})
+		if err != nil {
+			t.Fatalf("агент %d: New: %v", i, err)
+		}
+		agents[i] = a
+	}
+
+	const turnsEach = 3
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i, a := range agents {
+		wg.Add(1)
+		go func(i int, a *Agent) {
+			defer wg.Done()
+			for turn := 0; turn < turnsEach; turn++ {
+				if _, err := a.Ask(context.Background(), fmt.Sprintf("вопрос %d агенту %d", turn, i)); err != nil {
+					errs[i] = err
+					return
+				}
+			}
+		}(i, a)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("агент %d: %v", i, err)
+		}
+	}
+	if got := shared.calls(); got != n*turnsEach {
+		t.Errorf("через общий транспорт прошло %d вызовов, ожидалось %d", got, n*turnsEach)
+	}
+
+	for i, a := range agents {
+		if a.Turns() != turnsEach {
+			t.Errorf("агент %d: ходов %d, ожидалось %d", i, a.Turns(), turnsEach)
+		}
+		// Each agent's own history, not somebody else's: the system prompt names the
+		// agent, and every user message in its stack names it too.
+		want := fmt.Sprintf("роль-%d", i)
+		if a.cfg.SystemPrompt != want {
+			t.Errorf("агент %d: системный промпт %q, ожидался %q", i, a.cfg.SystemPrompt, want)
+		}
+		for j, m := range a.stack {
+			if m.Role != "user" {
+				continue
+			}
+			if !strings.HasSuffix(m.Content, fmt.Sprintf("агенту %d", i)) {
+				t.Errorf("агент %d: в стеке чужой ход на позиции %d: %q", i, j, m.Content)
+			}
+		}
+	}
+}
+
+// countingCaller is safe for concurrent use, because the agents under test are not
+// sharing it politely — they are sharing it the way a hundred spawned agents would.
+type countingCaller struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingCaller) AskWith(_ context.Context, messages []llm.Message, _ llm.Options) (llm.Answer, error) {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+	last := messages[len(messages)-1].Content
+	return llm.Answer{Content: "ответ на " + last, Model: llm.DefaultModel}, nil
+}
+
+func (c *countingCaller) calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
 }
