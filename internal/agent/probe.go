@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -115,7 +116,15 @@ func RunContextProbe(a *Agent, run string, turns int, human io.Writer, rows io.W
 	for i := 0; i < turns; i++ {
 		q := ProbeQuestions[(restored+i)%len(ProbeQuestions)]
 		reply, err := a.Ask(context.Background(), q)
-		if err != nil {
+		// A turn that was answered but not written down is not a reason to abandon
+		// a run that has already been paid for: the reply is real, the numbers it
+		// carries are the measurement, and the two other callers of Ask in this
+		// codebase treat ErrNotSaved exactly this way. Aborting here would discard
+		// the paid turn and every remaining one.
+		if errors.Is(err, ErrNotSaved) {
+			fmt.Fprintf(human, "ВНИМАНИЕ: ход %d не сохранён (%v) — замер продолжается, история неполна\n",
+				reply.Turn, err)
+		} else if err != nil {
 			return fmt.Errorf("замер, ход %d: %w", restored+i+1, err)
 		}
 		row := ProbeRow{

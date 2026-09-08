@@ -91,7 +91,21 @@ var ErrNotSaved = errors.New("ход не сохранён")
 // FileStore keeps one conversation in one JSON file.
 type FileStore struct {
 	path string
+	// lastSeen is the Updated stamp of the version this store last read or wrote.
+	// It exists because two processes on the same -session are not prevented by
+	// anything: each does its own load-modify-save, and without this the later
+	// save silently overwrites the earlier one's turn, reporting success to both.
+	// A silently dropped turn is the one outcome day 7 must not produce, so the
+	// conflict is detected and named instead. Detection, not locking: a lock would
+	// be the wrong size for a single-user CLI, and a named error is enough to keep
+	// the loss from being invisible.
+	lastSeen time.Time
+	loaded   bool
 }
+
+// ErrChangedElsewhere is returned when the file moved under the store — another
+// process wrote the same conversation between this store's last read and this write.
+var ErrChangedElsewhere = errors.New("беседа изменена другим процессом")
 
 // NewFileStore points a store at a file. Nothing is read or created until Load.
 func NewFileStore(path string) *FileStore { return &FileStore{path: path} }
@@ -151,6 +165,8 @@ func shortHash(s string) string {
 func (s *FileStore) Load() (Snapshot, error) {
 	raw, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
+		s.lastSeen = time.Time{}
+		s.loaded = true
 		return Snapshot{}, nil
 	}
 	if err != nil {
@@ -169,6 +185,8 @@ func (s *FileStore) Load() (Snapshot, error) {
 	if err := validate(snap); err != nil {
 		return Snapshot{}, fmt.Errorf("история %s: %w", s.path, err)
 	}
+	s.lastSeen = snap.Updated
+	s.loaded = true
 	return snap, nil
 }
 
@@ -217,6 +235,9 @@ func (s *FileStore) Save(snap Snapshot) error {
 	if snap.Updated.IsZero() {
 		snap.Updated = time.Now()
 	}
+	if err := s.checkUnchanged(); err != nil {
+		return err
+	}
 	body, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("история %s: %w", s.path, err)
@@ -257,6 +278,72 @@ func (s *FileStore) Save(snap Snapshot) error {
 	if err := os.Rename(tmpName, s.path); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("замена %s: %w", s.path, err)
+	}
+	s.lastSeen = snap.Updated
+	s.loaded = true
+	s.sweepOrphans()
+	return nil
+}
+
+// sweepOrphans removes temporary files an earlier run left behind. Every failure
+// branch of Save cleans up after itself, but a process killed in the millisecond
+// between CreateTemp and Rename cannot: the file stays in the sessions directory
+// forever, and nothing else in the program would ever look at it.
+//
+// Only files older than an hour are touched, which is four orders of magnitude more
+// than a live temporary file exists for — a concurrent writer's file is never at
+// risk. Errors are ignored on purpose: failing to delete an orphan is housekeeping
+// that did not happen, not a fact about the conversation, and turning it into an
+// error would fail a turn that was written correctly.
+func (s *FileStore) sweepOrphans() {
+	dir := filepath.Dir(s.path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-time.Hour)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), ".history-") || !strings.HasSuffix(e.Name(), ".tmp") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		os.Remove(filepath.Join(dir, e.Name()))
+	}
+}
+
+// checkUnchanged refuses to write over a version this store never saw. It reads only
+// the stamp, and it is not a lock: two processes writing in the same instant can
+// still both pass it. What it removes is the silent case — the one where a second
+// terminal quietly eats a turn and nobody finds out until the history is short.
+func (s *FileStore) checkUnchanged() error {
+	if !s.loaded {
+		// Nothing was read, so there is nothing to contradict: a store that writes
+		// without ever loading is being used as a plain sink, not as a conversation.
+		return nil
+	}
+	raw, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		if s.lastSeen.IsZero() {
+			return nil
+		}
+		return fmt.Errorf("история %s: %w — файл исчез", s.path, ErrChangedElsewhere)
+	}
+	if err != nil {
+		return fmt.Errorf("история %s не читается перед записью: %w", s.path, err)
+	}
+	var on Snapshot
+	if err := json.Unmarshal(raw, &on); err != nil {
+		// Something else wrote a file we cannot parse. Overwriting it would destroy
+		// whatever it is without anyone seeing it.
+		return fmt.Errorf("история %s: %w — на диске лежит что-то другое", s.path, ErrChangedElsewhere)
+	}
+	if !on.Updated.Equal(s.lastSeen) {
+		return fmt.Errorf("история %s: %w (на диске запись от %s, ожидалась от %s)",
+			s.path, ErrChangedElsewhere,
+			on.Updated.Local().Format("15:04:05.000"), s.lastSeen.Local().Format("15:04:05.000"))
 	}
 	return nil
 }

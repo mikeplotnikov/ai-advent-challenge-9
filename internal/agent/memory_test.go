@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -274,7 +275,13 @@ func TestAChangedSystemPromptIsReportedNotSwallowed(t *testing.T) {
 // A turn that was answered but could not be written down must say so. Silence here is
 // the worst failure the day has: the agent looks like it remembers, right up to the
 // restart in front of the camera.
-func TestAFailedWriteIsReportedAndKeepsThePreviousHistory(t *testing.T) {
+//
+// The failure this one produces is the FIRST one in Save: an unwritable directory
+// makes os.CreateTemp fail before anything else is attempted. The name used to say
+// "the rename cannot land", which was wrong — os.Rename does not care about the
+// destination file's permissions, and execution never got that far. The rename
+// branch has its own test below.
+func TestAFailedTempFileIsReportedAndKeepsThePreviousHistory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("права на каталог проверяются на unix")
 	}
@@ -289,7 +296,7 @@ func TestAFailedWriteIsReportedAndKeepsThePreviousHistory(t *testing.T) {
 		t.Fatalf("первый ход: %v", err)
 	}
 
-	// The directory becomes unwritable: the rename cannot land.
+	// The directory becomes unwritable: no temporary file can be created in it.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -472,5 +479,272 @@ func TestTheSnapshotRecordsWhenItWasWritten(t *testing.T) {
 	b := newAgent(t, Config{Store: store}, &fakeCaller{})
 	if b.Restored().Updated.IsZero() {
 		t.Error("Restored().Updated пуст — интерфейсу нечего показать")
+	}
+}
+
+// An unreadable history is refused, not treated as an empty one. The package promises
+// exactly this ("unreadable, malformed, from a future version — is an error"), but
+// until now only malformed files were tested: a regression that swallowed read errors
+// and started fresh passed the whole suite.
+func TestAnUnreadableHistoryIsRefusedRatherThanIgnored(t *testing.T) {
+	t.Run("путь оказался каталогом", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "session.json")
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("подготовка: %v", err)
+		}
+		store := NewFileStore(path)
+		if _, err := store.Load(); err == nil {
+			t.Fatal("Load: каталог принят за историю")
+		}
+		if _, err := New(&fakeCaller{}, Config{Store: store}); err == nil {
+			t.Fatal("New: агент поднялся, не сумев прочитать историю")
+		}
+	})
+
+	t.Run("файл без прав на чтение", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("права на файл проверяются на unix")
+		}
+		if os.Geteuid() == 0 {
+			t.Skip("root читает что угодно — контроль недействителен")
+		}
+		path := filepath.Join(t.TempDir(), "session.json")
+		if err := os.WriteFile(path, []byte(`{"version":1,"turns":0,"messages":[]}`), 0o600); err != nil {
+			t.Fatalf("подготовка: %v", err)
+		}
+		if err := os.Chmod(path, 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+		store := NewFileStore(path)
+		_, err := store.Load()
+		if err == nil {
+			t.Fatal("Load: нечитаемый файл принят за пустую историю")
+		}
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("ошибка не называет файл: %v", err)
+		}
+	})
+}
+
+// The other end of Save: the temporary file is written and the rename cannot land.
+// This is the branch that makes the write atomic, and it must clean up after itself
+// rather than leave a .history-*.tmp beside the real file.
+//
+// It goes through the store directly, not through an agent. Routing it through Ask
+// would fail earlier — the pre-write check reads the destination and gives up before
+// a temporary file is ever created — and the test would then be named after a branch
+// it never reaches. That is exactly the defect the previous version of the
+// neighbouring test had, and a mutation (dropping the cleanup) is what exposed it:
+// the test stayed green.
+func TestAFailedRenameIsReportedAndLeavesNoTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+	// A file cannot be renamed onto a directory, so the last step of Save fails
+	// while every step before it succeeds.
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	store := NewFileStore(path)
+	err := store.Save(Snapshot{
+		Turns: 1,
+		Messages: []Message{
+			{Role: RoleUser, Content: "вопрос"},
+			{Role: RoleAssistant, Content: "ответ"},
+		},
+	})
+	if err == nil {
+		t.Fatal("Save: переименование поверх каталога прошло успешно")
+	}
+	if !strings.Contains(err.Error(), "замена") {
+		t.Errorf("упала не та стадия записи: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("чтение каталога: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".history-") {
+			t.Errorf("остался временный файл %s — неудачная запись не убрала за собой", e.Name())
+		}
+	}
+	if len(entries) != 1 {
+		t.Errorf("в каталоге %d записей, ожидалась одна: %v", len(entries), entries)
+	}
+}
+
+// A store that never loaded still refuses to lose someone else's file quietly: the
+// pre-write check reads the destination, and unreadable content there is a conflict,
+// not a green light to overwrite.
+func TestAnUnreadableDestinationStopsTheWriteThroughTheAgent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+	store := NewFileStore(path)
+	a := newAgent(t, Config{Store: store}, &fakeCaller{})
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	reply, err := a.Ask(context.Background(), "вопрос")
+	if !errors.Is(err, ErrNotSaved) {
+		t.Fatalf("Ask: ожидалась ErrNotSaved, получено %v", err)
+	}
+	if reply.Text == "" {
+		t.Error("ответ потерян вместе с ошибкой записи — вызов был оплачен")
+	}
+}
+
+// Reset says the conversation is forgotten. If the store cannot forget it, the caller
+// has to hear that instead of believing a file that is still there is gone.
+func TestResetReportsAStoreThatCannotForget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+	store := NewFileStore(path)
+	a := newAgent(t, Config{Store: store}, &fakeCaller{})
+
+	// A non-empty directory cannot be removed, so Clear fails.
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "занято"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	if err := a.Reset(); err == nil {
+		t.Fatal("Reset: неудача очистки проглочена, вызвавший считает беседу забытой")
+	}
+}
+
+// Two processes on the same session are not prevented by anything, and each does its
+// own load-modify-save. Without detection the second write silently eats the first
+// one's turn and both report success. The turn is still lost — but it is named.
+func TestASecondWriterIsRefusedRatherThanSilentlyOverwriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	cfg := func() Config { return Config{SystemPrompt: "ты ассистент", Store: NewFileStore(path)} }
+
+	// Two agents, as two processes would be: both loaded the same empty history.
+	first := newAgent(t, cfg(), &fakeCaller{})
+	second := newAgent(t, cfg(), &fakeCaller{})
+
+	if _, err := first.Ask(context.Background(), "первый пишет"); err != nil {
+		t.Fatalf("первый: %v", err)
+	}
+	_, err := second.Ask(context.Background(), "второй пишет поверх")
+	if !errors.Is(err, ErrNotSaved) {
+		t.Fatalf("второй: ожидалась ErrNotSaved, получено %v", err)
+	}
+	if !errors.Is(err, ErrChangedElsewhere) {
+		t.Errorf("причина не названа как чужая запись: %v", err)
+	}
+
+	// The first writer's turn is still on disk: the refusal protected it.
+	snap, err := NewFileStore(path).Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(snap.Messages) == 0 || snap.Messages[0].Content != "первый пишет" {
+		t.Fatalf("на диске оказалось %+v", snap.Messages)
+	}
+}
+
+// The same store writing its own turns in a row must never trip the check it uses to
+// catch other writers. This is the case that breaks first if the stamp bookkeeping is
+// wrong, and it is the ordinary path — every dialogue is this.
+func TestOneStoreWritesManyTurnsWithoutTrippingTheCheck(t *testing.T) {
+	store := storeIn(t)
+	a := newAgent(t, Config{Store: store}, &fakeCaller{})
+	for i := 1; i <= 5; i++ {
+		if _, err := a.Ask(context.Background(), "вопрос"); err != nil {
+			t.Fatalf("ход %d: %v", i, err)
+		}
+	}
+	snap, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if snap.Turns != 5 {
+		t.Errorf("ходов на диске %d, ожидалось 5", snap.Turns)
+	}
+}
+
+// A process killed between the temporary file and the rename cannot clean up after
+// itself. Nothing else in the program ever looks at that directory, so without this
+// the orphans stay there forever.
+func TestOldTemporaryFilesAreSweptAndLiveOnesAreNot(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(filepath.Join(dir, "session.json"))
+
+	orphan := filepath.Join(dir, ".history-старый.tmp")
+	if err := os.WriteFile(orphan, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	old := time.Now().Add(-3 * time.Hour)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	// A temporary file of a writer that is working right now must survive.
+	live := filepath.Join(dir, ".history-живой.tmp")
+	if err := os.WriteFile(live, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	// And an ordinary file that merely looks similar must not be touched at all.
+	bystander := filepath.Join(dir, "history-заметка.txt")
+	if err := os.WriteFile(bystander, []byte("не трогать"), 0o600); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	if err := os.Chtimes(bystander, old, old); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	a := newAgent(t, Config{Store: store}, &fakeCaller{})
+	if _, err := a.Ask(context.Background(), "вопрос"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("старый временный файл не убран: %v", err)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("временный файл живого писателя удалён: %v", err)
+	}
+	if _, err := os.Stat(bystander); err != nil {
+		t.Errorf("посторонний файл удалён: %v", err)
+	}
+}
+
+// failingStore answers every write with the same failure, so a caller's behaviour
+// under a store that has stopped working can be checked without breaking a disk.
+type failingStore struct{ saves int }
+
+func (f *failingStore) Load() (Snapshot, error) { return Snapshot{}, nil }
+func (f *failingStore) Clear() error            { return nil }
+func (f *failingStore) Save(Snapshot) error {
+	f.saves++
+	return errors.New("диск кончился")
+}
+
+// The measurement must not throw away a run that has already been paid for because
+// one turn could not be written. The other two callers of Ask in this codebase print
+// a warning and go on; the probe used to abort, discarding the paid reply and every
+// remaining turn with it.
+func TestTheProbeKeepsMeasuringWhenTheStoreStopsWorking(t *testing.T) {
+	store := &failingStore{}
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент", Store: store}, &fakeCaller{})
+
+	var human, rows bytes.Buffer
+	if err := RunContextProbe(a, "тест", 4, &human, &rows); err != nil {
+		t.Fatalf("RunContextProbe: замер прерван из-за неудачной записи: %v", err)
+	}
+	if store.saves != 4 {
+		t.Errorf("попыток записи %d, ожидалось 4", store.saves)
+	}
+	if got := strings.Count(rows.String(), "\n"); got != 4 {
+		t.Errorf("строк замера %d, ожидалось 4 — числа потеряны вместе с историей", got)
+	}
+	if !strings.Contains(human.String(), "ВНИМАНИЕ") {
+		t.Errorf("неудачная запись не названа в выводе замера:\n%s", human.String())
 	}
 }
