@@ -14,8 +14,10 @@
 package e2e
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -325,4 +327,99 @@ func TestResetInTheReplDoesNotStopTheAgentFromSaving(t *testing.T) {
 		t.Errorf("в историю попал не тот ход: %s", contentsOf(sent))
 	}
 	_ = stdout
+}
+
+// Two real processes on one session file — the scenario both review waves reproduced
+// in-process, run here through the actual binaries. The unit test proves the store
+// refuses the overwrite; this proves the CLI is wired to that store and reports it.
+//
+// It is deterministic rather than racy: both processes are started and both have
+// loaded the same (empty) history before either is given a question. Only then is the
+// first one asked, and only after its answer has been read is the second one asked.
+// Nothing depends on which process is scheduled first.
+func TestTwoRealProcessesOnOneSessionDoNotSilentlyOverwrite(t *testing.T) {
+	p := &provider{answers: []string{"первый записал", "второй записал"}}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	sessions := filepath.Join(work, "sessions")
+
+	start := func(name string) (*exec.Cmd, io.WriteCloser, *bufio.Scanner) {
+		cmd := exec.Command(bin, "-store-dir", sessions, "-session", "общая")
+		cmd.Dir = work
+		cmd.Env = append(os.Environ(),
+			"DEEPSEEK_API_URL="+srv.URL,
+			"DEEPSEEK_API_KEY=e2e-фальшивый-ключ",
+			"DEEPSEEK_MODEL=deepseek-v4-flash",
+		)
+		in, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatalf("%s: stdin: %v", name, err)
+		}
+		out, err := cmd.StderrPipe()
+		if err != nil {
+			t.Fatalf("%s: stderr: %v", name, err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("%s: запуск: %v", name, err)
+		}
+		sc := bufio.NewScanner(out)
+		// Both processes read their history at startup; waiting for the line that
+		// says so is what makes the order below independent of scheduling.
+		for sc.Scan() {
+			if strings.Contains(sc.Text(), "готов") {
+				return cmd, in, sc
+			}
+		}
+		t.Fatalf("%s: процесс не дошёл до готовности", name)
+		return nil, nil, nil
+	}
+
+	// Both alive, both having loaded the same empty history.
+	firstCmd, firstIn, firstOut := start("первый")
+	secondCmd, secondIn, secondOut := start("второй")
+	t.Cleanup(func() {
+		firstIn.Close()
+		secondIn.Close()
+		firstCmd.Wait()
+		secondCmd.Wait()
+	})
+
+	waitForSpend := func(name string, sc *bufio.Scanner) string {
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.Contains(line, "[ход") || strings.Contains(line, "ВНИМАНИЕ") {
+				return line
+			}
+		}
+		t.Fatalf("%s: не дождались итога хода", name)
+		return ""
+	}
+
+	if _, err := io.WriteString(firstIn, "первый пишет\n"); err != nil {
+		t.Fatalf("первый: %v", err)
+	}
+	if line := waitForSpend("первый", firstOut); strings.Contains(line, "ВНИМАНИЕ") {
+		t.Fatalf("первый процесс не смог записать свой ход: %s", line)
+	}
+
+	if _, err := io.WriteString(secondIn, "второй пишет поверх\n"); err != nil {
+		t.Fatalf("второй: %v", err)
+	}
+	line := waitForSpend("второй", secondOut)
+	if !strings.Contains(line, "ВНИМАНИЕ") {
+		t.Fatalf("второй процесс молча затёр чужой ход: %s", line)
+	}
+
+	// And the first process's turn is still the one on disk.
+	raw, err := os.ReadFile(filepath.Join(sessions, "общая.json"))
+	if err != nil {
+		t.Fatalf("чтение истории: %v", err)
+	}
+	if !strings.Contains(string(raw), "первый пишет") {
+		t.Errorf("ход первого процесса потерян:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "второй пишет поверх") {
+		t.Errorf("ход второго процесса всё-таки затёр историю:\n%s", raw)
+	}
 }

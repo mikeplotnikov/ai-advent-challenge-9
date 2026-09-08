@@ -788,3 +788,97 @@ func TestTheAgentKeepsSavingAfterReset(t *testing.T) {
 		t.Errorf("следующий запуск поднял %d ходов, ожидалось 2", next.Turns())
 	}
 }
+
+// The other two branches of the conflict check. Both mutate to "write anyway" without
+// a single test noticing, and both are the same class of loss the check exists to
+// stop — just through a corner instead of the door.
+func TestTheConflictCheckNamesEveryWayTheFileStoppedBeingOurs(t *testing.T) {
+	t.Run("файл удалил кто-то другой", func(t *testing.T) {
+		store := storeIn(t)
+		a := newAgent(t, Config{Store: store}, &fakeCaller{})
+		if _, err := a.Ask(context.Background(), "первый"); err != nil {
+			t.Fatalf("Ask: %v", err)
+		}
+		// Not through Clear: another process ran -forget on the same session, or a
+		// person deleted the file. Writing our history back would resurrect a
+		// conversation somebody deliberately threw away.
+		if err := os.Remove(store.Path()); err != nil {
+			t.Fatalf("подготовка: %v", err)
+		}
+		_, err := a.Ask(context.Background(), "второй")
+		if !errors.Is(err, ErrChangedElsewhere) {
+			t.Fatalf("исчезнувший файл не назван: %v", err)
+		}
+		if !errors.Is(err, ErrNotSaved) {
+			t.Errorf("ошибка не пришла как несохранённый ход: %v", err)
+		}
+	})
+
+	t.Run("на месте истории оказалось не то", func(t *testing.T) {
+		store := storeIn(t)
+		a := newAgent(t, Config{Store: store}, &fakeCaller{})
+		if _, err := a.Ask(context.Background(), "первый"); err != nil {
+			t.Fatalf("Ask: %v", err)
+		}
+		if err := os.WriteFile(store.Path(), []byte("это вообще не json"), 0o600); err != nil {
+			t.Fatalf("подготовка: %v", err)
+		}
+		_, err := a.Ask(context.Background(), "второй")
+		if !errors.Is(err, ErrChangedElsewhere) {
+			t.Fatalf("чужое содержимое не названо: %v", err)
+		}
+		// And it is still there: refusing to write is what protects it.
+		raw, readErr := os.ReadFile(store.Path())
+		if readErr != nil || string(raw) != "это вообще не json" {
+			t.Errorf("чужой файл затёрт: %q, %v", raw, readErr)
+		}
+	})
+}
+
+// The sweep's cutoff is a claim about size — an hour, four orders of magnitude above
+// the life of a live temporary file. Nothing pinned that: the previous test's "live"
+// file was written milliseconds earlier, so a cutoff of one second passed it just as
+// well. A call to a cloud model takes seconds, so a shrunken cutoff would sweep a
+// working writer's file out from under it.
+func TestTheSweepLeavesAlonesFilesYoungerThanHalfAnHour(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(filepath.Join(dir, "session.json"))
+
+	slow := filepath.Join(dir, ".history-медленный.tmp")
+	if err := os.WriteFile(slow, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+	half := time.Now().Add(-30 * time.Minute)
+	if err := os.Chtimes(slow, half, half); err != nil {
+		t.Fatalf("подготовка: %v", err)
+	}
+
+	a := newAgent(t, Config{Store: store}, &fakeCaller{})
+	if _, err := a.Ask(context.Background(), "вопрос"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if _, err := os.Stat(slow); err != nil {
+		t.Errorf("файл возрастом полчаса подметён — запас до живого писателя срезан: %v", err)
+	}
+}
+
+// The probe forgives a failed WRITE and nothing else. A widened condition — forgive
+// every Ask error — leaves the whole suite green while a genuine call failure gets
+// printed as "не сохранён" and its zero-valued reply appended to the measurement as
+// a row of noise.
+func TestTheProbeStopsOnARealCallFailure(t *testing.T) {
+	f := &fakeCaller{errs: []error{errors.New("сеть отвалилась")}}
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент", Store: storeIn(t)}, f)
+
+	var human, rows bytes.Buffer
+	err := RunContextProbe(a, "тест", 3, &human, &rows)
+	if err == nil {
+		t.Fatal("RunContextProbe: настоящий сбой вызова проглочен, замер продолжился")
+	}
+	if rows.Len() != 0 {
+		t.Errorf("в замер записана строка по несостоявшемуся ходу: %s", rows.String())
+	}
+	if strings.Contains(human.String(), "не сохранён") {
+		t.Errorf("сбой вызова назван неудачной записью:\n%s", human.String())
+	}
+}
