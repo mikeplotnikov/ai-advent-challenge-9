@@ -279,3 +279,50 @@ func TestABrokenHistoryStopsTheRun(t *testing.T) {
 		t.Errorf("на битой истории агент всё равно сходил в модель %d раз", len(p.requests))
 	}
 }
+
+// converse with /reset in the middle, on the real binary. The unit test covers the
+// store's bookkeeping; this covers the path a person actually takes on camera — the
+// dialogue mode, the /reset the lesson recommends, and then a genuine restart.
+//
+// It exists because the conflict check that stopped two processes from overwriting
+// each other first mistook the agent's own /reset for someone else's write, and
+// everything typed afterwards stopped reaching disk. Nothing in the suite noticed,
+// because nothing ran a turn after a reset.
+func TestResetInTheReplDoesNotStopTheAgentFromSaving(t *testing.T) {
+	p := &provider{answers: []string{"до сброса запомнил", "после сброса запомнил", "и это тоже"}}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	sessions := filepath.Join(work, "sessions")
+
+	cmd := exec.Command(bin, "-store-dir", sessions, "-session", "repl")
+	cmd.Dir = work
+	cmd.Env = append(os.Environ(),
+		"DEEPSEEK_API_URL="+srv.URL,
+		"DEEPSEEK_API_KEY=e2e-фальшивый-ключ",
+		"DEEPSEEK_MODEL=deepseek-v4-flash",
+	)
+	cmd.Stdin = strings.NewReader("первый вопрос\n/reset\nвторой вопрос\n/exit\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("диалог: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "не сохранён") {
+		t.Fatalf("после /reset агент перестал сохранять:\n%s", out)
+	}
+
+	// A new process must see the turn made after the reset, and only that one.
+	stdout, stderr := run(t, bin, srv.URL, work,
+		"-store-dir", sessions, "-session", "repl", "что я спрашивал")
+	if !strings.Contains(stderr, "загружено ходов: 1") {
+		t.Errorf("после перезапуска поднялось не то, что писалось после сброса:\n%s", stderr)
+	}
+	sent := p.request(t, 2)
+	if len(sent) != 4 {
+		t.Fatalf("отправлено %d сообщений, ожидалось 4: %s", len(sent), contentsOf(sent))
+	}
+	if !strings.Contains(sent[1].Content, "второй вопрос") {
+		t.Errorf("в историю попал не тот ход: %s", contentsOf(sent))
+	}
+	_ = stdout
+}

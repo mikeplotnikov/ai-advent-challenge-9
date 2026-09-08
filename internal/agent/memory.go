@@ -349,10 +349,22 @@ func (s *FileStore) checkUnchanged() error {
 }
 
 // Clear forgets the conversation. A store that was never written is already clear.
+//
+// It resets the bookkeeping too, and that is not a detail: without it the store's own
+// deliberate deletion looks to checkUnchanged like another process removing the file,
+// and every write for the rest of the process is refused with a conflict that never
+// happened. In the REPL that is /reset — the lesson's "conversation recreation", the
+// technique the host calls very stupid and very effective — followed by an agent that
+// silently stops saving until it is restarted. Found by the second review wave, which
+// exists for exactly this: a fix that closes the neighbouring path instead of the real one.
 func (s *FileStore) Clear() error {
 	err := os.Remove(s.path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("удаление %s: %w", s.path, err)
 	}
+	// The file is known to be gone, which is a state this store has seen — not a
+	// version someone else wrote.
+	s.lastSeen = time.Time{}
+	s.loaded = true
 	return nil
 }

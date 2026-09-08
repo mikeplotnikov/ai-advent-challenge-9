@@ -748,3 +748,43 @@ func TestTheProbeKeepsMeasuringWhenTheStoreStopsWorking(t *testing.T) {
 		t.Errorf("неудачная запись не названа в выводе замера:\n%s", human.String())
 	}
 }
+
+// Reset, then keep talking. The conflict check added to stop two processes from
+// overwriting each other must not mistake the store's own deletion for someone else's
+// write: after /reset the agent has to go on saving, or it has quietly stopped
+// remembering in the middle of a session — the exact failure this whole day exists to
+// prevent, arriving through the fix for a different one.
+func TestTheAgentKeepsSavingAfterReset(t *testing.T) {
+	store := storeIn(t)
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент", Store: store}, &fakeCaller{})
+
+	if _, err := a.Ask(context.Background(), "до сброса"); err != nil {
+		t.Fatalf("ход до сброса: %v", err)
+	}
+	if err := a.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	for i, q := range []string{"после сброса", "и ещё один"} {
+		if _, err := a.Ask(context.Background(), q); err != nil {
+			t.Fatalf("ход %d после сброса: %v", i+1, err)
+		}
+	}
+
+	snap, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if snap.Turns != 2 || len(snap.Messages) != 4 {
+		t.Fatalf("после сброса на диске ходов %d, сообщений %d — ожидалось 2 и 4",
+			snap.Turns, len(snap.Messages))
+	}
+	if snap.Messages[0].Content != "после сброса" {
+		t.Errorf("на диске первый вопрос %q — сброс не стёр прошлое", snap.Messages[0].Content)
+	}
+
+	// And the next process picks up what was written after the reset, not before it.
+	next := newAgent(t, Config{SystemPrompt: "ты ассистент", Store: NewFileStore(store.Path())}, &fakeCaller{})
+	if next.Turns() != 2 {
+		t.Errorf("следующий запуск поднял %d ходов, ожидалось 2", next.Turns())
+	}
+}
