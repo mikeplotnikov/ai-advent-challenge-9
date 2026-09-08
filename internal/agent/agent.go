@@ -63,6 +63,13 @@ type Config struct {
 	// would go, and it is not day 6's job to pretend it is already there.
 	MaxTurns int
 
+	// Store is day 7: where the conversation lives between runs. Nil means the
+	// agent forgets everything when the process ends, which is exactly what day 6
+	// did. Set it and the agent loads its history when it is built and writes it
+	// after every completed turn — "продолжайте диалог так, как будто агент не
+	// выключался" is then a property of the agent, not of the interface around it.
+	Store Store
+
 	// Validate is the output policy: it inspects the model's text and returns an
 	// error when the answer is unusable. Nil means "any non-empty answer is fine".
 	// Day 2 learned that response_format guarantees valid JSON and not your schema;
@@ -123,6 +130,20 @@ type Agent struct {
 	// leave a stale system message buried in the history.
 	stack []llm.Message
 	turns int
+	// restored is what Load found when this agent was built, kept so the interface
+	// can say "загружено N ходов" without asking the store a second time.
+	restored Restored
+}
+
+// Restored describes the conversation the agent woke up with. Warnings are the
+// discrepancies that do not justify refusing to continue but do change what the
+// history means — a system prompt or a model that is not the one the history was
+// recorded under.
+type Restored struct {
+	Turns    int
+	Messages int
+	Updated  time.Time
+	Warnings []string
 }
 
 // New builds an agent over a transport the caller supplies. This is the injection
@@ -136,8 +157,61 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if cfg.MaxTurns < 0 {
 		return nil, fmt.Errorf("agent: MaxTurns = %d, отрицательным быть не может", cfg.MaxTurns)
 	}
-	return &Agent{cfg: cfg, client: client}, nil
+	a := &Agent{cfg: cfg, client: client}
+	if err := a.restore(); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
+
+// restore loads the stored conversation into the agent. A store that has nothing
+// saved is the ordinary first run. A store that cannot be read is a hard failure:
+// the alternative — starting empty — would silently discard a conversation that is
+// still on disk, and would do it exactly when someone restarts the agent expecting
+// it to remember.
+func (a *Agent) restore() error {
+	if a.cfg.Store == nil {
+		return nil
+	}
+	snap, err := a.cfg.Store.Load()
+	if err != nil {
+		return fmt.Errorf("%s: %w", a.Name(), err)
+	}
+	if len(snap.Messages) == 0 && snap.Turns == 0 {
+		return nil
+	}
+
+	a.stack = make([]llm.Message, 0, len(snap.Messages))
+	for _, m := range snap.Messages {
+		a.stack = append(a.stack, llm.Message{Role: m.Role, Content: m.Content})
+	}
+	a.turns = snap.Turns
+	// The window applies to loaded history too. Otherwise -max-turns would cap what
+	// this run adds while quietly sending an unbounded history from the file.
+	a.trim()
+
+	a.restored = Restored{
+		Turns:    a.turns,
+		Messages: len(a.stack),
+		Updated:  snap.Updated,
+	}
+	if snap.System != a.cfg.SystemPrompt {
+		a.restored.Warnings = append(a.restored.Warnings,
+			"системный промпт изменился с прошлого запуска — история записана под другой ролью")
+	}
+	if snap.Model != "" && a.cfg.Model != "" && snap.Model != a.cfg.Model {
+		a.restored.Warnings = append(a.restored.Warnings,
+			fmt.Sprintf("история записана на модели %s, сейчас %s", snap.Model, a.cfg.Model))
+	}
+	return nil
+}
+
+// Restored is what the agent found in its store when it was built.
+func (a *Agent) Restored() Restored { return a.restored }
+
+// Remembers reports whether this agent keeps its conversation between runs. An
+// interface uses it to say so out loud instead of leaving it to be inferred.
+func (a *Agent) Remembers() bool { return a.cfg.Store != nil }
 
 // Name is what to call this agent in an interface.
 func (a *Agent) Name() string {
@@ -153,9 +227,20 @@ func (a *Agent) Turns() int { return a.turns }
 // Reset clears the conversation. This is "conversation recreation" from the lesson —
 // the lever the host calls "очень тупая и очень эффективная техника" and recommends
 // pulling whenever the next task is genuinely a new one.
-func (a *Agent) Reset() {
+//
+// It clears the store as well: a conversation the agent has been told to forget must
+// not come back on the next start, which is the whole difference day 7 introduces.
+func (a *Agent) Reset() error {
 	a.stack = nil
 	a.turns = 0
+	a.restored = Restored{}
+	if a.cfg.Store == nil {
+		return nil
+	}
+	if err := a.cfg.Store.Clear(); err != nil {
+		return fmt.Errorf("%s: %w", a.Name(), err)
+	}
+	return nil
 }
 
 // Ask runs one exchange: input policy, assemble the stack, call the model, output
@@ -197,14 +282,47 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	a.turns++
 	a.trim()
 
-	return Reply{
+	reply := Reply{
 		Text:     text,
 		Model:    answer.Model,
 		Turn:     a.turns,
 		Elapsed:  elapsed,
 		Usage:    a.usage(answer),
 		Reasoned: answer.Reasoned(),
-	}, nil
+	}
+
+	// Persisting is part of the turn, not an afterthought at exit: a process killed
+	// between two questions must lose nothing. The reply is returned in full even
+	// when the write fails — the call happened and was billed — but the failure
+	// travels with it, because an agent that has stopped saving looks exactly like
+	// one that is saving right up until it is restarted.
+	if err := a.persist(); err != nil {
+		return reply, err
+	}
+	return reply, nil
+}
+
+// persist writes the conversation as it now stands.
+func (a *Agent) persist() error {
+	if a.cfg.Store == nil {
+		return nil
+	}
+	snap := Snapshot{
+		Version:  SnapshotVersion,
+		Agent:    a.Name(),
+		Model:    a.cfg.Model,
+		System:   a.cfg.SystemPrompt,
+		Turns:    a.turns,
+		Updated:  time.Now(),
+		Messages: make([]Message, 0, len(a.stack)),
+	}
+	for _, m := range a.stack {
+		snap.Messages = append(snap.Messages, Message{Role: m.Role, Content: m.Content})
+	}
+	if err := a.cfg.Store.Save(snap); err != nil {
+		return fmt.Errorf("%s: %w: %w", a.Name(), ErrNotSaved, err)
+	}
+	return nil
 }
 
 // messagesFor builds the stack that goes over the wire: system prompt, the kept

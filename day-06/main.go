@@ -36,6 +36,16 @@ func main() {
 		probe     = flag.Bool("reasoning-probe", false, "замер: один вопрос дважды, с выключенным и включённым рассуждением")
 		dump      = flag.Bool("dump", false, "выгрузить определения агента для сверки витрины и выйти")
 		quiet     = flag.Bool("quiet", false, "не печатать строку расхода")
+
+		// Day 7: the conversation survives the process.
+		session  = flag.String("session", "default", "имя беседы; у каждой своя история")
+		storeDir = flag.String("store-dir", ".sessions", "каталог, где лежат истории бесед")
+		noMemory = flag.Bool("no-memory", false, "не читать и не писать историю — агент дня 6, забывающий всё при выходе")
+		forget   = flag.Bool("forget", false, "забыть эту беседу перед началом")
+
+		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
+		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
+		probeOut  = flag.String("probe-rows", "day-07/context-probe-split.jsonl", "куда дописывать строки замера контекста")
 	)
 	flag.Parse()
 
@@ -65,6 +75,31 @@ func main() {
 	if *thinking {
 		cfg.Thinking = "enabled"
 	}
+	// The measurement runs under its own system prompt, and the interface does not
+	// get to choose it: week 1 measured that the provider's cache gives no discount
+	// at all on a short prefix, so a probe under the CLI's ordinary short prompt
+	// would measure prompt length and report it as a fact about restarts.
+	if *ctxProbe > 0 {
+		cfg.SystemPrompt = agent.ProbeSystemPrompt
+		if *probeSalt != "" {
+			// The mark goes FIRST. The provider caches a prefix in blocks from the
+			// start, so a mark appended at the end would leave the opening blocks
+			// identical and the cache warm — the run would measure a warm cache and
+			// call it cold.
+			cfg.SystemPrompt = "Метка прогона: " + *probeSalt + ". " + agent.ProbeSystemPrompt
+		}
+	}
+
+	// The interface picks which conversation and where it lives. It does not know
+	// what a stored conversation looks like: the format, the atomic write and the
+	// refusal to continue from a broken file are the agent's business, and this
+	// package could not parse the file if it wanted to — it may not import
+	// encoding/json at all.
+	var store *agent.FileStore
+	if !*noMemory {
+		store = agent.NewFileStore(agent.SessionPath(*storeDir, *session))
+		cfg.Store = store
+	}
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
@@ -72,15 +107,38 @@ func main() {
 		if question == "" {
 			fail(errors.New(`для замера нужен вопрос: go run ./day-06 -reasoning-probe "вопрос"`))
 		}
-		if err := runReasoningProbe(cfg, *model, question); err != nil {
+		// The reasoning probe asks the same question twice and compares. Letting the
+		// second agent see the first one's exchange would compare two different
+		// conversations and call the difference reasoning.
+		probeCfg := cfg
+		probeCfg.Store = nil
+		if err := runReasoningProbe(probeCfg, *model, question); err != nil {
 			fail(err)
 		}
 		return
 	}
 
+	if *forget {
+		if store == nil {
+			fail(errors.New("-forget и -no-memory вместе бессмысленны: забывать нечего"))
+		}
+		if err := store.Clear(); err != nil {
+			fail(err)
+		}
+		fmt.Fprintf(os.Stderr, "беседа %q забыта\n", *session)
+	}
+
 	a, err := build(cfg, *model)
 	if err != nil {
 		fail(err)
+	}
+	announceMemory(a, store)
+
+	if *ctxProbe > 0 {
+		if err := runContextProbe(a, *ctxProbe, *probeOut); err != nil {
+			fail(err)
+		}
+		return
 	}
 
 	if question != "" {
@@ -97,6 +155,17 @@ func main() {
 // askOnce is the one-shot mode: a question in, an answer out.
 func askOnce(a *agent.Agent, question string, quiet bool) error {
 	reply, err := a.Ask(context.Background(), question)
+	// A turn that was answered but not written down is not a failed turn: the answer
+	// is real and was paid for. It is a failed day 7, though, so the answer is
+	// printed and the warning is loud.
+	if errors.Is(err, agent.ErrNotSaved) {
+		fmt.Println(reply.Text)
+		fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — этот ход не переживёт перезапуск\n", err)
+		if !quiet {
+			fmt.Fprintln(os.Stderr, spend(reply))
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -107,10 +176,46 @@ func askOnce(a *agent.Agent, question string, quiet bool) error {
 	return nil
 }
 
+// announceMemory says out loud whether this run remembers anything, and what it
+// found. Day 7's demo is a claim about state on disk; leaving it to be inferred from
+// the model's answers is how a broken store passes for a working one.
+func announceMemory(a *agent.Agent, store *agent.FileStore) {
+	if store == nil {
+		fmt.Fprintln(os.Stderr, "память: выключена (-no-memory) — агент забудет всё при выходе")
+		return
+	}
+	r := a.Restored()
+	switch {
+	case r.Turns == 0:
+		fmt.Fprintf(os.Stderr, "память: %s — история пуста, начинаем с нуля\n", store.Path())
+	default:
+		fmt.Fprintf(os.Stderr, "память: %s — загружено ходов: %d, сообщений в контексте: %d, последняя запись %s\n",
+			store.Path(), r.Turns, r.Messages, r.Updated.Local().Format("02.01 15:04:05"))
+	}
+	for _, w := range r.Warnings {
+		fmt.Fprintln(os.Stderr, "ВНИМАНИЕ:", w)
+	}
+}
+
+// runContextProbe is day 7's measurement. The restart it is about is performed by
+// running this binary a second time, not simulated inside one process.
+func runContextProbe(a *agent.Agent, turns int, rowsPath string) error {
+	f, err := os.OpenFile(rowsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("файл замера %s: %w", rowsPath, err)
+	}
+	defer f.Close()
+	run := fmt.Sprintf("pid-%d", os.Getpid())
+	if err := agent.RunContextProbe(a, run, turns, os.Stdout, f); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 // converse is the dialogue mode. It exists because the agent carries the message
 // stack itself: without more than one turn, that would be an untested claim.
 func converse(a *agent.Agent, quiet bool) error {
-	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново, /stack — сколько ходов в контексте, /exit — выход.\n",
+	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново и стереть сохранённое, /stack — сколько ходов в контексте, /exit — выход.\n",
 		a.Name())
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -125,16 +230,21 @@ func converse(a *agent.Agent, quiet bool) error {
 			continue
 		case "/exit", "/quit":
 			return nil
-		case "/reset":
-			a.Reset()
-			fmt.Fprintln(os.Stderr, "контекст очищен")
+		case "/reset", "/forget":
+			if err := a.Reset(); err != nil {
+				fmt.Fprintln(os.Stderr, "ошибка:", err)
+				continue
+			}
+			fmt.Fprintln(os.Stderr, "контекст очищен, сохранённая история удалена")
 			continue
 		case "/stack":
 			fmt.Fprintf(os.Stderr, "ходов в контексте: %d\n", a.Turns())
 			continue
 		}
 		reply, err := a.Ask(context.Background(), line)
-		if err != nil {
+		if errors.Is(err, agent.ErrNotSaved) {
+			fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — этот ход не переживёт перезапуск\n", err)
+		} else if err != nil {
 			// A failed turn is reported and the conversation goes on: the agent
 			// guarantees the stack was left untouched.
 			fmt.Fprintln(os.Stderr, "ошибка:", err)

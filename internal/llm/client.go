@@ -274,10 +274,19 @@ func NewWithKeyEnv(preferred string) (*Client, error) {
 	if model == "" {
 		model = DefaultModel
 	}
+	// DEEPSEEK_API_URL redirects the transport at a different endpoint. It exists for
+	// day 7: proving that a restarted process reloads its conversation means running
+	// the real binary twice and reading what it sent, and the only alternatives were
+	// paying the provider on every `go test` or testing something other than the
+	// binary. Unset — which is every real run — it changes nothing.
+	url := os.Getenv("DEEPSEEK_API_URL")
+	if url == "" {
+		url = DefaultURL
+	}
 	return &Client{
 		APIKey:    key,
 		Model:     model,
-		URL:       DefaultURL,
+		URL:       url,
 		MaxTokens: 1500,
 		HTTP:      &http.Client{Timeout: 120 * time.Second},
 	}, nil

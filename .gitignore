@@ -11,3 +11,6 @@
 
 # macOS
 .DS_Store
+
+# Day 7: saved conversations are the owner's text, not repository content
+/.sessions/
