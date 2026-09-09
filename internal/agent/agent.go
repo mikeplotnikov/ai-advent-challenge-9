@@ -63,6 +63,21 @@ type Config struct {
 	// would go, and it is not day 6's job to pretend it is already there.
 	MaxTurns int
 
+	// MaxContextTokens is day 8: the agent's own ceiling on what one request may
+	// weigh, in tokens, measured by the local estimator before the call. 0 means no
+	// ceiling of ours — the provider's window is then the only limit, and the
+	// provider is the one who says no.
+	//
+	// It is deliberately not preset to the model's window. That window is a fact
+	// about the provider (1M for both v4 models, per its pricing page), while this
+	// is a policy of ours, and conflating the two would hide which of them refused.
+	MaxContextTokens int
+	// OnOverflow is what to do when the estimate exceeds MaxContextTokens: refuse,
+	// trim the oldest exchanges, or send anyway with a warning. Empty means refuse.
+	// It has no meaning without a ceiling, and New rejects it without one rather
+	// than letting a configured policy sit there doing nothing.
+	OnOverflow OverflowPolicy
+
 	// Store is day 7: where the conversation lives between runs. Nil means the
 	// agent forgets everything when the process ends, which is exactly what day 6
 	// did. Set it and the agent loads its history when it is built and writes it
@@ -86,6 +101,23 @@ type Reply struct {
 	Elapsed  time.Duration
 	Usage    Usage
 	Reasoned bool
+
+	// Estimated is what the agent thought this request would weigh before sending
+	// it. Kept next to Usage on purpose: the pair is the measurement of the local
+	// counter, and every turn produces one for free.
+	Estimated Estimate
+	// Dropped is how many oldest exchanges the ceiling policy removed from the
+	// conversation to make this request fit. Non-zero means the agent forgot
+	// something in order to answer, which is a fact the interface must not hide.
+	Dropped int
+	// Warning is the ceiling policy speaking: history was trimmed, or an over-sized
+	// request was sent anyway. Empty on an ordinary turn.
+	Warning string
+	// Truncated reports that the model stopped because it ran into the generation
+	// cap rather than because it had finished — finish_reason "length". The answer
+	// is then a fragment, and day 2's lesson applies: what a truncated JSON object
+	// breaks is the parser, not the API call.
+	Truncated bool
 }
 
 // Usage is the agent's own token accounting, cache split included: the difference
@@ -97,6 +129,9 @@ type Usage struct {
 	TotalTokens      int
 	CachedTokens     int
 	MissedTokens     int
+	// ReasoningTokens are billed as output while never appearing in the answer. A
+	// report that leaves them out understates what a reasoning model costs.
+	ReasoningTokens int
 	// Cost is in dollars, priced at the moment of the call: the provider's rates
 	// double during peak hours, so a price computed later is a different number.
 	Cost float64
@@ -133,6 +168,10 @@ type Agent struct {
 	// restored is what Load found when this agent was built, kept so the interface
 	// can say "загружено N ходов" without asking the store a second time.
 	restored Restored
+	// totals is what this conversation has been billed, across restarts. It is the
+	// agent's, not the interface's: a total kept by whoever happens to be printing
+	// it would reset every time the process does, and day 7 made restarts routine.
+	totals Totals
 }
 
 // Restored describes the conversation the agent woke up with. Warnings are the
@@ -156,6 +195,19 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	}
 	if cfg.MaxTurns < 0 {
 		return nil, fmt.Errorf("agent: MaxTurns = %d, отрицательным быть не может", cfg.MaxTurns)
+	}
+	if cfg.MaxContextTokens < 0 {
+		return nil, fmt.Errorf("agent: MaxContextTokens = %d, отрицательным быть не может", cfg.MaxContextTokens)
+	}
+	switch cfg.OnOverflow {
+	case "", OverflowRefuse, OverflowTrim, OverflowWarn:
+	default:
+		return nil, fmt.Errorf("agent: OnOverflow = %q, допустимы %q, %q и %q",
+			cfg.OnOverflow, OverflowRefuse, OverflowTrim, OverflowWarn)
+	}
+	if cfg.OnOverflow != "" && cfg.MaxContextTokens == 0 {
+		return nil, fmt.Errorf("agent: OnOverflow = %q без MaxContextTokens — политика без потолка никогда не сработает",
+			cfg.OnOverflow)
 	}
 	a := &Agent{cfg: cfg, client: client}
 	if err := a.restore(); err != nil {
@@ -186,6 +238,7 @@ func (a *Agent) restore() error {
 		a.stack = append(a.stack, llm.Message{Role: m.Role, Content: m.Content})
 	}
 	a.turns = snap.Turns
+	a.totals = snap.Spend
 	// The window applies to loaded history too. Otherwise -max-turns would cap what
 	// this run adds while quietly sending an unbounded history from the file.
 	a.trim()
@@ -234,6 +287,9 @@ func (a *Agent) Reset() error {
 	a.stack = nil
 	a.turns = 0
 	a.restored = Restored{}
+	// The spend goes with the conversation it belongs to. Keeping it would report
+	// what a previous conversation cost as the cost of this one.
+	a.totals = Totals{}
 	if a.cfg.Store == nil {
 		return nil
 	}
@@ -243,35 +299,64 @@ func (a *Agent) Reset() error {
 	return nil
 }
 
-// Ask runs one exchange: input policy, assemble the stack, call the model, output
-// policy, and only then commit the turn to the conversation.
+// Ask runs one exchange: input policy, the context ceiling, assemble the stack, call
+// the model, output policy, and only then commit the turn to the conversation.
 func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return Reply{}, ErrEmptyInput
 	}
 
-	messages := a.messagesFor(input)
+	// Day 8: the ceiling is checked before the call, because after the call the
+	// money is already spent. A refusal here costs nothing at all.
+	send, dropped, warning, est, err := a.fit(input)
+	if err != nil {
+		return Reply{Estimated: est}, err
+	}
+
+	messages := a.messagesWith(send, input)
 
 	started := time.Now()
 	answer, err := a.client.AskWith(ctx, messages, a.options())
 	elapsed := time.Since(started)
+	usage := a.usage(answer)
+	truncated := answer.FinishReason == finishLength
+	base := Reply{
+		Model:     answer.Model,
+		Elapsed:   elapsed,
+		Usage:     usage,
+		Estimated: est,
+		Warning:   warning,
+		Truncated: truncated,
+	}
 	if err != nil {
-		return Reply{}, fmt.Errorf("%s: вызов модели не удался: %w", a.Name(), err)
+		// A failed call can still have been billed — a request the provider refused,
+		// an answer that never arrived. Whatever it reported is recorded rather than
+		// dropped: a conversation's total that omits its failures under-reports the
+		// spend exactly where the day is about spend.
+		a.record(usage, true)
+		return base, fmt.Errorf("%s: вызов модели не удался: %w", a.Name(), err)
 	}
 
 	text := strings.TrimSpace(answer.Content)
 	if text == "" {
 		// The call was still billed, so the caller is told what it cost even though
 		// the exchange failed.
-		return Reply{Usage: a.usage(answer), Elapsed: elapsed, Model: answer.Model}, ErrEmptyAnswer
+		a.record(usage, true)
+		return base, ErrEmptyAnswer
 	}
 	if a.cfg.Validate != nil {
 		if err := a.cfg.Validate(text); err != nil {
-			return Reply{Usage: a.usage(answer), Elapsed: elapsed, Model: answer.Model},
-				fmt.Errorf("%s: ответ не прошёл проверку: %w", a.Name(), err)
+			a.record(usage, true)
+			return base, fmt.Errorf("%s: ответ не прошёл проверку: %w", a.Name(), err)
 		}
 	}
+	a.record(usage, false)
+
+	// The trim decided by the ceiling takes effect only now, together with the turn
+	// that needed it: history dropped for a call that then failed would be history
+	// lost for nothing.
+	a.stack = send
 
 	// The turn joins the conversation only once it is known to be usable: a rejected
 	// answer must not poison the next request's context.
@@ -282,14 +367,11 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	a.turns++
 	a.trim()
 
-	reply := Reply{
-		Text:     text,
-		Model:    answer.Model,
-		Turn:     a.turns,
-		Elapsed:  elapsed,
-		Usage:    a.usage(answer),
-		Reasoned: answer.Reasoned(),
-	}
+	reply := base
+	reply.Text = text
+	reply.Turn = a.turns
+	reply.Dropped = dropped
+	reply.Reasoned = answer.Reasoned()
 
 	// Persisting is part of the turn, not an afterthought at exit: a process killed
 	// between two questions must lose nothing. The reply is returned in full even
@@ -301,6 +383,11 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	}
 	return reply, nil
 }
+
+// finishLength is the provider's word for "stopped because it ran out of room",
+// as opposed to "stopped because it was done". It stays inside this package: the
+// interface is told Truncated, not a transport's vocabulary.
+const finishLength = "length"
 
 // persist writes the conversation as it now stands.
 func (a *Agent) persist() error {
@@ -314,6 +401,7 @@ func (a *Agent) persist() error {
 		System:   a.cfg.SystemPrompt,
 		Turns:    a.turns,
 		Updated:  time.Now(),
+		Spend:    a.totals,
 		Messages: make([]Message, 0, len(a.stack)),
 	}
 	for _, m := range a.stack {
@@ -329,11 +417,17 @@ func (a *Agent) persist() error {
 // history, then the new input. Returned fresh each time so a caller holding an
 // earlier slice cannot observe it change underneath.
 func (a *Agent) messagesFor(input string) []llm.Message {
-	out := make([]llm.Message, 0, len(a.stack)+2)
+	return a.messagesWith(a.stack, input)
+}
+
+// messagesWith is messagesFor over a stack the caller chose — the ceiling policy
+// sends a trimmed one without the agent having committed to the trim yet.
+func (a *Agent) messagesWith(stack []llm.Message, input string) []llm.Message {
+	out := make([]llm.Message, 0, len(stack)+2)
 	if a.cfg.SystemPrompt != "" {
 		out = append(out, llm.Message{Role: "system", Content: a.cfg.SystemPrompt})
 	}
-	out = append(out, a.stack...)
+	out = append(out, stack...)
 	return append(out, llm.Message{Role: "user", Content: input})
 }
 
@@ -368,6 +462,7 @@ func (a *Agent) usage(answer llm.Answer) Usage {
 		TotalTokens:      answer.Usage.TotalTokens,
 		CachedTokens:     answer.Usage.PromptCacheHitTokens,
 		MissedTokens:     answer.Usage.PromptCacheMissTokens,
+		ReasoningTokens:  answer.Usage.CompletionDetails.ReasoningTokens,
 	}
 	model := answer.Model
 	if model == "" {

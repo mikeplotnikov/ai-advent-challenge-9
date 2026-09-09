@@ -65,11 +65,36 @@ type DumpedCost struct {
 	Priced                bool    `json:"priced"`
 }
 
+// DumpedCount is one string and what the local counter makes of it. Day 8: the
+// showcase lets a visitor type text and see the weight of the request, and a mirror
+// that counts differently from the agent would show a number the agent never used.
+//
+// As with the cost cases, the samples are the ones where two implementations can
+// quietly disagree rather than the ones that are obviously right: an emoji outside
+// the basic plane (JS strings are UTF-16, Go strings are bytes, and only iteration
+// by code point makes them agree), a combining accent, a tab and a newline, digits,
+// and text that mixes scripts inside one word.
+type DumpedCount struct {
+	Case   string `json:"case"`
+	Text   string `json:"text"`
+	Tokens int    `json:"tokens"`
+}
+
+// DumpedCounter is the whole contract of the local counter: the weights, the chat
+// format's overhead, and worked examples.
+type DumpedCounter struct {
+	Weights    map[string]float64 `json:"weights"`
+	PerMessage int                `json:"perMessage"`
+	PerReply   int                `json:"perReply"`
+	Samples    []DumpedCount      `json:"samples"`
+}
+
 // Definitions is everything the JS mirror has to agree with.
 type Definitions struct {
 	DefaultSystem string        `json:"defaultSystem"`
 	Stacks        []DumpedStack `json:"stacks"`
 	Costs         []DumpedCost  `json:"costs"`
+	Counter       DumpedCounter `json:"counter"`
 	Rules         []string      `json:"rules"`
 }
 
@@ -142,7 +167,41 @@ func BuildDefinitions(defaultSystem string) (Definitions, error) {
 	}
 
 	defs.Costs = buildCosts()
+	defs.Counter = buildCounter()
 	return defs, nil
+}
+
+func buildCounter() DumpedCounter {
+	samples := []struct{ name, text string }{
+		{"пусто", ""},
+		{"одно русское слово", "контекст"},
+		{"одно английское слово", "context"},
+		{"цифры", "1048576"},
+		{"пробел, таб и перевод строки", " \t\n"},
+		{"знаки препинания", "«…»?!"},
+		{"эмодзи вне основной плоскости", "🔥🧮"},
+		// Written as escapes on purpose: the same letter precomposed (U+0439) and
+		// assembled from и plus a combining breve. A source file holding both as
+		// literals would normalise them into one and test nothing.
+		{"буква слитно и через комбинирующий знак", "\u0439 \u0438\u0306"},
+		{"смешанные буквы внутри слова", "GPT-модель"},
+		{"фраза целиком", "Сколько токенов весит этот запрос?"},
+	}
+	out := DumpedCounter{
+		Weights: map[string]float64{
+			"cyrillic": weightCyrillic,
+			"latin":    weightLatin,
+			"digit":    weightDigit,
+			"space":    weightSpace,
+			"other":    weightOther,
+		},
+		PerMessage: tokensPerMessage,
+		PerReply:   tokensPerReply,
+	}
+	for _, s := range samples {
+		out.Samples = append(out.Samples, DumpedCount{Case: s.name, Text: s.text, Tokens: EstimateTokens(s.text)})
+	}
+	return out
 }
 
 // offPeak and peak are a weekday noon and a weekday 02:00 UTC. Every rate doubles in

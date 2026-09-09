@@ -50,7 +50,12 @@ const (
 // SnapshotVersion is the format of what gets written. It is stored so that a future
 // change is detected rather than silently misread: a file from a newer version is
 // refused, not parsed on a guess.
-const SnapshotVersion = 1
+//
+// Version 2 added Spend — what the conversation has been billed. Version 1 files are
+// still read: an older conversation has no recorded spend, which is exactly what a
+// zero Spend means, and refusing to continue a real conversation over a field that
+// did not exist when it was written would be the format serving itself.
+const SnapshotVersion = 2
 
 // Snapshot is the conversation as it is written down. Messages are the whole of what
 // the task asks to store; the rest is what restoring needs in order not to lie.
@@ -65,8 +70,14 @@ type Snapshot struct {
 	// Turns is how many exchanges the agent has completed in total. It is not
 	// len(Messages)/2: a window (MaxTurns) drops old exchanges from the stack while
 	// the count of what happened stays what it was.
-	Turns    int       `json:"turns"`
-	Updated  time.Time `json:"updated"`
+	Turns   int       `json:"turns"`
+	Updated time.Time `json:"updated"`
+	// Spend is what this conversation has cost so far, carried across restarts.
+	// Day 8: the running total is a property of the conversation, not of the process
+	// that happens to be holding it — a process restarted twice a day would
+	// otherwise report the third of the bill it can still see. Absent in version-1
+	// files, where its zero value is the truthful answer: nothing was recorded.
+	Spend    Totals    `json:"spend,omitempty"`
 	Messages []Message `json:"messages"`
 }
 
@@ -222,6 +233,40 @@ func validate(snap Snapshot) error {
 	}
 	if snap.Turns < len(snap.Messages)/2 {
 		return fmt.Errorf("ходов записано %d, а сообщений на %d обменов", snap.Turns, len(snap.Messages)/2)
+	}
+	if err := validateSpend(snap.Spend); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSpend refuses a recorded total that cannot have happened. A negative token
+// count or more failures than calls means the file was edited or written by something
+// else, and continuing from it would put a fabricated number into every report the
+// conversation produces from here on.
+func validateSpend(t Totals) error {
+	for _, f := range []struct {
+		name  string
+		value int
+	}{
+		{"вызовов", t.Calls},
+		{"неудачных вызовов", t.Failed},
+		{"входных токенов", t.PromptTokens},
+		{"выходных токенов", t.CompletionTokens},
+		{"токенов рассуждения", t.ReasoningTokens},
+		{"токенов из кэша", t.CachedTokens},
+		{"токенов мимо кэша", t.MissedTokens},
+		{"вызовов по неизвестной цене", t.Unpriced},
+	} {
+		if f.value < 0 {
+			return fmt.Errorf("в записанном расходе %s: %d — отрицательным быть не может", f.name, f.value)
+		}
+	}
+	if t.Failed > t.Calls {
+		return fmt.Errorf("в записанном расходе неудачных вызовов %d при %d вызовах всего", t.Failed, t.Calls)
+	}
+	if t.Cost < 0 {
+		return fmt.Errorf("в записанном расходе цена %f — отрицательной быть не может", t.Cost)
 	}
 	return nil
 }

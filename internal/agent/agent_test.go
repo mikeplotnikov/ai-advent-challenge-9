@@ -32,7 +32,15 @@ func (f *fakeCaller) AskWith(_ context.Context, messages []llm.Message, opts llm
 	i := f.calls
 	f.calls++
 	if i < len(f.errs) && f.errs[i] != nil {
-		return llm.Answer{}, f.errs[i]
+		// A failed call may still have been billed, and the real client returns the
+		// usage alongside the error for exactly that case. A fake that always
+		// returned a zero Answer here could not reproduce it, so a scripted answer
+		// at the same index travels with the error.
+		var billed llm.Answer
+		if i < len(f.answers) {
+			billed = f.answers[i]
+		}
+		return billed, f.errs[i]
 	}
 	if i < len(f.answers) {
 		return f.answers[i], nil

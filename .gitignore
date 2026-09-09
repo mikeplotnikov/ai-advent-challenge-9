@@ -17,3 +17,6 @@
 
 # Day 7 demo binary, built by day-07/demo.sh
 /day06
+
+# Day 8: the provider account balance is the owner's, not repository content
+/day-08/balance-*.json

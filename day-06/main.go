@@ -12,6 +12,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +45,16 @@ func main() {
 		noMemory = flag.Bool("no-memory", false, "не читать и не писать историю — агент дня 6, забывающий всё при выходе")
 		forget   = flag.Bool("forget", false, "забыть эту беседу перед началом")
 
+		// Day 8: tokens as a resource with a price and a ceiling.
+		maxContext = flag.Int("max-context", 0, "потолок контекста агента в токенах по локальной оценке; 0 — без потолка")
+		onOverflow = flag.String("on-overflow", "", "что делать при превышении потолка: refuse, trim, warn (по умолчанию refuse)")
+		showTokens = flag.Bool("tokens", false, "печатать предполётную оценку запроса и накопленный расход беседы")
+		totalsOnly = flag.Bool("totals", false, "напечатать расход беседы и выйти, ничего не спрашивая у модели")
+		tokenProbe = flag.String("token-probe", "", "замер дня 8: growth, window, ceiling или output")
+		probeTurns = flag.Int("probe-turns", 12, "ходов в замерах growth и ceiling")
+		windowSize = flag.String("window-sizes", "50000,1200000", "ступени замера окна в токенах, через запятую: сначала контроль, затем за пределом")
+		tokenRows  = flag.String("token-rows", "", "куда дописывать строки замера дня 8; по умолчанию day-08/<замер>.jsonl")
+
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
 		probeOut  = flag.String("probe-rows", "day-07/context-probe-split.jsonl", "куда дописывать строки замера контекста")
@@ -57,13 +69,15 @@ func main() {
 	}
 
 	cfg := agent.Config{
-		Name:            *name,
-		SystemPrompt:    *system,
-		Model:           *model,
-		MaxTokens:       *maxTokens,
-		ResponseFormat:  formatOf(*jsonOut),
-		MaxTurns:        *maxTurns,
-		ReasoningEffort: *effort,
+		Name:             *name,
+		SystemPrompt:     *system,
+		Model:            *model,
+		MaxTokens:        *maxTokens,
+		ResponseFormat:   formatOf(*jsonOut),
+		MaxTurns:         *maxTurns,
+		ReasoningEffort:  *effort,
+		MaxContextTokens: *maxContext,
+		OnOverflow:       agent.OverflowPolicy(*onOverflow),
 	}
 	if *temp >= 0 {
 		t := *temp
@@ -88,6 +102,13 @@ func main() {
 			// call it cold.
 			cfg.SystemPrompt = "Метка прогона: " + *probeSalt + ". " + agent.ProbeSystemPrompt
 		}
+	}
+
+	// The growth and ceiling runs speak under their own system prompt: the answers
+	// have to be long enough for the history to grow at a rate worth plotting, and
+	// the CLI's ordinary "коротко и по делу" would measure brevity instead.
+	if *tokenProbe == "growth" || *tokenProbe == "ceiling" {
+		cfg.SystemPrompt = agent.GrowthSystemPrompt
 	}
 
 	// The interface picks which conversation and where it lives. It does not know
@@ -141,19 +162,34 @@ func main() {
 		return
 	}
 
-	if question != "" {
-		if err := askOnce(a, question, *quiet); err != nil {
+	if *totalsOnly {
+		fmt.Println(a.Totals())
+		return
+	}
+
+	if *tokenProbe != "" {
+		if err := runTokenProbe(*tokenProbe, a, cfg, *model, *probeTurns, *windowSize, *tokenRows); err != nil {
 			fail(err)
 		}
 		return
 	}
-	if err := converse(a, *quiet); err != nil {
+
+	if question != "" {
+		if err := askOnce(a, question, *quiet, *showTokens); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if err := converse(a, *quiet, *showTokens); err != nil {
 		fail(err)
 	}
 }
 
 // askOnce is the one-shot mode: a question in, an answer out.
-func askOnce(a *agent.Agent, question string, quiet bool) error {
+func askOnce(a *agent.Agent, question string, quiet, tokens bool) error {
+	if tokens {
+		fmt.Fprintln(os.Stderr, "до отправки:", a.Preflight(question))
+	}
 	reply, err := a.Ask(context.Background(), question)
 	// A turn that was answered but not written down is not a failed turn: the answer
 	// is real and was paid for. It is a failed day 7, though, so the answer is
@@ -172,6 +208,9 @@ func askOnce(a *agent.Agent, question string, quiet bool) error {
 	fmt.Println(reply.Text)
 	if !quiet {
 		fmt.Fprintln(os.Stderr, spend(reply))
+	}
+	if tokens {
+		fmt.Fprintln(os.Stderr, a.Totals())
 	}
 	return nil
 }
@@ -197,6 +236,109 @@ func announceMemory(a *agent.Agent, store *agent.FileStore) {
 	}
 }
 
+// runTokenProbe is day 8's measurement, in four flavours. The rows go to a file the
+// showcase reads; the human-readable table goes to stdout so a screencast has
+// something to show.
+func runTokenProbe(mode string, a *agent.Agent, cfg agent.Config, model string, turns int, sizes, rowsPath string) error {
+	if rowsPath == "" {
+		rowsPath = filepath.Join("day-08", mode+".jsonl")
+	}
+	if err := os.MkdirAll(filepath.Dir(rowsPath), 0o755); err != nil {
+		return fmt.Errorf("каталог замера: %w", err)
+	}
+	f, err := os.OpenFile(rowsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("файл замера %s: %w", rowsPath, err)
+	}
+	defer f.Close()
+	run := fmt.Sprintf("pid-%d", os.Getpid())
+
+	switch mode {
+	case "growth":
+		err = agent.RunGrowthProbe(a, run, turns, os.Stdout, f)
+	case "ceiling":
+		err = agent.RunCeilingProbe(a, run, turns, os.Stdout, f)
+	case "window":
+		ladder, perr := parseSizes(sizes)
+		if perr != nil {
+			return perr
+		}
+		// The window run resets between rungs, and a reset clears the stored
+		// conversation. Pointing that at the owner's session would delete a real
+		// history to measure a limit, so this run has no store at all.
+		probe, berr := build(withoutStore(cfg), model)
+		if berr != nil {
+			return berr
+		}
+		err = agent.RunWindowProbe(probe, run, ladder, os.Stdout, f)
+	case "output":
+		control, capped, berr := outputAgents(cfg, model)
+		if berr != nil {
+			return berr
+		}
+		err = agent.RunOutputProbe(control, capped, run,
+			"Верни один объект JSON с полями city, country и population про Саратов. Только JSON, без пояснений.",
+			os.Stdout, f)
+	default:
+		return fmt.Errorf("замер %q неизвестен: growth, window, ceiling или output", mode)
+	}
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// outputAgents builds the pair the generation-cap run compares: the same question,
+// the same format, one cap that fits the answer and one that cannot. Neither keeps a
+// conversation — a truncated answer has no business ending up in a stored history.
+func outputAgents(cfg agent.Config, model string) (control, capped *agent.Agent, err error) {
+	base := withoutStore(cfg)
+	base.ResponseFormat = "json_object"
+	base.SystemPrompt = "Отвечай одним объектом JSON и ничем больше."
+
+	generous := base
+	generous.MaxTokens = 400
+	control, err = build(generous, model)
+	if err != nil {
+		return nil, nil, err
+	}
+	tight := base
+	tight.MaxTokens = 16
+	capped, err = build(tight, model)
+	if err != nil {
+		return nil, nil, err
+	}
+	return control, capped, nil
+}
+
+func withoutStore(cfg agent.Config) agent.Config {
+	cfg.Store = nil
+	return cfg
+}
+
+func parseSizes(s string) ([]int, error) {
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("ступень %q — не число: %w", p, err)
+		}
+		if n <= 0 {
+			return nil, fmt.Errorf("ступень %d — размер должен быть положительным", n)
+		}
+		out = append(out, n)
+	}
+	if len(out) < 2 {
+		return nil, errors.New("ступеней меньше двух: нужен контроль, который проходит, и ступень за пределом")
+	}
+	return out, nil
+}
+
 // runContextProbe is day 7's measurement. The restart it is about is performed by
 // running this binary a second time, not simulated inside one process.
 func runContextProbe(a *agent.Agent, turns int, rowsPath string) error {
@@ -214,8 +356,8 @@ func runContextProbe(a *agent.Agent, turns int, rowsPath string) error {
 
 // converse is the dialogue mode. It exists because the agent carries the message
 // stack itself: without more than one turn, that would be an untested claim.
-func converse(a *agent.Agent, quiet bool) error {
-	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново и стереть сохранённое, /stack — сколько ходов в контексте, /exit — выход.\n",
+func converse(a *agent.Agent, quiet, tokens bool) error {
+	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново и стереть сохранённое, /stack — сколько ходов в контексте, /totals — расход беседы, /exit — выход.\n",
 		a.Name())
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -240,6 +382,12 @@ func converse(a *agent.Agent, quiet bool) error {
 		case "/stack":
 			fmt.Fprintf(os.Stderr, "ходов в контексте: %d\n", a.Turns())
 			continue
+		case "/totals":
+			fmt.Fprintln(os.Stderr, a.Totals())
+			continue
+		}
+		if tokens {
+			fmt.Fprintln(os.Stderr, "до отправки:", a.Preflight(line))
 		}
 		reply, err := a.Ask(context.Background(), line)
 		if errors.Is(err, agent.ErrNotSaved) {
@@ -250,9 +398,15 @@ func converse(a *agent.Agent, quiet bool) error {
 			fmt.Fprintln(os.Stderr, "ошибка:", err)
 			continue
 		}
+		if reply.Warning != "" {
+			fmt.Fprintln(os.Stderr, "ВНИМАНИЕ:", reply.Warning)
+		}
 		fmt.Println(reply.Text)
 		if !quiet {
 			fmt.Fprintln(os.Stderr, spend(reply))
+		}
+		if tokens {
+			fmt.Fprintln(os.Stderr, a.Totals())
 		}
 	}
 	return in.Err()
@@ -319,10 +473,25 @@ func spend(reply agent.Reply) string {
 	if reply.Reasoned {
 		reasoned = ", с рассуждением"
 	}
-	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s · %s · %s%s]",
+	// The estimate is printed next to the fact it was an estimate of: the pair is
+	// day 8's free measurement of the local counter, one per turn, at no cost.
+	estimate := ""
+	if reply.Estimated.Total > 0 && reply.Usage.PromptTokens > 0 {
+		estimate = fmt.Sprintf(" · оценка входа %d (%+d)",
+			reply.Estimated.Total, reply.Estimated.Total-reply.Usage.PromptTokens)
+	}
+	cut := ""
+	if reply.Truncated {
+		cut = " · ОБОРВАН по потолку генерации"
+	}
+	dropped := ""
+	if reply.Dropped > 0 {
+		dropped = fmt.Sprintf(" · отброшено обменов: %d", reply.Dropped)
+	}
+	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s%s · %s · %s%s%s%s]",
 		reply.Turn, reply.Model,
-		reply.Usage.PromptTokens, reply.Usage.CompletionTokens, cache,
-		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned)
+		reply.Usage.PromptTokens, reply.Usage.CompletionTokens, cache, estimate,
+		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned, cut, dropped)
 }
 
 // price says "unknown" rather than "$0.000000" when the model is not in the price
