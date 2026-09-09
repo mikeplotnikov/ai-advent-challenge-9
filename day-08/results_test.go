@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
 )
 
 type row struct {
@@ -195,6 +197,12 @@ func TestEveryFigureInResultsComesFromTheRuns(t *testing.T) {
 		t.Errorf("дословный ответ поставщика: в RESULTS.md нет записанного текста отказа:\n%s", quoted)
 	}
 	want("время отказа", fmt.Sprintf("занял %.1f секунды", float64(refused.ElapsedMs)/1000))
+	// The size of what was sent is a number about the instrument, so it is measured
+	// from the instrument rather than typed: an earlier draft said "5 МБ", which was
+	// neither measured nor close.
+	blob := agent.Filler(1500000)
+	want("размер заполнителя", fmt.Sprintf("%s символов, %s КБ в UTF-8",
+		spaced(len([]rune(blob))), spaced(len(blob)/1024)))
 	if refused.Outcome != "error" {
 		t.Errorf("верхняя ступень окна вернулась как %q — вывод об отказе построен не на этих данных", refused.Outcome)
 	}

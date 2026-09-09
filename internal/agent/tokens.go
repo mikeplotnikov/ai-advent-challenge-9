@@ -48,8 +48,11 @@ import (
 //
 // What that calibration does NOT cover, stated rather than papered over: the sample
 // is Russian prose written by this model. Code, tables, mixed scripts and other
-// languages were not in it, which is why the documented Latin and CJK weights are
-// left where the provider put them instead of being scaled by our Russian evidence.
+// languages were not in it, which is why the Latin weight is left where the provider
+// put it instead of being scaled by our Russian evidence. Chinese has no class of its
+// own here at all — a Han character falls into "other" and is charged 1.00 against
+// the 0.6 the provider documents. That over-counts, which is the safe side, and it
+// is the honest state of this counter rather than a claim to have covered CJK.
 const (
 	weightCyrillic = 0.32
 	weightLatin    = 0.30
