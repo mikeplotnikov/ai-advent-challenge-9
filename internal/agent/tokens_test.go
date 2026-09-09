@@ -571,3 +571,29 @@ func TestEveryImpossibleSpendFieldIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// The provider charges for asking for JSON, and the counter did not know it. These
+// are the numbers that found it: the same request, sent plain and with
+// response_format, came back 20 tokens heavier (2026-09-09, deepseek-v4-flash).
+func TestAskingForJSONIsCountedBeforeItIsBilled(t *testing.T) {
+	const system = "Ты ассистент, работающий через официальный API DeepSeek. " +
+		"Отвечай кратко и по делу, на русском языке."
+	const question = "Верни один объект JSON с полями city, country и population про Саратов."
+
+	plain := newAgent(t, Config{SystemPrompt: system}, &fakeCaller{})
+	asJSON := newAgent(t, Config{SystemPrompt: system, ResponseFormat: "json_object"}, &fakeCaller{})
+
+	before, after := plain.Preflight(question), asJSON.Preflight(question)
+	if after.Total-before.Total != tokensForResponseFormat {
+		t.Fatalf("json-режим прибавил %d токенов, ожидалось %d",
+			after.Total-before.Total, tokensForResponseFormat)
+	}
+	// The measured facts this constant exists for: 56 input tokens plain, 76 with
+	// response_format. The counter must not fall below either.
+	if before.Total < 56 {
+		t.Errorf("оценка обычного запроса %d при факте 56 — занижение", before.Total)
+	}
+	if after.Total < 76 {
+		t.Errorf("оценка запроса в json-режиме %d при факте 76 — занижение, ровно то, что нашлось на демо", after.Total)
+	}
+}

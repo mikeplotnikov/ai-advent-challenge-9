@@ -275,6 +275,15 @@ func TestEveryFigureInResultsComesFromTheRuns(t *testing.T) {
 	want("выход контрольного ответа", fmt.Sprintf("| 400 | %d | stop |", whole.CompletionTokens))
 	want("выход оборванного ответа", fmt.Sprintf("| 16 | %d | length |", cut.CompletionTokens))
 
+	// 5a. The constant the write-up quotes for asking for JSON is the constant the
+	// counter actually applies — the figure was found by running the demo, not by a
+	// probe, so nothing else in this file would notice if the two drifted apart.
+	defs, err := agent.BuildDefinitions("")
+	if err != nil {
+		t.Fatalf("BuildDefinitions: %v", err)
+	}
+	want("надбавка за json-режим", fmt.Sprintf("надбавка **%d токена**", defs.Counter.PerResponseFormat))
+
 	// 6. What the day cost — every row of the table, not only the sum. Two
 	// compensating typos would leave the total right and the table wrong.
 	// A request reached the provider unless the agent refused it before calling.

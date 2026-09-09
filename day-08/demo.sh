@@ -68,7 +68,7 @@ note "Вопрос — десятки токенов, история — сот�
 
 say "Расход беседы переживает перезапуск процесса: он лежит рядом с историей"
 run ./day06 -session demo8 -totals
-run grep -o '"spend":{[^}]*}' .sessions/demo8.json
+run grep -A10 "\"spend\"" .sessions/demo8.json
 
 say "Так это выглядит на длинной дистанции — 25 ходов одной беседы"
 run sed -n '1,4p;26,29p' day-08/growth-run.txt

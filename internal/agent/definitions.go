@@ -86,7 +86,10 @@ type DumpedCounter struct {
 	Weights    map[string]float64 `json:"weights"`
 	PerMessage int                `json:"perMessage"`
 	PerReply   int                `json:"perReply"`
-	Samples    []DumpedCount      `json:"samples"`
+	// PerResponseFormat is the input cost of asking for json_object — an instruction
+	// the provider adds that our messages never contain, measured at 20-21 tokens.
+	PerResponseFormat int           `json:"perResponseFormat"`
+	Samples           []DumpedCount `json:"samples"`
 }
 
 // Definitions is everything the JS mirror has to agree with.
@@ -195,8 +198,9 @@ func buildCounter() DumpedCounter {
 			"space":    weightSpace,
 			"other":    weightOther,
 		},
-		PerMessage: tokensPerMessage,
-		PerReply:   tokensPerReply,
+		PerMessage:        tokensPerMessage,
+		PerReply:          tokensPerReply,
+		PerResponseFormat: tokensForResponseFormat,
 	}
 	for _, s := range samples {
 		out.Samples = append(out.Samples, DumpedCount{Case: s.name, Text: s.text, Tokens: EstimateTokens(s.text)})

@@ -53,10 +53,10 @@ func main() {
 		tokenProbe = flag.String("token-probe", "", "замер дня 8: growth, window, ceiling или output")
 		probeTurns = flag.Int("probe-turns", 12, "ходов в замерах growth и ceiling")
 		// Ступени задаются в токенах ПО НАШЕЙ ОЦЕНКЕ, а она завышает: на заполнителе
-		// замерено 1.308 (day-08/RESULTS.md). Верхняя ступень поэтому 1 500 000 —
-		// это ≈1 147 000 токенов по счёту поставщика при окне 1 048 576. Дефолт
-		// 1 200 000 давал бы ≈918 000: запрос прошёл бы, стоил бы около $0.20 и
-		// ничего бы не показал.
+		// с номерами строк замерено 1.315 — худшее значение дня (day-08/RESULTS.md).
+		// Верхняя ступень поэтому 1 500 000 — это ≈1 141 000 токенов по счёту
+		// поставщика при окне 1 048 576. Дефолт 1 200 000 давал бы ≈913 000: запрос
+		// прошёл бы, стоил бы около $0.20 и ничего бы не показал.
 		windowSize = flag.String("window-sizes", "50000,1500000", "ступени замера окна в токенах ПО ЛОКАЛЬНОЙ ОЦЕНКЕ, через запятую: сначала контроль, затем за пределом окна модели")
 		tokenRows  = flag.String("token-rows", "", "куда дописывать строки замера дня 8; по умолчанию day-08/<замер>.jsonl")
 
@@ -177,10 +177,17 @@ func main() {
 		// которую указывает -session, и переписывают её системный промпт своим. В
 		// пустую беседу это безобидно, в чужую — необратимо: Save атомарно кладёт
 		// файл поверх, копии не остаётся. Поэтому продолжать существующую беседу
-		// замеру запрещено, а не «не рекомендуется».
-		if r := a.Restored(); r.Turns > 0 {
-			fail(fmt.Errorf("замер %s: беседа %q уже содержит ходов: %d — замер допишет в неё свои и перепишет системный промпт. Возьми свободное имя (-session) или сотри эту (-forget)",
-				*tokenProbe, *session, r.Turns))
+		// им запрещено, а не «не рекомендуется».
+		//
+		// Только им: window и output строят себе агента без хранилища вовсе, и
+		// запрет для них был бы не просто лишним — он советовал бы стереть живую
+		// беседу (-forget) ради замера, который к ней не притронется. Ровно та
+		// потеря данных, от которой запрет и заводился, только руками владельца.
+		if *tokenProbe == "growth" || *tokenProbe == "ceiling" {
+			if r := a.Restored(); r.Turns > 0 {
+				fail(fmt.Errorf("замер %s: беседа %q уже содержит ходов: %d — замер допишет в неё свои и перепишет системный промпт. Возьми свободное имя (-session) или сотри эту (-forget)",
+					*tokenProbe, *session, r.Turns))
+			}
 		}
 		if err := runTokenProbe(*tokenProbe, a, cfg, *model, *probeTurns, *windowSize, *tokenRows); err != nil {
 			fail(err)
@@ -330,6 +337,11 @@ func withoutStore(cfg agent.Config) agent.Config {
 	return cfg
 }
 
+// maxLadderTokens caps one rung of the window ladder. Three million by our estimate
+// is about 2.3 million by the provider's — already twice its window — and about 16 MB
+// of text held in memory.
+const maxLadderTokens = 3_000_000
+
 func parseSizes(s string) ([]int, error) {
 	parts := strings.Split(s, ",")
 	out := make([]int, 0, len(parts))
@@ -344,6 +356,14 @@ func parseSizes(s string) ([]int, error) {
 		}
 		if n <= 0 {
 			return nil, fmt.Errorf("ступень %d — размер должен быть положительным", n)
+		}
+		// Above this there is nothing left to learn — the provider's window is
+		// 1 048 576 tokens — and the blob is built in memory before anything is
+		// sent: a mistyped extra zero would be a self-inflicted out-of-memory
+		// rather than a measurement.
+		if n > maxLadderTokens {
+			return nil, fmt.Errorf("ступень %d — больше потолка замера %d: окно модели меньше, а заполнитель собирается в памяти целиком",
+				n, maxLadderTokens)
 		}
 		out = append(out, n)
 	}

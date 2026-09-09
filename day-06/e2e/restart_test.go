@@ -468,3 +468,32 @@ func TestATokenProbeRefusesToWriteIntoAConversationThatAlreadyExists(t *testing.
 		t.Errorf("модель вызвана %d раз после отказа (было %d) — отказ обязан быть бесплатным", got, before)
 	}
 }
+
+// The other half of the same guard, and the half a second review wave had to point
+// out: window and output build themselves a store-less agent and cannot touch the
+// conversation at all. Refusing them would not merely be pointless — the refusal
+// tells the operator to erase a real history with -forget to unblock a run that was
+// never going to write to it.
+func TestTheWindowProbeRunsEvenWhenTheSessionHasAConversation(t *testing.T) {
+	p := &provider{answers: []string{"запомнил", "первая ступень", "вторая ступень"}}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	sessions := filepath.Join(work, "sessions")
+
+	run(t, bin, srv.URL, work, "-store-dir", sessions, "-session", "живая", "меня зовут Михаил")
+	before := p.calls()
+
+	rows := filepath.Join(work, "window.jsonl")
+	run(t, bin, srv.URL, work, "-store-dir", sessions, "-session", "живая",
+		"-token-probe", "window", "-window-sizes", "60,120", "-token-rows", rows)
+
+	if got := p.calls(); got != before+2 {
+		t.Fatalf("ступеней отправлено %d, ожидалось 2", got-before)
+	}
+	// And the conversation it was pointed at is untouched: same turn count as before.
+	_, stderr := run(t, bin, srv.URL, work, "-store-dir", sessions, "-session", "живая", "-totals")
+	if !strings.Contains(stderr, "загружено ходов: 1") {
+		t.Errorf("беседа изменилась после замера окна:\n%s", stderr)
+	}
+}

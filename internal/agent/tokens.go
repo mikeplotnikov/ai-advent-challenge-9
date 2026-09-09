@@ -67,6 +67,17 @@ const (
 const (
 	tokensPerMessage = 5
 	tokensPerReply   = 3
+	// tokensForResponseFormat is what asking for json_object costs on the input side.
+	// The provider adds an instruction of its own that never appears in our messages,
+	// and it is not free: the same request measured twice, once plain and once with
+	// response_format, came back 20, 20 and 21 tokens heavier (2026-09-09, three
+	// pairs on deepseek-v4-flash). 24 keeps the counter on its safe side.
+	//
+	// This was found by running the day's own demo, not by the measurements: every
+	// probe ran in plain text mode, so the whole calibration had nothing to say about
+	// the one option that changes the input. The counter under-counted by 6 tokens on
+	// camera, against a promise that it never under-counts.
+	tokensForResponseFormat = 24
 )
 
 // EstimateTokens is the local counter: what this text will weigh, worked out without
@@ -182,6 +193,9 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	e.Input = EstimateTokens(input)
 	e.Messages++
 	e.Overhead = e.Messages*tokensPerMessage + tokensPerReply
+	if a.cfg.ResponseFormat != "" {
+		e.Overhead += tokensForResponseFormat
+	}
 	e.Total = e.System + e.History + e.Input + e.Overhead
 	return e
 }
