@@ -346,7 +346,7 @@ func TestBrokenSpendIsRefusedRatherThanBelieved(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "broken.json")
 	raw := []byte(`{"version":2,"agent":"агент","model":"deepseek-v4-flash","system":"ты ассистент",` +
-		`"turns":1,"updated":"2026-09-09T10:00:00Z","spend":{"Calls":1,"Failed":3},` +
+		`"turns":1,"updated":"2026-09-09T10:00:00Z","spend":{"calls":1,"failed":3},` +
 		`"messages":[{"role":"user","content":"вопрос"},{"role":"assistant","content":"ответ"}]}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("write: %v", err)
@@ -422,5 +422,152 @@ func TestReplyEstimateDescribesWhatWasSentAfterTrimming(t *testing.T) {
 	sent := f.sent[len(f.sent)-1]
 	if reply.Estimated.Messages != len(sent) {
 		t.Fatalf("в оценке %d сообщений, отправлено %d", reply.Estimated.Messages, len(sent))
+	}
+}
+
+// The spend was first written with Go's own capitalised field names, before the json
+// tags were added. Files from that build exist on the machine that ran the day-8
+// measurements, and continuing to read them is not an accident of encoding/json's
+// case-insensitive matching that anyone may quietly break — it is the behaviour a
+// restart depends on.
+func TestSpendWrittenWithTheOlderCapitalisedKeysStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old-keys.json")
+	raw := []byte(`{"version":2,"agent":"агент","model":"deepseek-v4-flash","system":"ты ассистент",` +
+		`"turns":1,"updated":"2026-09-09T10:00:00Z",` +
+		`"spend":{"Calls":3,"Failed":1,"PromptTokens":250,"CompletionTokens":10,"Cost":0.0001},` +
+		`"messages":[{"role":"user","content":"вопрос"},{"role":"assistant","content":"ответ"}]}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент", Model: "deepseek-v4-flash",
+		Store: NewFileStore(path)}, &fakeCaller{})
+	got := a.Totals()
+	if got.Calls != 3 || got.Failed != 1 || got.PromptTokens != 250 {
+		t.Fatalf("расход из файла со старыми ключами прочитан как %+v", got)
+	}
+}
+
+// Trimming buys the answer with memory, so it must spend as little memory as it can.
+// A loop that drops two exchanges where one would do forgets a whole turn more than
+// the ceiling asked for — and every trim test passed with exactly that mutation until
+// this one existed.
+func TestOverflowTrimDropsTheFewestExchangesThatFit(t *testing.T) {
+	f := &fakeCaller{}
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент"}, f)
+	for _, q := range []string{"первый", "второй", "третий", "четвёртый"} {
+		if _, err := a.Ask(context.Background(), q); err != nil {
+			t.Fatalf("Ask(%q): %v", q, err)
+		}
+	}
+
+	// A ceiling that one dropped exchange clears and none does not.
+	full := a.Preflight("пятый")
+	oldest := EstimateTokens(a.stack[0].Content) + EstimateTokens(a.stack[1].Content) + 2*tokensPerMessage
+	a.cfg.MaxContextTokens = full.Total - oldest
+	a.cfg.OnOverflow = OverflowTrim
+
+	reply, err := a.Ask(context.Background(), "пятый")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Dropped != 1 {
+		t.Fatalf("отброшено обменов %d, хватало одного — обрезка забывает больше, чем просил потолок", reply.Dropped)
+	}
+	sent := f.sent[len(f.sent)-1]
+	var carried []string
+	for _, m := range sent {
+		carried = append(carried, m.Content)
+	}
+	joined := strings.Join(carried, "|")
+	if strings.Contains(joined, "первый") {
+		t.Errorf("самый старый обмен не отброшен: %s", joined)
+	}
+	for _, keep := range []string{"второй", "третий", "четвёртый"} {
+		if !strings.Contains(joined, keep) {
+			t.Errorf("обмен %q отброшен без нужды: %s", keep, joined)
+		}
+	}
+}
+
+// The ceiling is a limit, not a threshold: a request weighing exactly the ceiling
+// fits. Both an off-by-one in either direction and a spurious refusal on the exact
+// boundary are invisible to every other test.
+func TestARequestWeighingExactlyTheCeilingIsSent(t *testing.T) {
+	f := &fakeCaller{}
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент"}, f)
+	exact := a.Preflight("вопрос").Total
+	a.cfg.MaxContextTokens = exact
+	a.cfg.OnOverflow = OverflowRefuse
+
+	reply, err := a.Ask(context.Background(), "вопрос")
+	if err != nil {
+		t.Fatalf("запрос ровно в потолок (%d) отвергнут: %v", exact, err)
+	}
+	if f.calls != 1 {
+		t.Fatalf("вызовов модели %d, ожидался 1", f.calls)
+	}
+	if reply.Warning != "" || reply.Dropped != 0 {
+		t.Fatalf("запрос ровно в потолок вызвал реакцию политики: dropped=%d warning=%q", reply.Dropped, reply.Warning)
+	}
+}
+
+// Trimming has to be able to empty the history completely and still send: the
+// question plus the system prompt may fit even when nothing else does. A loop that
+// refuses to drop the last remaining exchange fails exactly here, and reports it as
+// "the question alone does not fit" — which would be false.
+func TestOverflowTrimCanEmptyTheHistoryAndStillAnswer(t *testing.T) {
+	f := &fakeCaller{}
+	a := newAgent(t, Config{SystemPrompt: "ты ассистент"}, f)
+	if _, err := a.Ask(context.Background(), "первый"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	// Fits the system prompt and the question, not the single stored exchange.
+	bare := a.estimate("второй", nil)
+	a.cfg.MaxContextTokens = bare.Total
+	a.cfg.OnOverflow = OverflowTrim
+
+	reply, err := a.Ask(context.Background(), "второй")
+	if err != nil {
+		t.Fatalf("обрезка до пустой истории не сработала: %v", err)
+	}
+	if reply.Dropped != 1 {
+		t.Fatalf("отброшено обменов %d, ожидался 1", reply.Dropped)
+	}
+	if got := len(f.sent[len(f.sent)-1]); got != 2 {
+		t.Fatalf("отправлено сообщений %d, ожидались только системный промпт и вопрос", got)
+	}
+}
+
+// validateSpend has ten independent guards and one of them was tested. A file whose
+// token counts are negative would otherwise be accepted and poison every total the
+// conversation reports from then on.
+func TestEveryImpossibleSpendFieldIsRefused(t *testing.T) {
+	cases := map[string]string{
+		"отрицательные вызовы":       `{"calls":-1}`,
+		"отрицательные неудачи":      `{"failed":-1}`,
+		"отрицательный вход":         `{"promptTokens":-5}`,
+		"отрицательный выход":        `{"completionTokens":-5}`,
+		"отрицательное рассуждение":  `{"reasoningTokens":-5}`,
+		"отрицательный кэш":          `{"cachedTokens":-5}`,
+		"отрицательные промахи":      `{"missedTokens":-5}`,
+		"отрицательные без цены":     `{"unpriced":-1}`,
+		"отрицательная цена":         `{"cost":-0.5}`,
+		"неудач больше, чем вызовов": `{"calls":1,"failed":2}`,
+	}
+	for name, spend := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "broken.json")
+			raw := []byte(`{"version":2,"agent":"агент","model":"deepseek-v4-flash","system":"ты ассистент",` +
+				`"turns":1,"updated":"2026-09-09T10:00:00Z","spend":` + spend + `,` +
+				`"messages":[{"role":"user","content":"вопрос"},{"role":"assistant","content":"ответ"}]}`)
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if _, err := New(&fakeCaller{}, Config{Store: NewFileStore(path)}); err == nil {
+				t.Fatalf("файл с расходом %s принят", spend)
+			}
+		})
 	}
 }

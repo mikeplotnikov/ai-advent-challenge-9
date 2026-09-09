@@ -111,10 +111,7 @@ $0.000166 → $0.000237, в полтора раза. За прогон 97% вх�
 Ответ поставщика дословно:
 
 ```
-{"error":{"message":"This model's maximum context length is 1048576 tokens. However,
-you requested 1133947 tokens (1133947 in the messages, 0 in the completion). Please
-reduce the length of the messages or completion.","type":"invalid_request_error",
-"param":null,"code":"invalid_request_error"}}
+{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1133947 tokens (1133947 in the messages, 0 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}
 ```
 
 - **Предел назван самим поставщиком: 1 048 576 токенов.** Ровно то число, что стоит в

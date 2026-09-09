@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -35,6 +37,7 @@ type row struct {
 	Policy              string  `json:"policy"`
 	Dropped             int     `json:"dropped"`
 	Outcome             string  `json:"outcome"`
+	Error               string  `json:"error"`
 	Truncated           bool    `json:"truncated"`
 	ValidJSON           *bool   `json:"validJson"`
 	ElapsedMs           int64   `json:"elapsedMs"`
@@ -69,6 +72,21 @@ func spaced(n int) string {
 		s = s[:len(s)-3]
 	}
 	return strings.Join(append([]string{s}, parts...), " ")
+}
+
+// requestedTokens pulls the provider's own count out of its refusal. The sentence it
+// parses is the provider's, not ours: "However, you requested 1133947 tokens".
+func requestedTokens(t *testing.T, refusal string) int {
+	t.Helper()
+	m := regexp.MustCompile(`you requested (\d+) tokens`).FindStringSubmatch(refusal)
+	if m == nil {
+		t.Fatalf("в тексте отказа нет числа запрошенных токенов:\n%s", refusal)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("число запрошенных токенов %q не разбирается: %v", m[1], err)
+	}
+	return n
 }
 
 func TestEveryFigureInResultsComesFromTheRuns(t *testing.T) {
@@ -160,8 +178,22 @@ func TestEveryFigureInResultsComesFromTheRuns(t *testing.T) {
 	}
 	ok, refused := window[0], window[1]
 	want("контрольная ступень", fmt.Sprintf("| %s | %s | ok | $%.6f |", spaced(ok.EstTotal), spaced(ok.PromptTokens), ok.Cost))
-	want("отвергнутая ступень", fmt.Sprintf("| %s | 1 133 947 (из текста отказа) | **400 Bad Request** | $%.6f |",
-		spaced(refused.EstTotal), refused.Cost))
+	// The one number in this section that is not ours: the provider's own count of
+	// what we sent. It is read out of the refusal the run recorded, so the summary
+	// row and the quoted response cannot drift apart — and the quoted response is
+	// checked to be in the document verbatim, which is what makes it a quote.
+	requested := requestedTokens(t, refused.Error)
+	want("отвергнутая ступень", fmt.Sprintf("| %s | %s (из текста отказа) | **400 Bad Request** | $%.6f |",
+		spaced(refused.EstTotal), spaced(requested), refused.Cost))
+	// Compared strictly, character for character. It was compared with whitespace
+	// collapsed for exactly one draft, and that draft hid a space this check now
+	// forbids: the document had wrapped the JSON mid-object and turned the newline
+	// into a space that the provider never sent. A quote is either exact or it is a
+	// paraphrase wearing quotation marks.
+	quoted := refused.Error[strings.Index(refused.Error, "{"):]
+	if !strings.Contains(text, quoted) {
+		t.Errorf("дословный ответ поставщика: в RESULTS.md нет записанного текста отказа:\n%s", quoted)
+	}
 	want("время отказа", fmt.Sprintf("занял %.1f секунды", float64(refused.ElapsedMs)/1000))
 	if refused.Outcome != "error" {
 		t.Errorf("верхняя ступень окна вернулась как %q — вывод об отказе построен не на этих данных", refused.Outcome)
@@ -235,10 +267,35 @@ func TestEveryFigureInResultsComesFromTheRuns(t *testing.T) {
 	want("выход контрольного ответа", fmt.Sprintf("| 400 | %d | stop |", whole.CompletionTokens))
 	want("выход оборванного ответа", fmt.Sprintf("| 16 | %d | length |", cut.CompletionTokens))
 
-	// 6. What the day cost, in total.
+	// 6. What the day cost — every row of the table, not only the sum. Two
+	// compensating typos would leave the total right and the table wrong.
+	// A request reached the provider unless the agent refused it before calling.
+	// A rejected request is still a request: it travelled, it just came back 400.
+	sum := func(rows []row) (calls int, cost float64) {
+		for _, r := range rows {
+			cost += r.Cost
+			if r.Outcome != "refused" {
+				calls++
+			}
+		}
+		return calls, cost
+	}
+	uncal := load(t, "growth-uncalibrated.jsonl")
+	nUncal, costUncal := sum(uncal)
+	want("строка: рост до калибровки", fmt.Sprintf("| рост, до калибровки | %d | $%.6f |", nUncal, costUncal))
+	nGrowth, costGrowth := sum(growth)
+	want("строка: рост после калибровки", fmt.Sprintf("| рост, после калибровки | %d | $%.6f |", nGrowth, costGrowth))
+	nCeiling, _ := sum(ceiling)
+	want("строка: потолок агента", fmt.Sprintf("| потолок агента, три политики | %d оплаченных из %d ходов | $%.6f + $%.6f + $%.6f |",
+		nCeiling, len(ceiling), pol["trim"].cost, pol["warn"].cost, pol["refuse"].cost))
+	nWindow, costWindow := sum(window)
+	want("строка: окно модели", fmt.Sprintf("| окно модели | %d | $%.6f |", nWindow, costWindow))
+	nOutput, costOutput := sum(output)
+	want("строка: потолок генерации", fmt.Sprintf("| потолок генерации | %d | $%.6f |", nOutput, costOutput))
+
 	var total float64
-	for _, f := range []string{"growth.jsonl", "growth-uncalibrated.jsonl", "ceiling.jsonl", "window.jsonl", "output.jsonl"} {
-		for _, r := range load(t, f) {
+	for _, rows := range [][]row{growth, uncal, ceiling, window, output} {
+		for _, r := range rows {
 			total += r.Cost
 		}
 	}

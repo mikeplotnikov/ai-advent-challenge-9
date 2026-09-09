@@ -69,6 +69,14 @@ func (p *provider) start(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// calls is how many requests the model has been asked to answer. Day 8 needs it to
+// state that a refusal cost nothing: the count must not move.
+func (p *provider) calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.requests)
+}
+
 func (p *provider) request(t *testing.T, i int) []message {
 	t.Helper()
 	p.mu.Lock()
@@ -421,5 +429,42 @@ func TestTwoRealProcessesOnOneSessionDoNotSilentlyOverwrite(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "второй пишет поверх") {
 		t.Errorf("ход второго процесса всё-таки затёр историю:\n%s", raw)
+	}
+}
+
+// Day 8: a measurement run writes synthetic turns into whatever conversation it is
+// pointed at, and overwrites that conversation's system prompt with its own. Pointed
+// at a real one, it destroys it — atomically, with no copy left. This was not a
+// theory: the guard below was added after a probe launched against a session that
+// already held fourteen turns spliced its own into them.
+func TestATokenProbeRefusesToWriteIntoAConversationThatAlreadyExists(t *testing.T) {
+	p := &provider{answers: []string{"запомнил"}}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	sessions := filepath.Join(work, "sessions")
+
+	run(t, bin, srv.URL, work, "-store-dir", sessions, "-session", "живая", "меня зовут Михаил")
+	before := p.calls()
+
+	cmd := exec.Command(bin, "-store-dir", sessions, "-session", "живая", "-token-probe", "growth", "-probe-turns", "3")
+	cmd.Dir = work
+	cmd.Env = append(os.Environ(),
+		"DEEPSEEK_API_URL="+srv.URL,
+		"DEEPSEEK_API_KEY=e2e-фальшивый-ключ",
+		"DEEPSEEK_MODEL=deepseek-v4-flash",
+	)
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+
+	if err == nil {
+		t.Fatalf("замер запустился поверх существующей беседы:\nstdout: %s\nstderr: %s", out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "уже содержит ходов") {
+		t.Errorf("отказ не назвал причину:\n%s", errb.String())
+	}
+	if got := p.calls(); got != before {
+		t.Errorf("модель вызвана %d раз после отказа (было %d) — отказ обязан быть бесплатным", got, before)
 	}
 }

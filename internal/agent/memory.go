@@ -77,7 +77,9 @@ type Snapshot struct {
 	// that happens to be holding it — a process restarted twice a day would
 	// otherwise report the third of the bill it can still see. Absent in version-1
 	// files, where its zero value is the truthful answer: nothing was recorded.
-	Spend    Totals    `json:"spend,omitempty"`
+	// No omitempty: encoding/json never omits a struct value, so the tag would have
+	// promised an omission that does not happen.
+	Spend    Totals    `json:"spend"`
 	Messages []Message `json:"messages"`
 }
 

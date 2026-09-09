@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 )
@@ -335,11 +336,11 @@ func Filler(tokens int) string {
 	// the requested weight by construction. Estimating a "typical" line and
 	// multiplying would land under the target whenever the estimate was generous,
 	// and a window rung that lands under the limit measures nothing.
-	total := 0
-	for i := 1; total < tokens; i++ {
+	weight := 0.0
+	for i := 1; int(math.Ceil(weight)) < tokens; i++ {
 		s := fmt.Sprintf(line, i)
 		b.WriteString(s)
-		total += EstimateTokens(s)
+		weight += estimateWeight(s)
 	}
 	return b.String()
 }

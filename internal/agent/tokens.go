@@ -70,6 +70,16 @@ const (
 // asking the provider. It is an estimate by construction — the exact number is the
 // provider's tokeniser, and it arrives only in the response.
 func EstimateTokens(s string) int {
+	return int(math.Ceil(estimateWeight(s)))
+}
+
+// estimateWeight is the same count before it is rounded up. It exists because
+// rounding is not additive: the sum of per-line ceilings is larger than the ceiling
+// of the sum, so anything that builds a text to a target weight has to add up the
+// weights and round once at the end. Filler did it the other way round and produced
+// blobs up to 1% lighter than asked — invisible in a growth run, and exactly the
+// wrong direction for a rung meant to exceed the provider's window.
+func estimateWeight(s string) float64 {
 	var sum float64
 	for _, r := range s {
 		switch {
@@ -88,7 +98,7 @@ func EstimateTokens(s string) int {
 			sum += weightOther
 		}
 	}
-	return int(math.Ceil(sum))
+	return sum
 }
 
 // Estimate is the weight of one request as the agent works it out before sending it.
@@ -232,20 +242,24 @@ func (a *Agent) overflowPolicy() OverflowPolicy {
 // answer that failed the output policy and a request the provider refused are all
 // paid for at the provider's discretion, and a total that quietly omits them would
 // under-report the spend exactly when the day is about spend.
+// The json tags are not decoration: this struct is written into the session file,
+// and day 7 chose JSON precisely so that the file can be opened and read out loud.
+// Untagged fields would put Go's capitalised names next to the lowercase keys of
+// everything around them.
 type Totals struct {
 	// Calls is every request the provider was asked to bill, successful or not.
-	Calls int
+	Calls int `json:"calls"`
 	// Failed is how many of those calls did not produce a usable answer.
-	Failed           int
-	PromptTokens     int
-	CompletionTokens int
-	ReasoningTokens  int
-	CachedTokens     int
-	MissedTokens     int
-	Cost             float64
+	Failed           int     `json:"failed"`
+	PromptTokens     int     `json:"promptTokens"`
+	CompletionTokens int     `json:"completionTokens"`
+	ReasoningTokens  int     `json:"reasoningTokens"`
+	CachedTokens     int     `json:"cachedTokens"`
+	MissedTokens     int     `json:"missedTokens"`
+	Cost             float64 `json:"cost"`
 	// Unpriced is how many calls used a model that is not in the price table. Cost
 	// is then a lower bound, not the price of the conversation.
-	Unpriced int
+	Unpriced int `json:"unpriced"`
 }
 
 // CacheShare is the fraction of all input this conversation has had served from the
