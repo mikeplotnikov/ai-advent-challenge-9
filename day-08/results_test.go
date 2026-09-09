@@ -11,12 +11,14 @@ package day08
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
 )
@@ -402,4 +404,98 @@ func lastRequestSize(t *testing.T, session, rows string) (chars, tokens int, ok 
 		chars += len([]rune(m.Content))
 	}
 	return chars, last.PromptTokens, true
+}
+
+// The two numbers that justify the shipped Cyrillic weight — the largest weight that
+// could still have under-counted a turn, and what the median turn needed — were the
+// last hand-typed figures in the write-up. They are recomputed here from the run they
+// came from: the uncalibrated 25 turns and the conversation they left behind.
+func TestTheCalibrationThresholdsAreRecomputedFromTheUncalibratedRun(t *testing.T) {
+	raw, err := os.ReadFile("RESULTS.md")
+	if err != nil {
+		t.Fatalf("RESULTS.md: %v", err)
+	}
+	text := string(raw)
+
+	snapshot, err := os.ReadFile("../.sessions/day8-growth.json")
+	if err != nil {
+		t.Skip("беседы некалиброванного прогона нет рядом — пересчитывать пороги не из чего")
+	}
+	var snap struct {
+		System   string `json:"system"`
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(snapshot, &snap); err != nil {
+		t.Fatalf("беседа прогона: %v", err)
+	}
+
+	defs, err := agent.BuildDefinitions("")
+	if err != nil {
+		t.Fatalf("BuildDefinitions: %v", err)
+	}
+	w := defs.Counter.Weights
+
+	// The same classes the counter uses. Reimplemented rather than reached into, and
+	// then checked against the counter itself below — a mirror that has drifted would
+	// otherwise "recompute" a threshold for a function nobody runs.
+	weigh := func(s string) (cyrillic float64, rest float64) {
+		for _, r := range s {
+			switch {
+			case unicode.IsSpace(r):
+				rest += w["space"]
+			case unicode.Is(unicode.Cyrillic, r):
+				cyrillic++
+			case unicode.Is(unicode.Latin, r):
+				rest += w["latin"]
+			case unicode.IsDigit(r):
+				rest += w["digit"]
+			default:
+				rest += w["other"]
+			}
+		}
+		return cyrillic, rest
+	}
+	for _, sample := range []string{"контекст", "GPT-модель 2026!", snap.System} {
+		c, rest := weigh(sample)
+		if got, want := int(math.Ceil(c*w["cyrillic"]+rest)), agent.EstimateTokens(sample); got != want {
+			t.Fatalf("зеркало счёта разошлось со счётчиком на %q: %d против %d", sample, got, want)
+		}
+	}
+
+	rows := load(t, "growth-uncalibrated.jsonl")
+	needed := make([]float64, 0, len(rows))
+	for i, r := range rows {
+		texts := []string{snap.System}
+		if len(snap.Messages) < 2*(i+1)-1 {
+			t.Fatalf("в беседе %d сообщений, а строк замера %d", len(snap.Messages), len(rows))
+		}
+		for _, m := range snap.Messages[:2*(i+1)-1] {
+			texts = append(texts, m.Content)
+		}
+		var cyrillic, rest float64
+		for _, s := range texts {
+			c, other := weigh(s)
+			cyrillic += c
+			rest += other
+		}
+		rest += float64(len(texts)*defs.Counter.PerMessage + defs.Counter.PerReply)
+		needed = append(needed, (float64(r.PromptTokens)-rest)/cyrillic)
+	}
+	sort.Float64s(needed)
+	worst := needed[len(needed)-1]
+	median := needed[len(needed)/2]
+	margin := w["cyrillic"]/worst - 1
+
+	for what, s := range map[string]string{
+		"наибольший безопасный вес": fmt.Sprintf("занижен, — %.4f", worst),
+		"медианный ход":             fmt.Sprintf("медианному ходу хватало %.4f", median),
+		"запас шипящего веса":       fmt.Sprintf("запас %.0f%% к худшему", margin*100),
+		"сам вес в коде и в тексте": fmt.Sprintf("стоит **%.2f**", w["cyrillic"]),
+	} {
+		if !strings.Contains(text, s) {
+			t.Errorf("%s: в RESULTS.md нет %q", what, s)
+		}
+	}
 }

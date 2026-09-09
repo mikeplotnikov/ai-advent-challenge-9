@@ -261,3 +261,104 @@ func TestEstimateErrorSaysNothingWhenNothingWasBilled(t *testing.T) {
 		t.Errorf("ошибка счётчика %d (есть данные: %v), ожидалось +20", delta, ok)
 	}
 }
+
+// failingWriter is a rows sink that refuses. A probe that shrugs at this writes an
+// incomplete file and reports success — and the file is the day's whole result.
+type failingWriter struct{ after int }
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.after > 0 {
+		w.after--
+		return len(p), nil
+	}
+	return 0, errors.New("диск кончился")
+}
+
+func TestAProbeStopsWhenItsRowsStopBeingWritten(t *testing.T) {
+	probes := map[string]func(io.Writer) error{
+		"growth": func(rows io.Writer) error {
+			a := newAgent(t, Config{SystemPrompt: GrowthSystemPrompt, Model: "deepseek-v4-flash"}, &fakeCaller{})
+			return RunGrowthProbe(a, "тест", 2, io.Discard, rows)
+		},
+		"ceiling": func(rows io.Writer) error {
+			a := newAgent(t, Config{SystemPrompt: GrowthSystemPrompt, Model: "deepseek-v4-flash",
+				MaxContextTokens: 100000}, &fakeCaller{})
+			return RunCeilingProbe(a, "тест", 2, io.Discard, rows)
+		},
+		"window": func(rows io.Writer) error {
+			a := newAgent(t, Config{Model: "deepseek-v4-flash"}, &fakeCaller{})
+			return RunWindowProbe(a, "тест", []int{50, 100}, io.Discard, rows)
+		},
+		"output": func(rows io.Writer) error {
+			one := newAgent(t, Config{Model: "deepseek-v4-flash"}, &fakeCaller{})
+			two := newAgent(t, Config{Model: "deepseek-v4-flash"}, &fakeCaller{})
+			return RunOutputProbe(one, two, "тест", "вопрос", io.Discard, rows)
+		},
+	}
+	for name, run := range probes {
+		t.Run(name, func(t *testing.T) {
+			if err := run(&failingWriter{}); err == nil {
+				t.Fatal("замер отчитался об успехе, не записав ни строки")
+			}
+		})
+	}
+}
+
+// The output run is the only probe whose failure path had no test, and a row that
+// says "ok" about a call that failed is worse than no row.
+func TestOutputProbeRecordsAFailedCallAsAFailure(t *testing.T) {
+	broken := &fakeCaller{errs: []error{errors.New("API вернул 500")}}
+	control := newAgent(t, Config{Model: "deepseek-v4-flash"}, &fakeCaller{})
+	capped := newAgent(t, Config{Model: "deepseek-v4-flash"}, broken)
+
+	var rows bytes.Buffer
+	if err := RunOutputProbe(control, capped, "тест", "вопрос", io.Discard, &rows); err != nil {
+		t.Fatalf("RunOutputProbe: %v", err)
+	}
+	got := rowsFrom(t, rows.Bytes())
+	if len(got) != 2 {
+		t.Fatalf("строк %d, ожидалось 2", len(got))
+	}
+	if got[1].Outcome != "error" || !strings.Contains(got[1].Error, "500") {
+		t.Fatalf("неудавшийся вызов записан как %q с ошибкой %q", got[1].Outcome, got[1].Error)
+	}
+}
+
+// A turn that was answered but not written to disk is not a failed turn: it was paid
+// for, and its numbers are the measurement. Day 7 named that case; the probes are
+// supposed to keep going through it rather than throw the paid rows away.
+func TestAProbeKeepsMeasuringWhenTheConversationStopsBeingSaved(t *testing.T) {
+	a := newAgent(t, Config{
+		SystemPrompt: GrowthSystemPrompt,
+		Model:        "deepseek-v4-flash",
+		Store:        &failingStore{},
+	}, &fakeCaller{})
+
+	var rows bytes.Buffer
+	var human strings.Builder
+	if err := RunGrowthProbe(a, "тест", 2, &human, &rows); err != nil {
+		t.Fatalf("замер прервался из-за несохранённого хода: %v", err)
+	}
+	if got := len(rowsFrom(t, rows.Bytes())); got != 2 {
+		t.Fatalf("строк записано %d, ожидалось 2 — оплаченные ходы потеряны", got)
+	}
+	if !strings.Contains(human.String(), "не сохранён") {
+		t.Error("замер продолжился молча — о потере истории надо сказать вслух")
+	}
+}
+
+func TestTrimCutsByRunesAndMarksTheCut(t *testing.T) {
+	long := strings.Repeat("я", 500)
+	got := trim(long, 200)
+	if r := []rune(got); len(r) != 201 || r[200] != '…' {
+		t.Fatalf("обрезано до %d рун, ожидалось 200 плюс многоточие", len([]rune(got)))
+	}
+	if short := trim("коротко", 200); short != "коротко" {
+		t.Fatalf("короткая строка изменена: %q", short)
+	}
+	// The cut must land on a rune, not inside one: a byte-wise slice of Cyrillic
+	// produces a replacement character rather than a letter.
+	if strings.ContainsRune(got, '�') {
+		t.Error("обрезка разрезала символ пополам")
+	}
+}
