@@ -33,6 +33,7 @@ type provider struct {
 	mu       sync.Mutex
 	requests [][]message
 	answers  []string
+	failAt   map[int]bool
 }
 
 type message struct {
@@ -57,7 +58,12 @@ func (p *provider) start(t *testing.T) *httptest.Server {
 		if n < len(p.answers) {
 			answer = p.answers[n]
 		}
+		fail := p.failAt[n]
 		p.mu.Unlock()
+		if fail {
+			http.Error(w, "temporary provider failure", http.StatusServiceUnavailable)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"id":"e2e","model":"deepseek-v4-flash",
@@ -174,6 +180,113 @@ func TestTheAgentRemembersAcrossARestart(t *testing.T) {
 	}
 	if !strings.Contains(sent[2].Content, "Михаил") {
 		t.Errorf("ответ первого запуска не уехал в модель: %s", contentsOf(sent))
+	}
+}
+
+// Day 9 is not proven by a struct test alone: the CLI must pass the compression flag,
+// the real process must persist its two-layer snapshot, and the next real process must
+// send the summary instead of the oldest raw exchange.
+func TestCompressionKeepsTheTailAndSummaryAcrossRealProcessRestarts(t *testing.T) {
+	p := &provider{answers: []string{
+		"первый ответ", "второй ответ", "в первом обмене кодовое слово МАЯК-17.",
+		"МАЯК-17", "в первом обмене кодовое слово МАЯК-17; второй обмен сохранён.",
+	}}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	sessions := filepath.Join(work, "sessions")
+	args := []string{"-keep-last", "2", "-store-dir", sessions, "-session", "compressed"}
+
+	run(t, bin, srv.URL, work, append(args, "запомни кодовое слово МАЯК-17")...)
+	run(t, bin, srv.URL, work, append(args, "это второй обмен")...)
+	_, stderr := run(t, bin, srv.URL, work, append(args, "какое кодовое слово?")...)
+	if !strings.Contains(stderr, "загружено ходов: 2") {
+		t.Errorf("третий процесс не восстановил беседу:\n%s", stderr)
+	}
+
+	// Requests 0 and 1 answer the first two turns, request 2 summarizes them;
+	// request 3 is the third process's actual answer request.
+	sent := p.request(t, 3)
+	if got, want := len(sent), 4; got != want {
+		t.Fatalf("после сжатия отправлено %d сообщений, ожидалось %d: %s", got, want, contentsOf(sent))
+	}
+	if sent[0].Role != "system" || !strings.Contains(sent[0].Content, "МАЯК-17") {
+		t.Fatalf("summary не подставлен в запрос третьего процесса: %s", contentsOf(sent))
+	}
+	if strings.Contains(contentsOf(sent[1:]), "запомни кодовое слово") {
+		t.Fatalf("старый обмен вернулся в сыром хвосте: %s", contentsOf(sent))
+	}
+	if !strings.Contains(sent[1].Content, "второй обмен") || !strings.Contains(sent[2].Content, "второй ответ") {
+		t.Fatalf("последний полный обмен не сохранён дословно: %s", contentsOf(sent))
+	}
+
+	raw, err := os.ReadFile(filepath.Join(sessions, "compressed.json"))
+	if err != nil {
+		t.Fatalf("чтение двухслойной истории: %v", err)
+	}
+	if !strings.Contains(string(raw), `"summary"`) || !strings.Contains(string(raw), `"compressedMessages"`) {
+		t.Fatalf("summary не записан отдельно в JSON: %s", raw)
+	}
+}
+
+// A comparison report is evidence, including an interrupted compressed run. The
+// CLI must not leave only the flattering full-context row when the second mode has
+// already made provider calls and then fails: that would hide the failed run and
+// its summary spend from the person reading the JSONL file.
+func TestCompressionProbeKeepsThePartialCompressedReportAfterProviderFailure(t *testing.T) {
+	// Calls 0–10 are the full mode. In compressed mode fact 6 is call 16 and its
+	// summary is 17; fact 7 is 18 and its next summary is 19. Failing that second
+	// summary proves that the compact report is written after some paid compression
+	// work but before any quality check can be falsely called complete.
+	p := &provider{failAt: map[int]bool{19: true}}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	rows := filepath.Join(work, "compression.jsonl")
+
+	cmd := exec.Command(bin, "-compression-probe", "-keep-last", "10", "-compression-rows", rows)
+	cmd.Dir = work
+	cmd.Env = append(os.Environ(),
+		"DEEPSEEK_API_URL="+srv.URL,
+		"DEEPSEEK_API_KEY=e2e-фальшивый-ключ",
+		"DEEPSEEK_MODEL=deepseek-v4-flash",
+	)
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("замер с ошибкой поставщика завершился успехом:\nstdout: %s\nstderr: %s", out.String(), errb.String())
+	}
+
+	f, err := os.Open(rows)
+	if err != nil {
+		t.Fatalf("отчёт после частичного прогона не записан: %v", err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	var whole, compact struct {
+		Mode  string `json:"mode"`
+		Total struct {
+			Calls int `json:"calls"`
+		} `json:"total"`
+		SummarySpend struct {
+			Calls int `json:"calls"`
+		} `json:"summarySpend"`
+	}
+	if err := dec.Decode(&whole); err != nil {
+		t.Fatalf("полный отчёт не читается: %v", err)
+	}
+	if err := dec.Decode(&compact); err != nil {
+		t.Fatalf("частичный compact-отчёт не читается: %v", err)
+	}
+	if whole.Mode != "full" || whole.Total.Calls != 11 {
+		t.Fatalf("полный отчёт повреждён: %+v", whole)
+	}
+	if compact.Mode != "compressed" || compact.Total.Calls == 0 || compact.SummarySpend.Calls == 0 {
+		t.Fatalf("частичный compact-отчёт не сохранил уже сделанный расход: %+v", compact)
+	}
+	var unexpected any
+	if err := dec.Decode(&unexpected); err != io.EOF {
+		t.Fatalf("в отчёте ожидались ровно две строки, получили лишнюю или ошибку: %v", err)
 	}
 }
 

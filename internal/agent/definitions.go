@@ -92,13 +92,30 @@ type DumpedCounter struct {
 	Samples           []DumpedCount `json:"samples"`
 }
 
+// DumpedCompression is a worked example of the Day 9 request shape. The showcase
+// keeps the summary in browser storage but sends the same one marked system context
+// and the same raw tail as Go; this data lets its parity check compare that shape
+// rather than trust a second hand-written implementation.
+type DumpedCompression struct {
+	System           string          `json:"system"`
+	KeepLastMessages int             `json:"keepLastMessages"`
+	Summary          string          `json:"summary"`
+	Turns            []string        `json:"turns"`
+	Next             string          `json:"next"`
+	Sent             []DumpedMessage `json:"sent"`
+	SummarySent      []DumpedMessage `json:"summarySent"`
+	SummaryMaxTokens int             `json:"summaryMaxTokens"`
+	SummaryThinking  string          `json:"summaryThinking"`
+}
+
 // Definitions is everything the JS mirror has to agree with.
 type Definitions struct {
-	DefaultSystem string        `json:"defaultSystem"`
-	Stacks        []DumpedStack `json:"stacks"`
-	Costs         []DumpedCost  `json:"costs"`
-	Counter       DumpedCounter `json:"counter"`
-	Rules         []string      `json:"rules"`
+	DefaultSystem string            `json:"defaultSystem"`
+	Stacks        []DumpedStack     `json:"stacks"`
+	Compression   DumpedCompression `json:"compression"`
+	Costs         []DumpedCost      `json:"costs"`
+	Counter       DumpedCounter     `json:"counter"`
+	Rules         []string          `json:"rules"`
 }
 
 // recorder answers predictably and keeps the last request, so the examples below are
@@ -106,6 +123,34 @@ type Definitions struct {
 type recorder struct {
 	sent []DumpedMessage
 	n    int
+}
+
+type compressionRecorder struct {
+	answers          [][]DumpedMessage
+	summarySent      []DumpedMessage
+	summaryMaxTokens int
+	summaryThinking  string
+	turn             int
+	summary          int
+}
+
+func (r *compressionRecorder) AskWith(_ context.Context, messages []llm.Message, opts llm.Options) (llm.Answer, error) {
+	copyOf := make([]DumpedMessage, 0, len(messages))
+	for _, m := range messages {
+		copyOf = append(copyOf, DumpedMessage{Role: m.Role, Content: m.Content})
+	}
+	if len(messages) == 2 && messages[0].Role == "system" && messages[0].Content == summarySystem {
+		if r.summarySent == nil {
+			r.summarySent = append([]DumpedMessage(nil), copyOf...)
+			r.summaryMaxTokens = opts.MaxTokens
+			r.summaryThinking = opts.Thinking
+		}
+		r.summary++
+		return llm.Answer{Content: fmt.Sprintf("summary-%d", r.summary), Model: llm.DefaultModel}, nil
+	}
+	r.answers = append(r.answers, copyOf)
+	r.turn++
+	return llm.Answer{Content: fmt.Sprintf("ответ %d", r.turn), Model: llm.DefaultModel}, nil
 }
 
 func (r *recorder) AskWith(_ context.Context, messages []llm.Message, _ llm.Options) (llm.Answer, error) {
@@ -130,7 +175,33 @@ func BuildDefinitions(defaultSystem string) (Definitions, error) {
 			"maxTurns режет целыми обменами и с самых старых: пользовательский ход без ответа читался бы моделью как вопрос, который она проигнорировала",
 			"пустой ответ модели — ошибка, ход в историю не попадает, но расход отдаётся наружу",
 			"отклонённый проверкой ответ в историю не попадает",
+			"при сжатии summary идёт внутри единственного помеченного system-сообщения, а сырой хвост остаётся дословным",
 		},
+	}
+
+	compressed := &compressionRecorder{}
+	compressedAgent, err := New(compressed, Config{SystemPrompt: defaultSystem, KeepLastMessages: 2})
+	if err != nil {
+		return defs, err
+	}
+	for _, q := range []string{"первый", "второй", "третий"} {
+		if _, err := compressedAgent.Ask(context.Background(), q); err != nil {
+			return defs, err
+		}
+	}
+	if len(compressed.answers) != 3 {
+		return defs, fmt.Errorf("agent: ожидалось три обычных запроса сжатого примера, получено %d", len(compressed.answers))
+	}
+	defs.Compression = DumpedCompression{
+		System:           defaultSystem,
+		KeepLastMessages: 2,
+		Summary:          "summary-1",
+		Turns:            []string{"второй"},
+		Next:             "третий",
+		Sent:             append([]DumpedMessage(nil), compressed.answers[2]...),
+		SummarySent:      append([]DumpedMessage(nil), compressed.summarySent...),
+		SummaryMaxTokens: compressed.summaryMaxTokens,
+		SummaryThinking:  compressed.summaryThinking,
 	}
 
 	cases := []struct {

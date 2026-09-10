@@ -51,11 +51,11 @@ const (
 // change is detected rather than silently misread: a file from a newer version is
 // refused, not parsed on a guess.
 //
-// Version 2 added Spend — what the conversation has been billed. Version 1 files are
-// still read: an older conversation has no recorded spend, which is exactly what a
-// zero Spend means, and refusing to continue a real conversation over a field that
-// did not exist when it was written would be the format serving itself.
-const SnapshotVersion = 2
+// Version 2 added Spend — what the conversation has been billed. Version 3 adds the
+// compressed history as a field distinct from the newest raw messages. Versions 1 and
+// 2 are still read: an older conversation has no summary, which truthfully means its
+// full history remains in Messages until the next successful compression.
+const SnapshotVersion = 3
 
 // Snapshot is the conversation as it is written down. Messages are the whole of what
 // the task asks to store; the rest is what restoring needs in order not to lie.
@@ -79,8 +79,17 @@ type Snapshot struct {
 	// files, where its zero value is the truthful answer: nothing was recorded.
 	// No omitempty: encoding/json never omits a struct value, so the tag would have
 	// promised an omission that does not happen.
-	Spend    Totals    `json:"spend"`
-	Messages []Message `json:"messages"`
+	Spend Totals `json:"spend"`
+	// Summary holds the semantic replacement for messages no longer present below.
+	// It is deliberately not put into Messages: the task asks to keep the newest N
+	// messages "as is", and treating a model-written summary as one of them would
+	// blur the two layers on disk and after restart.
+	Summary            string `json:"summary"`
+	CompressedMessages int    `json:"compressedMessages"`
+	// SummarySpend is the subset of Spend spent producing summaries. The total still
+	// includes it: a comparison that leaves it out reports an imaginary saving.
+	SummarySpend Totals    `json:"summarySpend"`
+	Messages     []Message `json:"messages"`
 }
 
 // Store is where a conversation lives between runs. Load on an empty store returns a
@@ -238,6 +247,46 @@ func validate(snap Snapshot) error {
 	}
 	if err := validateSpend(snap.Spend); err != nil {
 		return err
+	}
+	if strings.TrimSpace(snap.Summary) == "" && snap.CompressedMessages > 0 {
+		return fmt.Errorf("сжато сообщений %d, но резюме пусто", snap.CompressedMessages)
+	}
+	if snap.CompressedMessages < 0 || snap.CompressedMessages%2 != 0 {
+		return fmt.Errorf("сжато сообщений %d — нужны неотрицательное чётное число полных сообщений", snap.CompressedMessages)
+	}
+	if err := validateSpend(snap.SummarySpend); err != nil {
+		return fmt.Errorf("расход суммаризации: %w", err)
+	}
+	if err := validateSpendSubset(snap.SummarySpend, snap.Spend); err != nil {
+		return fmt.Errorf("расход суммаризации: %w", err)
+	}
+	return nil
+}
+
+// validateSpendSubset makes the summary subtotal auditable after a restart. It may
+// equal the whole conversation (a summarizer failed before a normal answer was ever
+// recorded), but it can never exceed the requests the conversation says it made.
+func validateSpendSubset(summary, total Totals) error {
+	for _, f := range []struct {
+		name    string
+		summary int
+		total   int
+	}{
+		{"вызовов", summary.Calls, total.Calls},
+		{"неудачных вызовов", summary.Failed, total.Failed},
+		{"входных токенов", summary.PromptTokens, total.PromptTokens},
+		{"выходных токенов", summary.CompletionTokens, total.CompletionTokens},
+		{"токенов рассуждения", summary.ReasoningTokens, total.ReasoningTokens},
+		{"токенов из кэша", summary.CachedTokens, total.CachedTokens},
+		{"токенов мимо кэша", summary.MissedTokens, total.MissedTokens},
+		{"вызовов по неизвестной цене", summary.Unpriced, total.Unpriced},
+	} {
+		if f.summary > f.total {
+			return fmt.Errorf("%s суммаризации %d больше общего расхода %d", f.name, f.summary, f.total)
+		}
+	}
+	if summary.Cost > total.Cost {
+		return fmt.Errorf("цена суммаризации %.6f больше общей цены %.6f", summary.Cost, total.Cost)
 	}
 	return nil
 }

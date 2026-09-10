@@ -60,6 +60,12 @@ func main() {
 		windowSize = flag.String("window-sizes", "50000,1500000", "ступени замера окна в токенах ПО ЛОКАЛЬНОЙ ОЦЕНКЕ, через запятую: сначала контроль, затем за пределом окна модели")
 		tokenRows  = flag.String("token-rows", "", "куда дописывать строки замера дня 8; по умолчанию day-08/<замер>.jsonl")
 
+		// Day 9: preserve a raw tail and compress the older conversation.
+		keepLast         = flag.Int("keep-last", 10, "сколько последних сообщений хранить дословно; 0 — выключить сжатие")
+		contextOnly      = flag.Bool("context", false, "показать слои контекста и расход суммаризации, не спрашивая модель")
+		compressionProbe = flag.Bool("compression-probe", false, "замер дня 9: одинаковый диалог целиком и со сжатием")
+		compressionRows  = flag.String("compression-rows", "day-09/compression.jsonl", "куда записать два сырых отчёта замера сжатия")
+
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
 		probeOut  = flag.String("probe-rows", "day-07/context-probe-split.jsonl", "куда дописывать строки замера контекста")
@@ -83,6 +89,7 @@ func main() {
 		ReasoningEffort:  *effort,
 		MaxContextTokens: *maxContext,
 		OnOverflow:       agent.OverflowPolicy(*onOverflow),
+		KeepLastMessages: *keepLast,
 	}
 	if *temp >= 0 {
 		t := *temp
@@ -114,6 +121,12 @@ func main() {
 	// the CLI's ordinary "коротко и по делу" would measure brevity instead.
 	if *tokenProbe == "growth" || *tokenProbe == "ceiling" {
 		cfg.SystemPrompt = agent.GrowthSystemPrompt
+	}
+	// The recorded probes belong to days 7–8 and must keep measuring their original
+	// full-history / overflow policies. Day 9 compression is an ordinary dialogue
+	// mode, not a silent alteration of historical measurements.
+	if *ctxProbe > 0 || *tokenProbe != "" {
+		cfg.KeepLastMessages = 0
 	}
 
 	// The interface picks which conversation and where it lives. It does not know
@@ -171,6 +184,10 @@ func main() {
 		fmt.Println(a.Totals())
 		return
 	}
+	if *contextOnly {
+		printContext(a)
+		return
+	}
 
 	if *tokenProbe != "" {
 		// Замеры growth и ceiling дописывают синтетические ходы в ту беседу, на
@@ -190,6 +207,12 @@ func main() {
 			}
 		}
 		if err := runTokenProbe(*tokenProbe, a, cfg, *model, *probeTurns, *windowSize, *tokenRows); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *compressionProbe {
+		if err := runCompressionProbe(withoutStore(cfg), *model, *compressionRows); err != nil {
 			fail(err)
 		}
 		return
@@ -215,9 +238,13 @@ func askOnce(a *agent.Agent, question string, quiet, tokens bool) error {
 	// A turn that was answered but not written down is not a failed turn: the answer
 	// is real and was paid for. It is a failed day 7, though, so the answer is
 	// printed and the warning is loud.
-	if errors.Is(err, agent.ErrNotSaved) {
+	if recoveredReply(reply, err) {
 		fmt.Println(reply.Text)
-		fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — этот ход не переживёт перезапуск\n", err)
+		if errors.Is(err, agent.ErrNotSaved) {
+			fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — этот ход не переживёт перезапуск\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — ответ сохранён, но старые сообщения остались несжатыми\n", err)
+		}
 		if !quiet {
 			fmt.Fprintln(os.Stderr, spend(reply))
 		}
@@ -232,6 +259,7 @@ func askOnce(a *agent.Agent, question string, quiet, tokens bool) error {
 	}
 	if tokens {
 		fmt.Fprintln(os.Stderr, a.Totals())
+		printContext(a)
 	}
 	return nil
 }
@@ -391,7 +419,7 @@ func runContextProbe(a *agent.Agent, turns int, rowsPath string) error {
 // converse is the dialogue mode. It exists because the agent carries the message
 // stack itself: without more than one turn, that would be an untested claim.
 func converse(a *agent.Agent, quiet, tokens bool) error {
-	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново и стереть сохранённое, /stack — сколько ходов в контексте, /totals — расход беседы, /exit — выход.\n",
+	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново и стереть сохранённое, /stack — сколько ходов в контексте, /context — слои контекста, /totals — расход беседы, /exit — выход.\n",
 		a.Name())
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -416,6 +444,9 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 		case "/stack":
 			fmt.Fprintf(os.Stderr, "ходов в контексте: %d\n", a.Turns())
 			continue
+		case "/context":
+			printContext(a)
+			continue
 		case "/totals":
 			fmt.Fprintln(os.Stderr, a.Totals())
 			continue
@@ -424,8 +455,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			fmt.Fprintln(os.Stderr, "до отправки:", a.Preflight(line))
 		}
 		reply, err := a.Ask(context.Background(), line)
-		if errors.Is(err, agent.ErrNotSaved) {
-			fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — этот ход не переживёт перезапуск\n", err)
+		if recoveredReply(reply, err) {
+			if errors.Is(err, agent.ErrNotSaved) {
+				fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — этот ход не переживёт перезапуск\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "ВНИМАНИЕ: %v — ответ сохранён, но старые сообщения остались несжатыми\n", err)
+			}
 		} else if err != nil {
 			// A failed turn is reported and the conversation goes on: the agent
 			// guarantees the stack was left untouched.
@@ -441,9 +476,106 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 		}
 		if tokens {
 			fmt.Fprintln(os.Stderr, a.Totals())
+			printContext(a)
 		}
 	}
 	return in.Err()
+}
+
+// recoveredReply is the narrow exception to ordinary error handling: the agent did
+// obtain a usable answer, then could not save it or compress older history. A joined
+// error may also contain ErrNotCompressed from a failed pre-compression attempt, so
+// the sentinel alone is not enough — without reply text there was no answer to show.
+func recoveredReply(reply agent.Reply, err error) bool {
+	return reply.Text != "" && (errors.Is(err, agent.ErrNotSaved) || errors.Is(err, agent.ErrNotCompressed))
+}
+
+func printContext(a *agent.Agent) {
+	c := a.ContextState()
+	if !c.Enabled {
+		fmt.Fprintln(os.Stderr, "сжатие: выключено (-keep-last=0); история хранится и отправляется целиком")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "сжатие: дословно сообщений %d из лимита %d · сжато сообщений %d · summary ≈ %d токенов\n",
+		c.RawMessages, c.KeepLastMessages, c.CompressedMessages, c.SummaryTokens)
+	if c.SummarySpend.Calls > 0 {
+		fmt.Fprintln(os.Stderr, "суммаризация:", c.SummarySpend)
+	}
+}
+
+// runCompressionProbe compares the same deliberately closed dialogue in the two
+// modes the task asks for. The summary calls are included in the compressed total;
+// otherwise a lower answer-request token count could be mistaken for a saving.
+func runCompressionProbe(cfg agent.Config, model, rowsPath string) error {
+	if cfg.KeepLastMessages == 0 {
+		return errors.New("-compression-probe требует -keep-last больше нуля")
+	}
+	if rowsPath == "" {
+		return errors.New("-compression-rows не может быть пустым")
+	}
+	if err := os.MkdirAll(filepath.Dir(rowsPath), 0o755); err != nil {
+		return fmt.Errorf("каталог замера сжатия: %w", err)
+	}
+
+	base := withoutStore(cfg)
+	base.MaxTokens = 32
+	base.Thinking = "disabled"
+	temperature := 0.0
+	base.Temperature = &temperature
+
+	// Cache comparisons are only meaningful when neither mode inherits a warm
+	// prefix from the other or from a previous invocation. A unique mark goes first:
+	// DeepSeek matches cached prefixes from their beginning, so appending it would
+	// leave the opening cache units shared.
+	runID := fmt.Sprintf("day09-%d", time.Now().UnixNano())
+	fullCfg := base
+	fullCfg.SystemPrompt = "Метка прогона full-" + runID + ". " + agent.CompressionProbeSystem
+	fullCfg.KeepLastMessages = 0
+	compressedCfg := base
+	compressedCfg.SystemPrompt = "Метка прогона compressed-" + runID + ". " + agent.CompressionProbeSystem
+	full, err := build(fullCfg, model)
+	if err != nil {
+		return fmt.Errorf("полный контекст: %w", err)
+	}
+	compressed, err := build(compressedCfg, model)
+	if err != nil {
+		return fmt.Errorf("сжатый контекст: %w", err)
+	}
+
+	f, err := os.OpenFile(rowsPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("отчёт замера сжатия %s: %w", rowsPath, err)
+	}
+	whole, fullErr := agent.RunCompressionProbe(context.Background(), full, "full")
+	whole.Run = runID
+	if err := agent.WriteCompressionProbeReports(f, whole); err != nil {
+		f.Close()
+		return fmt.Errorf("запись полного прогона: %w", err)
+	}
+	if fullErr != nil {
+		f.Close()
+		return fullErr
+	}
+	compact, compactErr := agent.RunCompressionProbe(context.Background(), compressed, "compressed")
+	compact.Run = runID
+	if err := agent.WriteCompressionProbeReports(f, compact); err != nil {
+		f.Close()
+		return fmt.Errorf("запись замера сжатия: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("закрытие замера сжатия: %w", err)
+	}
+	if compactErr != nil {
+		return compactErr
+	}
+
+	for _, report := range []agent.CompressionProbeReport{whole, compact} {
+		fmt.Printf("%s: качество %d/%d · %s\n", report.Mode, report.Correct, len(report.Checks), report.Total)
+		if report.SummarySpend.Calls > 0 {
+			fmt.Println("  суммаризация:", report.SummarySpend)
+		}
+	}
+	return nil
 }
 
 // runReasoningProbe is the day's one measurement: the same question, same agent

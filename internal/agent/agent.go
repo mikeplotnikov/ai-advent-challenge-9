@@ -63,6 +63,17 @@ type Config struct {
 	// would go, and it is not day 6's job to pretend it is already there.
 	MaxTurns int
 
+	// KeepLastMessages is day 9's context compression policy. When it is positive,
+	// the agent keeps exactly this many newest messages verbatim and replaces every
+	// older complete exchange with one separately stored summary. It must be even:
+	// a conversation is made of user/assistant pairs, and retaining a lone question
+	// would tell the model that an earlier assistant ignored it.
+	//
+	// 0 keeps the day-8 behaviour unchanged. It is deliberately incompatible with
+	// MaxTurns and OverflowTrim: compression preserves old context semantically,
+	// while those policies delete it.
+	KeepLastMessages int
+
 	// MaxContextTokens is day 8: the agent's own ceiling on what one request may
 	// weigh, in tokens, measured by the local estimator before the call. 0 means no
 	// ceiling of ours — the provider's window is then the only limit, and the
@@ -164,7 +175,13 @@ type Agent struct {
 	// send time. Keeping it out means changing the role mid-conversation cannot
 	// leave a stale system message buried in the history.
 	stack []llm.Message
-	turns int
+	// summary is the compressed part of the conversation. It is never appended to
+	// stack or saved as a normal turn: a later request puts it into its own marked
+	// context section, so the raw recent tail remains inspectable and exact.
+	summary            string
+	compressedMessages int
+	summarySpend       Totals
+	turns              int
 	// restored is what Load found when this agent was built, kept so the interface
 	// can say "загружено N ходов" without asking the store a second time.
 	restored Restored
@@ -196,6 +213,15 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if cfg.MaxTurns < 0 {
 		return nil, fmt.Errorf("agent: MaxTurns = %d, отрицательным быть не может", cfg.MaxTurns)
 	}
+	if cfg.KeepLastMessages < 0 {
+		return nil, fmt.Errorf("agent: KeepLastMessages = %d, отрицательным быть не может", cfg.KeepLastMessages)
+	}
+	if cfg.KeepLastMessages > 0 && (cfg.KeepLastMessages < 2 || cfg.KeepLastMessages%2 != 0) {
+		return nil, fmt.Errorf("agent: KeepLastMessages = %d, нужны минимум два и только чётное число сообщений", cfg.KeepLastMessages)
+	}
+	if cfg.KeepLastMessages > 0 && cfg.MaxTurns > 0 {
+		return nil, errors.New("agent: KeepLastMessages и MaxTurns нельзя включать вместе: сжатие сохраняет прошлое, а окно его удаляет")
+	}
 	if cfg.MaxContextTokens < 0 {
 		return nil, fmt.Errorf("agent: MaxContextTokens = %d, отрицательным быть не может", cfg.MaxContextTokens)
 	}
@@ -204,6 +230,9 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	default:
 		return nil, fmt.Errorf("agent: OnOverflow = %q, допустимы %q, %q и %q",
 			cfg.OnOverflow, OverflowRefuse, OverflowTrim, OverflowWarn)
+	}
+	if cfg.KeepLastMessages > 0 && cfg.OnOverflow == OverflowTrim {
+		return nil, errors.New("agent: KeepLastMessages и OnOverflow=trim нельзя включать вместе: сжатие сохраняет прошлое, а trim его удаляет")
 	}
 	if cfg.OnOverflow != "" && cfg.MaxContextTokens == 0 {
 		return nil, fmt.Errorf("agent: OnOverflow = %q без MaxContextTokens — политика без потолка никогда не сработает",
@@ -232,6 +261,12 @@ func (a *Agent) restore() error {
 	if len(snap.Messages) == 0 && snap.Turns == 0 {
 		return nil
 	}
+	// A compressed snapshot has intentionally discarded its old verbatim exchanges.
+	// Turning compression off later cannot turn that summary back into the full
+	// dialogue, so continuing would make -keep-last=0 lie about what it sends.
+	if a.cfg.KeepLastMessages == 0 && snap.CompressedMessages > 0 {
+		return fmt.Errorf("%s: беседа уже сжата; -keep-last=0 не может восстановить удалённую дословную историю. Используй новую беседу для контроля без сжатия", a.Name())
+	}
 
 	a.stack = make([]llm.Message, 0, len(snap.Messages))
 	for _, m := range snap.Messages {
@@ -239,6 +274,9 @@ func (a *Agent) restore() error {
 	}
 	a.turns = snap.Turns
 	a.totals = snap.Spend
+	a.summary = snap.Summary
+	a.compressedMessages = snap.CompressedMessages
+	a.summarySpend = snap.SummarySpend
 	// The window applies to loaded history too. Otherwise -max-turns would cap what
 	// this run adds while quietly sending an unbounded history from the file.
 	a.trim()
@@ -285,6 +323,9 @@ func (a *Agent) Turns() int { return a.turns }
 // not come back on the next start, which is the whole difference day 7 introduces.
 func (a *Agent) Reset() error {
 	a.stack = nil
+	a.summary = ""
+	a.compressedMessages = 0
+	a.summarySpend = Totals{}
 	a.turns = 0
 	a.restored = Restored{}
 	// The spend goes with the conversation it belongs to. Keeping it would report
@@ -307,10 +348,30 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		return Reply{}, ErrEmptyInput
 	}
 
+	// A version-1/2 session can wake up with more raw messages than today's policy
+	// permits. Compress before assembling this request, not only after its answer:
+	// otherwise the very first post-upgrade request would still send the full legacy
+	// history. A failed attempt leaves the raw stack untouched and is reported after
+	// the usable answer has been persisted.
+	preCompressionAttempt := a.cfg.KeepLastMessages > 0 && len(a.stack) > a.cfg.KeepLastMessages
+	compressionErr := a.compress(ctx)
+
 	// Day 8: the ceiling is checked before the call, because after the call the
 	// money is already spent. A refusal here costs nothing at all.
 	send, dropped, warning, est, err := a.fit(input)
 	if err != nil {
+		// A preflight refusal still happens after an attempted compression when a
+		// legacy session was too long. Persist that attempt (including any billed
+		// failed summary call) before returning, or a restart would forget both the
+		// new summary and its cost.
+		if preCompressionAttempt {
+			if persistErr := a.persist(); persistErr != nil {
+				return Reply{Estimated: est}, persistErr
+			}
+		}
+		if compressionErr != nil {
+			return Reply{Estimated: est}, errors.Join(err, compressionErr)
+		}
 		return Reply{Estimated: est}, err
 	}
 
@@ -335,7 +396,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		// dropped: a conversation's total that omits its failures under-reports the
 		// spend exactly where the day is about spend.
 		a.record(usage, true)
-		return base, fmt.Errorf("%s: вызов модели не удался: %w", a.Name(), err)
+		return a.persistFailedReply(base, fmt.Errorf("%s: вызов модели не удался: %w", a.Name(), err), compressionErr)
 	}
 
 	text := strings.TrimSpace(answer.Content)
@@ -343,12 +404,12 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		// The call was still billed, so the caller is told what it cost even though
 		// the exchange failed.
 		a.record(usage, true)
-		return base, ErrEmptyAnswer
+		return a.persistFailedReply(base, ErrEmptyAnswer, compressionErr)
 	}
 	if a.cfg.Validate != nil {
 		if err := a.cfg.Validate(text); err != nil {
 			a.record(usage, true)
-			return base, fmt.Errorf("%s: ответ не прошёл проверку: %w", a.Name(), err)
+			return a.persistFailedReply(base, fmt.Errorf("%s: ответ не прошёл проверку: %w", a.Name(), err), compressionErr)
 		}
 	}
 	a.record(usage, false)
@@ -373,6 +434,14 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	reply.Dropped = dropped
 	reply.Reasoned = answer.Reasoned()
 
+	// Compression runs only after a complete, usable exchange has joined the
+	// conversation. If its own model call fails, the raw messages remain intact and
+	// are persisted below; losing them before a summary exists would turn an
+	// optimisation into silent data loss.
+	if compressionErr == nil {
+		compressionErr = a.compress(ctx)
+	}
+
 	// Persisting is part of the turn, not an afterthought at exit: a process killed
 	// between two questions must lose nothing. The reply is returned in full even
 	// when the write fails — the call happened and was billed — but the failure
@@ -381,7 +450,24 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	if err := a.persist(); err != nil {
 		return reply, err
 	}
+	if compressionErr != nil {
+		return reply, compressionErr
+	}
 	return reply, nil
+}
+
+// persistFailedReply keeps every already-billed state change across a restart. A
+// preflight compression can successfully replace old raw context before the answer
+// request; if that request then fails, skipping Save would repeat the summary call
+// and make the stored cost ledger less than the provider has charged.
+func (a *Agent) persistFailedReply(reply Reply, cause, compressionErr error) (Reply, error) {
+	if err := a.persist(); err != nil {
+		cause = errors.Join(cause, err)
+	}
+	if compressionErr != nil {
+		cause = errors.Join(cause, compressionErr)
+	}
+	return reply, cause
 }
 
 // finishLength is the provider's word for "stopped because it ran out of room",
@@ -395,14 +481,17 @@ func (a *Agent) persist() error {
 		return nil
 	}
 	snap := Snapshot{
-		Version:  SnapshotVersion,
-		Agent:    a.Name(),
-		Model:    a.cfg.Model,
-		System:   a.cfg.SystemPrompt,
-		Turns:    a.turns,
-		Updated:  time.Now(),
-		Spend:    a.totals,
-		Messages: make([]Message, 0, len(a.stack)),
+		Version:            SnapshotVersion,
+		Agent:              a.Name(),
+		Model:              a.cfg.Model,
+		System:             a.cfg.SystemPrompt,
+		Turns:              a.turns,
+		Updated:            time.Now(),
+		Spend:              a.totals,
+		Summary:            a.summary,
+		CompressedMessages: a.compressedMessages,
+		SummarySpend:       a.summarySpend,
+		Messages:           make([]Message, 0, len(a.stack)),
 	}
 	for _, m := range a.stack {
 		snap.Messages = append(snap.Messages, Message{Role: m.Role, Content: m.Content})
@@ -424,8 +513,8 @@ func (a *Agent) messagesFor(input string) []llm.Message {
 // sends a trimmed one without the agent having committed to the trim yet.
 func (a *Agent) messagesWith(stack []llm.Message, input string) []llm.Message {
 	out := make([]llm.Message, 0, len(stack)+2)
-	if a.cfg.SystemPrompt != "" {
-		out = append(out, llm.Message{Role: "system", Content: a.cfg.SystemPrompt})
+	if system := a.contextSystemPrompt(); system != "" {
+		out = append(out, llm.Message{Role: "system", Content: system})
 	}
 	out = append(out, stack...)
 	return append(out, llm.Message{Role: "user", Content: input})

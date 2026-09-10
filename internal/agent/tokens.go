@@ -120,7 +120,10 @@ func estimateWeight(s string) float64 {
 // they behave differently: the system prompt is constant, the history grows by a
 // whole exchange per turn, and the question is the only part the user controls.
 type Estimate struct {
-	System  int
+	System int
+	// Summary is the compressed older history. It travels inside the system message
+	// but is reported separately from the role instruction and the raw tail.
+	Summary int
 	History int
 	Input   int
 	// Overhead is the chat format's own cost: role markers and delimiters that no
@@ -135,8 +138,8 @@ type Estimate struct {
 
 // String is the one-line form the CLI prints before a call.
 func (e Estimate) String() string {
-	return fmt.Sprintf("система %d + история %d (%d обменов) + вопрос %d + формат %d = %d токенов",
-		e.System, e.History, e.Exchanges, e.Input, e.Overhead, e.Total)
+	return fmt.Sprintf("система %d + summary %d + история %d (%d обменов) + вопрос %d + формат %d = %d токенов",
+		e.System, e.Summary, e.History, e.Exchanges, e.Input, e.Overhead, e.Total)
 }
 
 // OverflowPolicy is what the agent does when the request does not fit the ceiling it
@@ -183,6 +186,11 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	var e Estimate
 	if a.cfg.SystemPrompt != "" {
 		e.System = EstimateTokens(a.cfg.SystemPrompt)
+	}
+	if summary := a.summaryContext(); summary != "" {
+		e.Summary = EstimateTokens(summary)
+	}
+	if e.System > 0 || e.Summary > 0 {
 		e.Messages++
 	}
 	for _, m := range stack {
@@ -196,7 +204,7 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	if a.cfg.ResponseFormat != "" {
 		e.Overhead += tokensForResponseFormat
 	}
-	e.Total = e.System + e.History + e.Input + e.Overhead
+	e.Total = e.System + e.Summary + e.History + e.Input + e.Overhead
 	return e
 }
 
@@ -237,9 +245,9 @@ func (a *Agent) fit(input string) (send []llm.Message, dropped int, warning stri
 			a.Name(), ErrInputAlone, est.Total, limit)
 
 	default: // OverflowRefuse
-		return nil, 0, "", est, fmt.Errorf("%s: %w: оценка %d токенов (система %d + история %d + вопрос %d + формат %d) при потолке %d",
+		return nil, 0, "", est, fmt.Errorf("%s: %w: оценка %d токенов (система %d + summary %d + история %d + вопрос %d + формат %d) при потолке %d",
 			a.Name(), ErrContextOverflow,
-			est.Total, est.System, est.History, est.Input, est.Overhead, limit)
+			est.Total, est.System, est.Summary, est.History, est.Input, est.Overhead, limit)
 	}
 }
 
@@ -310,18 +318,30 @@ func (a *Agent) Totals() Totals { return a.totals }
 // record adds one billed call to the running totals. It is called for every call the
 // provider was asked to make, including the ones that came back unusable.
 func (a *Agent) record(u Usage, failed bool) {
-	a.totals.Calls++
+	addUsage(&a.totals, u, failed)
+}
+
+// recordSummary adds a provider call to the conversation's total and to the separate
+// compression subtotal. Day 9's comparison must charge the summary calls too; showing
+// only the smaller answer request would make an expensive compression look free.
+func (a *Agent) recordSummary(u Usage, failed bool) {
+	addUsage(&a.totals, u, failed)
+	addUsage(&a.summarySpend, u, failed)
+}
+
+func addUsage(t *Totals, u Usage, failed bool) {
+	t.Calls++
 	if failed {
-		a.totals.Failed++
+		t.Failed++
 	}
-	a.totals.PromptTokens += u.PromptTokens
-	a.totals.CompletionTokens += u.CompletionTokens
-	a.totals.ReasoningTokens += u.ReasoningTokens
-	a.totals.CachedTokens += u.CachedTokens
-	a.totals.MissedTokens += u.MissedTokens
+	t.PromptTokens += u.PromptTokens
+	t.CompletionTokens += u.CompletionTokens
+	t.ReasoningTokens += u.ReasoningTokens
+	t.CachedTokens += u.CachedTokens
+	t.MissedTokens += u.MissedTokens
 	if u.Priced {
-		a.totals.Cost += u.Cost
+		t.Cost += u.Cost
 	} else {
-		a.totals.Unpriced++
+		t.Unpriced++
 	}
 }
