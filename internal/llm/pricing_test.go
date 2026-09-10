@@ -255,3 +255,26 @@ func TestMalformedUsageNeverBecomesADiscount(t *testing.T) {
 		}
 	}
 }
+
+// The rates of the model that replaced V4 Flash on 2026-09-10, as the provider's
+// page prints them. A call under the legacy name is answered as "deepseek-flash", so
+// a table without this row priced every call of the day as unknown — which is how it
+// was found: the day-8 demo, the day about cost, showed "цена неизвестна" on camera.
+func TestTheModelThatReplacedV4FlashIsPriced(t *testing.T) {
+	p, ok := PricingTable()["deepseek-flash"]
+	if !ok {
+		t.Fatal("в прайсе нет deepseek-flash — все сегодняшние вызовы будут без цены")
+	}
+	want := Pricing{
+		OffPeak: Price{CacheHit: 0.003, CacheMiss: 0.15, Output: 0.6},
+		Peak:    Price{CacheHit: 0.006, CacheMiss: 0.3, Output: 1.2},
+	}
+	if p != want {
+		t.Fatalf("ставки deepseek-flash %+v, на странице поставщика %+v", p, want)
+	}
+	u := Usage{PromptTokens: 1_000_000, PromptCacheMissTokens: 1_000_000}
+	off := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	if cost, priced := CostAt("deepseek-flash", u, off); !priced || cost != 0.15 {
+		t.Fatalf("миллион входных токенов мимо кэша вне peak: $%v (есть цена: %v), ожидалось $0.15", cost, priced)
+	}
+}

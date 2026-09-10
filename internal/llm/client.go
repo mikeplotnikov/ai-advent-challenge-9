@@ -64,7 +64,28 @@ type Pricing struct {
 // happened — the earlier reading was wrong, or the provider changed its prices —
 // cannot be told apart from here, and the page itself warns that "product prices
 // may vary". day-03/RESULTS.md keeps the dollars it was submitted with.
+//
+// 2026-09-10: the provider retired V4 Flash. Same URL, fetched 06:27 UTC, sha256
+// 100ca51f2755b35297adda34c2d882483f26b4e2f4f72977d7468dd7d843a356, footnote (1):
+// "Use deepseek-flash as the model name. The legacy names deepseek-v4-flash and
+// deepseek-v4-flash-vision-exp are still accepted, but the corresponding models
+// have been retired, their requests are served by the DeepSeek-V4.1-Flash model and
+// billed at the Flash price." A request under the legacy name now comes back with
+// "model": "deepseek-flash" (checked by a live call the same morning), and CostAt is
+// asked for the name the response carries — so the echo, which is the provider's own
+// statement of what served and billed the call, picks the new row.
+//
+// The legacy rows keep the rates they had. They price every call made before the
+// switch, and the page does not say when the switch happened: our two fetches bracket
+// it between 2026-09-09 (old page, byte-identical to 04.09) and 06:27 UTC on 09-10.
+// Footnote (2) announces the next one: from 04:00 UTC on 2026-09-14, requests to
+// deepseek-v4-pro "will all be routed to V4.1 Flash and billed at the V4.1 Flash
+// price". The echo will say so when it happens; this table will not.
 var pricing = map[string]Pricing{
+	"deepseek-flash": {
+		OffPeak: Price{CacheHit: 0.003, CacheMiss: 0.15, Output: 0.6},
+		Peak:    Price{CacheHit: 0.006, CacheMiss: 0.3, Output: 1.2},
+	},
 	"deepseek-v4-flash": {
 		OffPeak: Price{CacheHit: 0.007, CacheMiss: 0.22, Output: 0.66},
 		Peak:    Price{CacheHit: 0.014, CacheMiss: 0.44, Output: 1.32},

@@ -8,8 +8,9 @@
 #   ./day-08/demo.sh --manual   # advances on Enter, for pacing it yourself
 #   PACE=1.4 ./day-08/demo.sh   # slower captions (default 1.0)
 #
-# Run it from the repository root. It makes about ten real calls to DeepSeek (roughly
-# a third of a cent) and touches only its own sessions, ".sessions/demo8*.json".
+# Run it from the repository root. It makes five real calls to DeepSeek (about a tenth
+# of a cent at peak rates, counted from the timed run of 2026-09-10) and touches only its
+# own sessions, ".sessions/demo8*.json". It takes 1 min 39 s at PACE=1.0 (real 98.87).
 #
 # The two runs it does NOT repeat live are the 25-turn growth curve (three minutes of
 # waiting on camera) and the 1.5M-token request that the provider refuses (a 5 MB
