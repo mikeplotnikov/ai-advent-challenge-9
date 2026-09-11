@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-// Builds the human-readable Day 9 result only from the two raw JSONL rows written
-// by the live probe. Keep the conclusion deliberately narrow: the fixture checks
-// planted markers, not arbitrary conversation quality.
+// Builds the human-readable Day 9 result only from raw JSONL rows written by the
+// live probe. It can join the short control and the long-history scenario, but it
+// never blends their totals: each pair remains one like-for-like comparison.
 import { readFile } from "node:fs/promises";
 
 const here = new URL(".", import.meta.url);
-const input = new URL("compression.jsonl", here);
+const defaultInput = new URL("compression.jsonl", here);
+const inputs = process.argv.slice(2);
 
 function fail(message) {
   throw new Error(`day-09 report: ${message}`);
@@ -22,21 +23,36 @@ function optionalInteger(value, label) {
   return integer(value, label);
 }
 
-function money(value, label) {
+function number(value, label) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     fail(`${label} must be a non-negative number`);
   }
+  return value;
+}
+
+function money(value) {
   return `$${value.toFixed(6)}`;
 }
 
 function readTotals(report, field) {
   const total = report[field];
   if (!total || typeof total !== "object") fail(`${report.mode}.${field} is missing`);
+  const prompt = integer(total.promptTokens, `${report.mode}.${field}.promptTokens`);
+  const completion = integer(total.completionTokens ?? 0, `${report.mode}.${field}.completionTokens`);
+  const reasoning = integer(total.reasoningTokens ?? 0, `${report.mode}.${field}.reasoningTokens`);
+  const tokens = prompt + completion + reasoning;
+  const reportedTokens = optionalInteger(total.totalTokens, `${report.mode}.${field}.totalTokens`);
+  if (reportedTokens !== null && reportedTokens !== tokens) {
+    fail(`${report.mode}.${field}.totalTokens disagrees with input + output + reasoning`);
+  }
   return {
     calls: optionalInteger(total.calls, `${report.mode}.${field}.calls`),
-    prompt: integer(total.promptTokens, `${report.mode}.${field}.promptTokens`),
+    prompt,
+    completion,
+    reasoning,
+    tokens,
     cached: integer(total.cachedTokens, `${report.mode}.${field}.cachedTokens`),
-    cost: money(total.cost, `${report.mode}.${field}.cost`),
+    cost: number(total.cost, `${report.mode}.${field}.cost`),
   };
 }
 
@@ -45,43 +61,117 @@ function readReport(report) {
   if (typeof report.run !== "string" || report.run === "") fail("run is missing");
   if (report.mode !== "full" && report.mode !== "compressed") fail("unknown mode");
   if (!Array.isArray(report.checks) || report.checks.length === 0) fail(`${report.mode}.checks is missing`);
+  const checks = report.checks.map((check, index) => {
+    if (!check || typeof check !== "object") fail(`${report.mode}.checks[${index}] is invalid`);
+    if (typeof check.prompt !== "string" || check.prompt === "") fail(`${report.mode}.checks[${index}].prompt is missing`);
+    if (typeof check.expected !== "string" || check.expected === "") fail(`${report.mode}.checks[${index}].expected is missing`);
+    return [check.prompt, check.expected];
+  });
   const correct = integer(report.correct, `${report.mode}.correct`);
   if (correct > report.checks.length) fail(`${report.mode}.correct exceeds checks`);
+  const scenario = report.scenario === undefined ? "short" : report.scenario;
+  if (typeof scenario !== "string" || scenario === "") fail(`${report.mode}.scenario is invalid`);
   return {
     run: report.run,
+    scenario,
     mode: report.mode,
-    checks: report.checks.length,
+    checks: checks.length,
+    checkSignature: JSON.stringify(checks),
     correct,
     total: readTotals(report, "total"),
     summary: readTotals(report, "summarySpend"),
   };
 }
 
-const source = await readFile(input, "utf8");
-const rows = source.trim().split("\n").filter(Boolean).map((line, index) => {
-  try {
-    return readReport(JSON.parse(line));
-  } catch (error) {
-    fail(`line ${index + 1}: ${error.message}`);
+async function readPair(input) {
+  const source = await readFile(input, "utf8");
+  const rows = source.trim().split("\n").filter(Boolean).map((line, index) => {
+    try {
+      return readReport(JSON.parse(line));
+    } catch (error) {
+      fail(`${input.toString()} line ${index + 1}: ${error.message}`);
+    }
+  });
+  if (rows.length !== 2) fail(`${input.toString()}: expected exactly two reports, got ${rows.length}`);
+
+  const full = rows.find((row) => row.mode === "full");
+  const compressed = rows.find((row) => row.mode === "compressed");
+  if (!full || !compressed) fail(`${input.toString()}: both full and compressed reports are required`);
+  if (full.run !== compressed.run) fail(`${input.toString()}: reports are from different probe runs`);
+  if (full.scenario !== compressed.scenario) fail(`${input.toString()}: modes use different scenarios`);
+  if (full.checks !== compressed.checks) fail(`${input.toString()}: modes ran different check counts`);
+  if (full.checkSignature !== compressed.checkSignature) fail(`${input.toString()}: modes ran different exact checks`);
+  return { full, compressed };
+}
+
+function scenarioTitle(scenario) {
+  if (scenario === "short") return "Короткая фактура: контроль накладных расходов";
+  if (scenario === "long") return "Длинная фактура: подробные записи и короткие решения";
+  return `Сценарий ${scenario}`;
+}
+
+function qualityConclusion(full, compressed) {
+  return compressed.correct >= full.correct
+    ? "В этой закрытой фактуре сжатый режим сохранил не меньше проверяемых маркеров, чем полный."
+    : "В этой закрытой фактуре сжатый режим сохранил меньше проверяемых маркеров, чем полный.";
+}
+
+function tokenConclusion(full, compressed) {
+  const delta = compressed.total.tokens - full.total.tokens;
+  if (delta < 0) {
+    return `Сжатие снизило общий расход на ${-delta} токенов. В сравнении учтены вход, выход, рассуждения и все вызовы summary.`;
   }
-});
-if (rows.length !== 2) fail(`expected exactly two reports, got ${rows.length}`);
+  if (delta > 0) {
+    return `Сжатие увеличило общий расход на ${delta} токенов. В сравнении учтены вход, выход, рассуждения и все вызовы summary.`;
+  }
+  return "Общий расход токенов одинаков; одного уменьшения размера следующего запроса для вывода об экономии недостаточно.";
+}
 
-const full = rows.find((row) => row.mode === "full");
-const compressed = rows.find((row) => row.mode === "compressed");
-if (!full || !compressed) fail("both full and compressed reports are required");
-if (full.run !== compressed.run) fail("the reports are from different probe runs");
-if (full.checks !== compressed.checks) fail("the modes ran different check counts");
+function costConclusion(full, compressed) {
+  const delta = compressed.total.cost - full.total.cost;
+  if (delta < 0) return `Стоимость сжатого прогона ниже на ${money(-delta)}; это дополнительная метрика, не замена токенам.`;
+  if (delta > 0) return `Стоимость сжатого прогона выше на ${money(delta)}; это дополнительная метрика, не замена токенам.`;
+  return "Стоимость режимов одинакова; это не меняет токенный вывод выше.";
+}
 
-const quality = compressed.correct >= full.correct
-  ? "В этой закрытой фактуре сжатый режим сохранил не меньше маркеров, чем полный."
-  : "В этой закрытой фактуре сжатый режим сохранил меньше маркеров, чем полный."
-const fullCost = Number(full.total.cost.slice(1));
-const compressedCost = Number(compressed.total.cost.slice(1));
-const economy = compressedCost < fullCost
-  ? `Полная стоимость сжатого прогона ниже на $${(fullCost - compressedCost).toFixed(6)}; в ней уже учтён summary.`
-  : compressedCost === fullCost
-    ? "Полная стоимость режимов одинакова; одного уменьшения размера ответа для вывода об экономии недостаточно."
-    : `Сжатый прогон дороже на $${(compressedCost - fullCost).toFixed(6)} с учётом summary; на этой фактуре его нельзя называть экономией.`;
+function row(label, report) {
+  return `| ${label} | ${report.correct}/${report.checks} | ${report.total.calls ?? "не сообщено"} | ${report.total.prompt} | ${report.total.completion} | ${report.total.reasoning} | ${report.total.tokens} | ${report.total.cached} | ${report.summary.calls ?? "не сообщено"} | ${report.summary.tokens} | ${money(report.total.cost)} |`;
+}
 
-process.stdout.write(`# День 9 — живое сравнение\n\n<!-- Сгенерировано day-09/render-report.mjs из day-09/compression.jsonl.\n     Измеренные значения не редактировать вручную. Прогон: ${full.run}. -->\n\nОдин и тот же закрытый диалог дважды прошёл через DeepSeek: с полной историей и с\nдесятью последними сообщениями плюс отдельное summary. Три точных маркера проверяют\nначало, середину и сырой хвост этой фактуры; это не общая оценка качества модели.\n\n| режим | маркеры | вызовы модели | вход, токенов | из кэша | всего | вызовы summary | summary |\n|---|---:|---:|---:|---:|---:|---:|---:|\n| полная история | ${full.correct}/${full.checks} | ${full.total.calls ?? 'не сообщено'} | ${full.total.prompt} | ${full.total.cached} | ${full.total.cost} | ${full.summary.calls ?? 'не сообщено'} | ${full.summary.cost} |\n| сжатая история | ${compressed.correct}/${compressed.checks} | ${compressed.total.calls ?? 'не сообщено'} | ${compressed.total.prompt} | ${compressed.total.cached} | ${compressed.total.cost} | ${compressed.summary.calls ?? 'не сообщено'} | ${compressed.summary.cost} |\n\n${quality}\n\n${economy}\n\nСырые отчёты поставщика лежат в [compression.jsonl](compression.jsonl). После нового\nпрогона этот файл пересобирается, а не редактируется:\n\n\`\`\`bash\nnode day-09/render-report.mjs > day-09/RESULTS.md\n\`\`\`\n`);
+const pairs = await Promise.all((inputs.length ? inputs : [defaultInput]).map(readPair));
+const scenarios = new Set();
+for (const pair of pairs) {
+  if (scenarios.has(pair.full.scenario)) fail(`scenario ${pair.full.scenario} was supplied more than once`);
+  scenarios.add(pair.full.scenario);
+}
+
+const sections = pairs.map(({ full, compressed }) => `## ${scenarioTitle(full.scenario)}
+
+Один и тот же закрытый диалог дважды прошёл через DeepSeek: с полной историей и с
+десятью последними сообщениями плюс отдельное summary. Маркеры проверяют только эту
+фактуру, а не качество модели вообще.
+
+| режим | маркеры | вызовы модели | вход | выход | рассуждения | всего токенов | из кэша | вызовы summary | токены summary | стоимость |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+${row("полная история", full)}
+${row("сжатая история", compressed)}
+
+${qualityConclusion(full, compressed)}
+
+${tokenConclusion(full, compressed)}
+
+${costConclusion(full, compressed)}`).join("\n\n");
+
+process.stdout.write(`# День 9 — живое сравнение
+
+<!-- Сгенерировано day-09/render-report.mjs из сырых JSONL-строк. Измеренные
+     значения не редактировать вручную. -->
+
+${sections}
+
+Сырые отчёты поставщика лежат рядом с этим файлом. Пересобрать отчёт можно так:
+
+\`\`\`bash
+node day-09/render-report.mjs day-09/compression.jsonl day-09/compression-long.jsonl > day-09/RESULTS.md
+\`\`\`
+`);

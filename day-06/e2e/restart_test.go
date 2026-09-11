@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -70,6 +71,48 @@ func (p *provider) start(t *testing.T) *httptest.Server {
 			"choices":[{"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,
 			"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":10}}`, answer)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+var longProbeCode = regexp.MustCompile(`РЕШЕНИЕ-\d{2}-\d{3}`)
+
+// startLongProbeProvider is deliberately only clever enough to preserve codes that
+// the real probe puts in the prompt. It lets the E2E test exercise the CLI flag and
+// report label while keeping the provider fully local and deterministic.
+func startLongProbeProvider(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		all := make([]string, 0, len(body.Messages))
+		for _, m := range body.Messages {
+			all = append(all, m.Content)
+		}
+		answer := "принято"
+		last := ""
+		if len(body.Messages) > 0 {
+			last = body.Messages[len(body.Messages)-1].Content
+		}
+		switch {
+		case len(body.Messages) > 0 && strings.Contains(body.Messages[0].Content, "компонент сжатия"):
+			// Keep every code already present in the old summary and raw chunk, just
+			// as a successful real summary must do for this closed fixture.
+			answer = strings.Join(longProbeCode.FindAllString(strings.Join(all, "\n"), -1), "; ")
+		case strings.Contains(last, "первой утверждённой"):
+			answer = "РЕШЕНИЕ-01-037"
+		case strings.Contains(last, "пятнадцатой утверждённой"):
+			answer = "РЕШЕНИЕ-15-555"
+		case strings.Contains(last, "тридцатой утверждённой"):
+			answer = "РЕШЕНИЕ-30-1110"
+		}
+		fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":10}}`, answer)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -287,6 +330,41 @@ func TestCompressionProbeKeepsThePartialCompressedReportAfterProviderFailure(t *
 	var unexpected any
 	if err := dec.Decode(&unexpected); err != io.EOF {
 		t.Fatalf("в отчёте ожидались ровно две строки, получили лишнюю или ошибку: %v", err)
+	}
+}
+
+func TestCompressionProbeLongScenarioIsPassedThroughTheCLI(t *testing.T) {
+	srv := startLongProbeProvider(t)
+	bin := build(t)
+	work := t.TempDir()
+	rows := filepath.Join(work, "long.jsonl")
+
+	stdout, _ := run(t, bin, srv.URL, work,
+		"-compression-probe", "-keep-last", "10", "-compression-scenario", "long", "-compression-rows", rows)
+	if !strings.Contains(stdout, "long/full: качество 3/3") || !strings.Contains(stdout, "long/compressed: качество 3/3") {
+		t.Fatalf("CLI не напечатал завершённый длинный замер:\n%s", stdout)
+	}
+
+	f, err := os.Open(rows)
+	if err != nil {
+		t.Fatalf("длинный отчёт не записан: %v", err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	var full, compressed struct {
+		Scenario string     `json:"scenario"`
+		Mode     string     `json:"mode"`
+		Correct  int        `json:"correct"`
+		Checks   []struct{} `json:"checks"`
+	}
+	if err := dec.Decode(&full); err != nil {
+		t.Fatalf("полный длинный отчёт не читается: %v", err)
+	}
+	if err := dec.Decode(&compressed); err != nil {
+		t.Fatalf("сжатый длинный отчёт не читается: %v", err)
+	}
+	if full.Scenario != "long" || compressed.Scenario != "long" || full.Mode != "full" || compressed.Mode != "compressed" || full.Correct != 3 || compressed.Correct != 3 || len(full.Checks) != 3 || len(compressed.Checks) != 3 {
+		t.Fatalf("CLI записал некорректную пару длинного замера: full=%+v compressed=%+v", full, compressed)
 	}
 }
 

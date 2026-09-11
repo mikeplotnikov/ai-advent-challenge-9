@@ -43,6 +43,70 @@ var compressionProbeQuestions = []compressionProbeQuestion{
 	{"Какой код у восьмого договора?", "МЕРИДИАН-89"},
 }
 
+const (
+	// CompressionProbeShort is the small, cache-friendly control that makes the
+	// overhead of frequent summaries visible.
+	CompressionProbeShort = "short"
+	// CompressionProbeLong contains detailed records whose durable decisions are
+	// much shorter than their original text. It measures the other practical case:
+	// whether a summary can reduce total model tokens without losing those decisions.
+	CompressionProbeLong = "long"
+)
+
+type compressionProbeFixture struct {
+	Scenario  string
+	Facts     []compressionProbeFact
+	Questions []compressionProbeQuestion
+}
+
+func longCompressionProbeFixture() compressionProbeFixture {
+	facts := make([]compressionProbeFact, 0, 30)
+	for n := 1; n <= 30; n++ {
+		code := fmt.Sprintf("РЕШЕНИЕ-%02d-%03d", n, n*37)
+		facts = append(facts, compressionProbeFact{
+			Prompt: fmt.Sprintf(
+				"Запись %d из журнала проекта. Исполнитель прислал развёрнутую справку: в ней описаны промежуточные попытки, порядок созвонов, уже закрытые замечания и детали, которые не нужны для следующего решения. В устойчивой памяти должна остаться только утверждённая карточка %s. Запомни этот код.",
+				n, code,
+			),
+			Code: code,
+		})
+	}
+	return compressionProbeFixture{
+		Scenario: CompressionProbeLong,
+		Facts:    facts,
+		Questions: []compressionProbeQuestion{
+			{"Какой код у первой утверждённой карточки?", facts[0].Code},
+			{"Какой код у пятнадцатой утверждённой карточки?", facts[14].Code},
+			{"Какой код у тридцатой утверждённой карточки?", facts[29].Code},
+		},
+	}
+}
+
+func compressionProbeFixtureFor(scenario string) (compressionProbeFixture, error) {
+	switch scenario {
+	case CompressionProbeShort:
+		return compressionProbeFixture{
+			Scenario:  CompressionProbeShort,
+			Facts:     compressionProbeFacts,
+			Questions: compressionProbeQuestions,
+		}, nil
+	case CompressionProbeLong:
+		return longCompressionProbeFixture(), nil
+	default:
+		return compressionProbeFixture{}, fmt.Errorf("неизвестный сценарий сжатия %q: доступны %q и %q", scenario, CompressionProbeShort, CompressionProbeLong)
+	}
+}
+
+// CompressionProbeScenarioLabel validates a CLI scenario before it makes any model
+// calls and returns the stable label stored in the raw report.
+func CompressionProbeScenarioLabel(scenario string) (string, error) {
+	fixture, err := compressionProbeFixtureFor(scenario)
+	if err != nil {
+		return "", err
+	}
+	return fixture.Scenario, nil
+}
+
 // CompressionProbeCheck is one closed quality observation. Correct says only whether
 // the requested planted marker survived this fixture; it must not be read as a score
 // for arbitrary conversations.
@@ -58,6 +122,7 @@ type CompressionProbeCheck struct {
 // of making a small answer request look like the whole cost of compression.
 type CompressionProbeReport struct {
 	Run          string                  `json:"run"`
+	Scenario     string                  `json:"scenario"`
 	Mode         string                  `json:"mode"`
 	Checks       []CompressionProbeCheck `json:"checks"`
 	Correct      int                     `json:"correct"`
@@ -66,23 +131,38 @@ type CompressionProbeReport struct {
 	SummarySpend Totals                  `json:"summarySpend"`
 }
 
-// RunCompressionProbe exercises one configured agent. The caller runs it twice with
-// the same model and fixture: once with KeepLastMessages=0, then with compression.
+// RunCompressionProbe exercises the short control fixture. The caller runs it twice
+// with the same model: once with KeepLastMessages=0, then with compression.
 func RunCompressionProbe(ctx context.Context, a *Agent, mode string) (CompressionProbeReport, error) {
-	report := CompressionProbeReport{Mode: mode, Checks: make([]CompressionProbeCheck, 0, len(compressionProbeQuestions))}
+	return RunCompressionProbeScenario(ctx, a, mode, CompressionProbeShort)
+}
+
+// RunCompressionProbeScenario exercises one named fixture. Both modes must use the
+// same scenario; the report records that name so a renderer cannot compare a short
+// control with a long-history run by mistake.
+func RunCompressionProbeScenario(ctx context.Context, a *Agent, mode, scenario string) (CompressionProbeReport, error) {
+	fixture, err := compressionProbeFixtureFor(scenario)
+	if err != nil {
+		return CompressionProbeReport{}, err
+	}
+	report := CompressionProbeReport{
+		Mode:     mode,
+		Scenario: fixture.Scenario,
+		Checks:   make([]CompressionProbeCheck, 0, len(fixture.Questions)),
+	}
 	finish := func() CompressionProbeReport {
 		report.Total = a.Totals()
 		report.Context = a.ContextState()
 		report.SummarySpend = report.Context.SummarySpend
 		return report
 	}
-	for _, fact := range compressionProbeFacts {
+	for _, fact := range fixture.Facts {
 		if _, err := a.Ask(ctx, fact.Prompt); err != nil {
 			return finish(), fmt.Errorf("%s: запись факта %q: %w", mode, fact.Code, err)
 		}
 	}
 
-	for _, question := range compressionProbeQuestions {
+	for _, question := range fixture.Questions {
 		reply, err := a.Ask(ctx, question.Prompt)
 		if err != nil {
 			return finish(), fmt.Errorf("%s: контроль %q: %w", mode, question.Code, err)

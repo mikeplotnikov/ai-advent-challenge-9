@@ -18,25 +18,33 @@ call subtotal. `-keep-last 0` turns compression off for a control run. `-max-tur
 `-keep-last` intentionally cannot be combined: the former deletes past exchanges,
 whereas the latter preserves their meaning first.
 
-The reproducible live comparison is:
+The short control shows the overhead of summary on a small, cache-friendly dialogue:
 
 ```bash
 go run ./day-06 -compression-probe -keep-last 10
 ```
 
-It writes `compression.jsonl` in this directory. The file contains one JSON report for
+The long scenario contains 30 detailed records whose persistent decisions are short:
+
+```bash
+go run ./day-06 -compression-probe -keep-last 10 -compression-scenario long \\
+  -compression-rows day-09/compression-long.jsonl
+```
+
+Each file contains one JSON report for
 the full-history run and one for the compressed run: exact-marker checks from the
 beginning, middle, and raw tail of the same fixture; total provider usage; cache split;
 and the separately named summary subtotal. A compression run is only cheaper when its
-whole total, including summary calls, is lower.
+whole token total, including summary calls, is lower. The report carries the scenario name,
+so short and long rows cannot be mixed accidentally.
 
 Build the human-readable result from those raw rows, rather than typing measurements
 into prose:
 
 ```bash
-node day-09/render-report.mjs > day-09/RESULTS.md
+node day-09/render-report.mjs day-09/compression.jsonl day-09/compression-long.jsonl > day-09/RESULTS.md
 ```
 
-The checked-in `RESULTS.md` is therefore reproducible from `compression.jsonl`. Test
+The checked-in `RESULTS.md` is therefore reproducible from both JSONL files. Test
 doubles prove request composition and persistence but cannot demonstrate provider token
 usage or answer quality.

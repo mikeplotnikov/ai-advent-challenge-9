@@ -13,22 +13,28 @@ import (
 )
 
 type compressionProbeCaller struct {
-	calls int
+	calls     int
+	facts     []compressionProbeFact
+	questions []compressionProbeQuestion
 }
 
 func (c *compressionProbeCaller) AskWith(_ context.Context, messages []llm.Message, _ llm.Options) (llm.Answer, error) {
 	c.calls++
+	facts, questions := c.facts, c.questions
+	if len(facts) == 0 {
+		facts, questions = compressionProbeFacts, compressionProbeQuestions
+	}
 	if len(messages) == 2 && messages[0].Content == summarySystem {
 		// The fake is deliberately context-bound: it produces a summary only from
 		// markers actually present in the previous summary or raw exchanges. A
 		// fake that always returned all markers would make a broken compression
 		// pipeline look like it preserved quality.
-		return compressedAnswer(probeCodesIn(messages), 8, 8), nil
+		return compressedAnswer(probeCodesIn(messages, facts), 8, 8), nil
 	}
 	question := messages[len(messages)-1].Content
-	for _, check := range compressionProbeQuestions {
+	for _, check := range questions {
 		if question == check.Prompt {
-			if !strings.Contains(probeCodesIn(messages[:len(messages)-1]), check.Code) {
+			if !strings.Contains(probeCodesIn(messages[:len(messages)-1], facts), check.Code) {
 				return compressedAnswer("код не найден в переданном контексте", 8, 3), nil
 			}
 			return compressedAnswer(check.Code, 8, 3), nil
@@ -37,19 +43,35 @@ func (c *compressionProbeCaller) AskWith(_ context.Context, messages []llm.Messa
 	return compressedAnswer("принято", 8, 2), nil
 }
 
-func probeCodesIn(messages []llm.Message) string {
+func probeCodesIn(messages []llm.Message, facts []compressionProbeFact) string {
 	all := make([]string, 0, len(messages))
 	for _, message := range messages {
 		all = append(all, message.Content)
 	}
 	context := strings.Join(all, "\n")
-	codes := make([]string, 0, len(compressionProbeFacts))
-	for _, fact := range compressionProbeFacts {
+	codes := make([]string, 0, len(facts))
+	for _, fact := range facts {
 		if strings.Contains(context, fact.Code) {
 			codes = append(codes, fact.Code)
 		}
 	}
 	return strings.Join(codes, "; ")
+}
+
+func newCompressionProbeCaller(scenario string) *compressionProbeCaller {
+	fixture, err := compressionProbeFixtureFor(scenario)
+	if err != nil {
+		panic(err)
+	}
+	return &compressionProbeCaller{facts: fixture.Facts, questions: fixture.Questions}
+}
+
+func TestSummaryInstructionProtectsExactValues(t *testing.T) {
+	for _, phrase := range []string{"Точные идентификаторы", "не сокращай", "не исправляй", "не угадывай", "короткими пунктами", "не пересказывай"} {
+		if !strings.Contains(summarySystem, phrase) {
+			t.Fatalf("инструкция summary не защищает точные значения: %q", phrase)
+		}
+	}
 }
 
 func compressedAnswer(text string, prompt, completion int) llm.Answer {
@@ -395,7 +417,7 @@ func TestSnapshotRefusesSummarySpendOutsideTheConversationTotal(t *testing.T) {
 }
 
 func TestCompressionProbeCountsSummaryCallsAndWritesBothComparableReports(t *testing.T) {
-	fullCaller := &compressionProbeCaller{}
+	fullCaller := newCompressionProbeCaller(CompressionProbeShort)
 	full, err := New(fullCaller, Config{KeepLastMessages: 0})
 	if err != nil {
 		t.Fatalf("полный агент: %v", err)
@@ -408,7 +430,7 @@ func TestCompressionProbeCountsSummaryCallsAndWritesBothComparableReports(t *tes
 		t.Fatalf("полный отчёт %+v", whole)
 	}
 
-	compactCaller := &compressionProbeCaller{}
+	compactCaller := newCompressionProbeCaller(CompressionProbeShort)
 	compact, err := New(compactCaller, Config{KeepLastMessages: 2})
 	if err != nil {
 		t.Fatalf("сжатый агент: %v", err)
@@ -434,5 +456,39 @@ func TestCompressionProbeCountsSummaryCallsAndWritesBothComparableReports(t *tes
 		if err := dec.Decode(&got); err != nil {
 			t.Fatalf("строка %d не JSON: %v", i+1, err)
 		}
+	}
+}
+
+func TestLongCompressionProbeKeepsDistantDecisionsAndLabelsBothReports(t *testing.T) {
+	fixture, err := compressionProbeFixtureFor(CompressionProbeLong)
+	if err != nil {
+		t.Fatalf("длинный сценарий: %v", err)
+	}
+	if len(fixture.Facts) != 30 || len(fixture.Questions) != 3 {
+		t.Fatalf("длинный сценарий имеет неожиданную форму: %+v", fixture)
+	}
+
+	full, err := New(newCompressionProbeCaller(CompressionProbeLong), Config{KeepLastMessages: 0})
+	if err != nil {
+		t.Fatalf("полный агент: %v", err)
+	}
+	whole, err := RunCompressionProbeScenario(context.Background(), full, "full", CompressionProbeLong)
+	if err != nil {
+		t.Fatalf("полный длинный прогон: %v", err)
+	}
+	if whole.Scenario != CompressionProbeLong || whole.Correct != len(fixture.Questions) || whole.Total.Calls != len(fixture.Facts)+len(fixture.Questions) {
+		t.Fatalf("полный длинный отчёт: %+v", whole)
+	}
+
+	compact, err := New(newCompressionProbeCaller(CompressionProbeLong), Config{KeepLastMessages: 10})
+	if err != nil {
+		t.Fatalf("сжатый агент: %v", err)
+	}
+	compressed, err := RunCompressionProbeScenario(context.Background(), compact, "compressed", CompressionProbeLong)
+	if err != nil {
+		t.Fatalf("сжатый длинный прогон: %v", err)
+	}
+	if compressed.Scenario != CompressionProbeLong || compressed.Correct != len(fixture.Questions) || compressed.SummarySpend.Calls == 0 {
+		t.Fatalf("сжатый длинный отчёт: %+v", compressed)
 	}
 }

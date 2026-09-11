@@ -61,10 +61,11 @@ func main() {
 		tokenRows  = flag.String("token-rows", "", "куда дописывать строки замера дня 8; по умолчанию day-08/<замер>.jsonl")
 
 		// Day 9: preserve a raw tail and compress the older conversation.
-		keepLast         = flag.Int("keep-last", 10, "сколько последних сообщений хранить дословно; 0 — выключить сжатие")
-		contextOnly      = flag.Bool("context", false, "показать слои контекста и расход суммаризации, не спрашивая модель")
-		compressionProbe = flag.Bool("compression-probe", false, "замер дня 9: одинаковый диалог целиком и со сжатием")
-		compressionRows  = flag.String("compression-rows", "day-09/compression.jsonl", "куда записать два сырых отчёта замера сжатия")
+		keepLast            = flag.Int("keep-last", 10, "сколько последних сообщений хранить дословно; 0 — выключить сжатие")
+		contextOnly         = flag.Bool("context", false, "показать слои контекста и расход суммаризации, не спрашивая модель")
+		compressionProbe    = flag.Bool("compression-probe", false, "замер дня 9: одинаковый диалог целиком и со сжатием")
+		compressionRows     = flag.String("compression-rows", "day-09/compression.jsonl", "куда записать два сырых отчёта замера сжатия")
+		compressionScenario = flag.String("compression-scenario", agent.CompressionProbeShort, "сценарий замера дня 9: short или long")
 
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
@@ -212,7 +213,7 @@ func main() {
 		return
 	}
 	if *compressionProbe {
-		if err := runCompressionProbe(withoutStore(cfg), *model, *compressionRows); err != nil {
+		if err := runCompressionProbe(withoutStore(cfg), *model, *compressionRows, *compressionScenario); err != nil {
 			fail(err)
 		}
 		return
@@ -506,12 +507,15 @@ func printContext(a *agent.Agent) {
 // runCompressionProbe compares the same deliberately closed dialogue in the two
 // modes the task asks for. The summary calls are included in the compressed total;
 // otherwise a lower answer-request token count could be mistaken for a saving.
-func runCompressionProbe(cfg agent.Config, model, rowsPath string) error {
+func runCompressionProbe(cfg agent.Config, model, rowsPath, scenario string) error {
 	if cfg.KeepLastMessages == 0 {
 		return errors.New("-compression-probe требует -keep-last больше нуля")
 	}
 	if rowsPath == "" {
 		return errors.New("-compression-rows не может быть пустым")
+	}
+	if _, err := agent.CompressionProbeScenarioLabel(scenario); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(rowsPath), 0o755); err != nil {
 		return fmt.Errorf("каталог замера сжатия: %w", err)
@@ -546,7 +550,7 @@ func runCompressionProbe(cfg agent.Config, model, rowsPath string) error {
 	if err != nil {
 		return fmt.Errorf("отчёт замера сжатия %s: %w", rowsPath, err)
 	}
-	whole, fullErr := agent.RunCompressionProbe(context.Background(), full, "full")
+	whole, fullErr := agent.RunCompressionProbeScenario(context.Background(), full, "full", scenario)
 	whole.Run = runID
 	if err := agent.WriteCompressionProbeReports(f, whole); err != nil {
 		f.Close()
@@ -556,7 +560,7 @@ func runCompressionProbe(cfg agent.Config, model, rowsPath string) error {
 		f.Close()
 		return fullErr
 	}
-	compact, compactErr := agent.RunCompressionProbe(context.Background(), compressed, "compressed")
+	compact, compactErr := agent.RunCompressionProbeScenario(context.Background(), compressed, "compressed", scenario)
 	compact.Run = runID
 	if err := agent.WriteCompressionProbeReports(f, compact); err != nil {
 		f.Close()
@@ -570,7 +574,7 @@ func runCompressionProbe(cfg agent.Config, model, rowsPath string) error {
 	}
 
 	for _, report := range []agent.CompressionProbeReport{whole, compact} {
-		fmt.Printf("%s: качество %d/%d · %s\n", report.Mode, report.Correct, len(report.Checks), report.Total)
+		fmt.Printf("%s/%s: качество %d/%d · %s\n", report.Scenario, report.Mode, report.Correct, len(report.Checks), report.Total)
 		if report.SummarySpend.Calls > 0 {
 			fmt.Println("  суммаризация:", report.SummarySpend)
 		}
