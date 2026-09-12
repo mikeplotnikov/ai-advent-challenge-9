@@ -51,11 +51,9 @@ const (
 // change is detected rather than silently misread: a file from a newer version is
 // refused, not parsed on a guess.
 //
-// Version 2 added Spend — what the conversation has been billed. Version 3 adds the
-// compressed history as a field distinct from the newest raw messages. Versions 1 and
-// 2 are still read: an older conversation has no summary, which truthfully means its
-// full history remains in Messages until the next successful compression.
-const SnapshotVersion = 3
+// Version 2 added Spend, version 3 compressed history, and version 4 the three
+// mutually exclusive day-10 context strategies. Older versions are still read.
+const SnapshotVersion = 4
 
 // Snapshot is the conversation as it is written down. Messages are the whole of what
 // the task asks to store; the rest is what restoring needs in order not to lie.
@@ -90,6 +88,17 @@ type Snapshot struct {
 	// includes it: a comparison that leaves it out reports an imaginary saving.
 	SummarySpend Totals    `json:"summarySpend"`
 	Messages     []Message `json:"messages"`
+
+	// Day 10 never uses Summary. These fields persist the selected strategy and its
+	// explicit state so a restart cannot silently turn facts or branches into a flat
+	// full-history conversation.
+	Strategy       ContextStrategy      `json:"strategy,omitempty"`
+	WindowMessages int                  `json:"windowMessages,omitempty"`
+	Facts          map[string]string    `json:"facts,omitempty"`
+	FactSpend      Totals               `json:"factSpend"`
+	ActiveBranch   string               `json:"activeBranch,omitempty"`
+	Branches       map[string][]Message `json:"branches,omitempty"`
+	Checkpoints    map[string][]Message `json:"checkpoints,omitempty"`
 }
 
 // Store is where a conversation lives between runs. Load on an empty store returns a
@@ -259,6 +268,9 @@ func validate(snap Snapshot) error {
 	}
 	if err := validateSpendSubset(snap.SummarySpend, snap.Spend); err != nil {
 		return fmt.Errorf("расход суммаризации: %w", err)
+	}
+	if err := validateStrategySnapshot(snap); err != nil {
+		return err
 	}
 	return nil
 }

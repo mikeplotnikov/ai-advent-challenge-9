@@ -57,11 +57,11 @@ func (a *Agent) ContextState() ContextState {
 // one message avoids relying on provider-specific ordering rules for several system
 // messages, while summary remains a distinct field in memory and on disk.
 func (a *Agent) contextSystemPrompt() string {
-	summary := a.summaryContext()
+	extra := a.summaryContext() + a.factsContext()
 	if a.cfg.SystemPrompt == "" {
-		return strings.TrimSpace(summary)
+		return strings.TrimSpace(extra)
 	}
-	return a.cfg.SystemPrompt + summary
+	return a.cfg.SystemPrompt + extra
 }
 
 func (a *Agent) summaryContext() string {

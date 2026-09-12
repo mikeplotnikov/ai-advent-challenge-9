@@ -74,6 +74,13 @@ type Config struct {
 	// while those policies delete it.
 	KeepLastMessages int
 
+	// ContextStrategy is day 10's explicit alternative to summary. The three
+	// strategies are mutually exclusive and keep their own persisted state.
+	ContextStrategy ContextStrategy
+	// WindowMessages is the raw-message limit used by sliding and facts. It counts
+	// individual user/assistant messages, not exchanges, and must therefore be even.
+	WindowMessages int
+
 	// MaxContextTokens is day 8: the agent's own ceiling on what one request may
 	// weigh, in tokens, measured by the local estimator before the call. 0 means no
 	// ceiling of ours — the provider's window is then the only limit, and the
@@ -129,6 +136,10 @@ type Reply struct {
 	// is then a fragment, and day 2's lesson applies: what a truncated JSON object
 	// breaks is the parser, not the API call.
 	Truncated bool
+	// FactUsage is the separate provider call which updated sticky facts before the
+	// answer. It is also included in the conversation Totals, never hidden as free.
+	FactUsage     Usage
+	FactAttempted bool
 }
 
 // Usage is the agent's own token accounting, cache split included: the difference
@@ -181,6 +192,11 @@ type Agent struct {
 	summary            string
 	compressedMessages int
 	summarySpend       Totals
+	facts              map[string]string
+	factSpend          Totals
+	activeBranch       string
+	inactiveBranches   map[string][]llm.Message
+	checkpoints        map[string][]llm.Message
 	turns              int
 	// restored is what Load found when this agent was built, kept so the interface
 	// can say "загружено N ходов" without asking the store a second time.
@@ -222,6 +238,9 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if cfg.KeepLastMessages > 0 && cfg.MaxTurns > 0 {
 		return nil, errors.New("agent: KeepLastMessages и MaxTurns нельзя включать вместе: сжатие сохраняет прошлое, а окно его удаляет")
 	}
+	if err := validateContextStrategy(cfg); err != nil {
+		return nil, err
+	}
 	if cfg.MaxContextTokens < 0 {
 		return nil, fmt.Errorf("agent: MaxContextTokens = %d, отрицательным быть не может", cfg.MaxContextTokens)
 	}
@@ -239,6 +258,7 @@ func New(client Caller, cfg Config) (*Agent, error) {
 			cfg.OnOverflow)
 	}
 	a := &Agent{cfg: cfg, client: client}
+	a.resetStrategyState()
 	if err := a.restore(); err != nil {
 		return nil, err
 	}
@@ -258,8 +278,11 @@ func (a *Agent) restore() error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", a.Name(), err)
 	}
-	if len(snap.Messages) == 0 && snap.Turns == 0 {
+	if len(snap.Messages) == 0 && snap.Turns == 0 && snap.Strategy == "" {
 		return nil
+	}
+	if err := a.restoreStrategy(snap); err != nil {
+		return fmt.Errorf("%s: %w", a.Name(), err)
 	}
 	// A compressed snapshot has intentionally discarded its old verbatim exchanges.
 	// Turning compression off later cannot turn that summary back into the full
@@ -326,6 +349,7 @@ func (a *Agent) Reset() error {
 	a.summary = ""
 	a.compressedMessages = 0
 	a.summarySpend = Totals{}
+	a.resetStrategyState()
 	a.turns = 0
 	a.restored = Restored{}
 	// The spend goes with the conversation it belongs to. Keeping it would report
@@ -348,6 +372,13 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		return Reply{}, ErrEmptyInput
 	}
 
+	factUsage, factErr := a.refreshFacts(ctx, input)
+	factAttempted := a.cfg.ContextStrategy == ContextFacts
+	if factErr != nil {
+		base := Reply{FactUsage: factUsage, FactAttempted: factAttempted}
+		return a.persistFailedReply(base, factErr, nil)
+	}
+
 	// A version-1/2 session can wake up with more raw messages than today's policy
 	// permits. Compress before assembling this request, not only after its answer:
 	// otherwise the very first post-upgrade request would still send the full legacy
@@ -360,19 +391,21 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	// money is already spent. A refusal here costs nothing at all.
 	send, dropped, warning, est, err := a.fit(input)
 	if err != nil {
+		base := Reply{Estimated: est, FactUsage: factUsage, FactAttempted: factAttempted}
 		// A preflight refusal still happens after an attempted compression when a
 		// legacy session was too long. Persist that attempt (including any billed
-		// failed summary call) before returning, or a restart would forget both the
-		// new summary and its cost.
-		if preCompressionAttempt {
+		// failed summary call) before returning. Facts mode deliberately updates its
+		// memory after every user message, so that separate call can also have been
+		// billed before the answer request is refused; expose and persist it.
+		if preCompressionAttempt || a.cfg.ContextStrategy == ContextFacts {
 			if persistErr := a.persist(); persistErr != nil {
-				return Reply{Estimated: est}, persistErr
+				return base, errors.Join(err, persistErr)
 			}
 		}
 		if compressionErr != nil {
-			return Reply{Estimated: est}, errors.Join(err, compressionErr)
+			return base, errors.Join(err, compressionErr)
 		}
-		return Reply{Estimated: est}, err
+		return base, err
 	}
 
 	messages := a.messagesWith(send, input)
@@ -389,6 +422,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		Estimated: est,
 		Warning:   warning,
 		Truncated: truncated,
+		FactUsage: factUsage, FactAttempted: factAttempted,
 	}
 	if err != nil {
 		// A failed call can still have been billed — a request the provider refused,
@@ -491,6 +525,13 @@ func (a *Agent) persist() error {
 		Summary:            a.summary,
 		CompressedMessages: a.compressedMessages,
 		SummarySpend:       a.summarySpend,
+		Strategy:           a.cfg.ContextStrategy,
+		WindowMessages:     a.cfg.WindowMessages,
+		Facts:              cloneFacts(a.facts),
+		FactSpend:          a.factSpend,
+		ActiveBranch:       a.activeBranch,
+		Branches:           storedMessages(a.inactiveBranches),
+		Checkpoints:        storedMessages(a.checkpoints),
 		Messages:           make([]Message, 0, len(a.stack)),
 	}
 	for _, m := range a.stack {
@@ -524,10 +565,13 @@ func (a *Agent) messagesWith(stack []llm.Message, input string) []llm.Message {
 // Whole exchanges, never a lone user message: a user turn without its answer would
 // read to the model as a question it ignored.
 func (a *Agent) trim() {
-	if a.cfg.MaxTurns <= 0 {
+	keep := a.cfg.MaxTurns * 2
+	if a.cfg.ContextStrategy == ContextSliding || a.cfg.ContextStrategy == ContextFacts {
+		keep = a.cfg.WindowMessages
+	}
+	if keep <= 0 {
 		return
 	}
-	keep := a.cfg.MaxTurns * 2
 	if len(a.stack) > keep {
 		a.stack = append([]llm.Message(nil), a.stack[len(a.stack)-keep:]...)
 	}

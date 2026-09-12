@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -67,11 +68,31 @@ func main() {
 		compressionRows     = flag.String("compression-rows", "day-09/compression.jsonl", "куда записать два сырых отчёта замера сжатия")
 		compressionScenario = flag.String("compression-scenario", agent.CompressionProbeShort, "сценарий замера дня 9: short или long")
 
+		// Day 10: three explicit alternatives, all without summary.
+		contextStrategy = flag.String("context-strategy", "", "стратегия дня 10: sliding, facts или branching; пусто — режим дней 6–9")
+		windowMessages  = flag.Int("window-messages", 10, "сколько последних user/assistant сообщений хранить в sliding и facts (чётное число)")
+
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
 		probeOut  = flag.String("probe-rows", "day-07/context-probe-split.jsonl", "куда дописывать строки замера контекста")
 	)
 	flag.Parse()
+	day10 := agent.ContextStrategy(strings.TrimSpace(*contextStrategy))
+	keepLastValue := *keepLast
+	windowValue := 0
+	if day10 != "" {
+		if flagWasSet("keep-last") && keepLastValue != 0 {
+			fail(errors.New("-context-strategy работает без summary; укажи -keep-last=0 или убери этот флаг"))
+		}
+		keepLastValue = 0
+		if day10 == agent.ContextBranching {
+			if flagWasSet("window-messages") {
+				fail(errors.New("branching не использует -window-messages"))
+			}
+		} else {
+			windowValue = *windowMessages
+		}
+	}
 
 	if *dump {
 		if err := writeDump(os.Stdout); err != nil {
@@ -90,7 +111,9 @@ func main() {
 		ReasoningEffort:  *effort,
 		MaxContextTokens: *maxContext,
 		OnOverflow:       agent.OverflowPolicy(*onOverflow),
-		KeepLastMessages: *keepLast,
+		KeepLastMessages: keepLastValue,
+		ContextStrategy:  day10,
+		WindowMessages:   windowValue,
 	}
 	if *temp >= 0 {
 		t := *temp
@@ -127,6 +150,9 @@ func main() {
 	// full-history / overflow policies. Day 9 compression is an ordinary dialogue
 	// mode, not a silent alteration of historical measurements.
 	if *ctxProbe > 0 || *tokenProbe != "" {
+		if day10 != "" {
+			fail(errors.New("исторические замеры дней 7–8 нельзя совмещать с -context-strategy"))
+		}
 		cfg.KeepLastMessages = 0
 	}
 
@@ -252,6 +278,7 @@ func askOnce(a *agent.Agent, question string, quiet, tokens bool) error {
 		return nil
 	}
 	if err != nil {
+		printFactSpendOnError(reply, quiet, tokens, a)
 		return err
 	}
 	fmt.Println(reply.Text)
@@ -420,8 +447,11 @@ func runContextProbe(a *agent.Agent, turns int, rowsPath string) error {
 // converse is the dialogue mode. It exists because the agent carries the message
 // stack itself: without more than one turn, that would be an untested claim.
 func converse(a *agent.Agent, quiet, tokens bool) error {
-	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново и стереть сохранённое, /stack — сколько ходов в контексте, /context — слои контекста, /totals — расход беседы, /exit — выход.\n",
+	fmt.Fprintf(os.Stderr, "%s готов. /reset — начать заново, /stack — размер контекста, /context — состояние стратегии, /totals — расход, /exit — выход.\n",
 		a.Name())
+	if a.StrategyState().Strategy == agent.ContextBranching {
+		fmt.Fprintln(os.Stderr, "branching: /checkpoint ИМЯ · /branch ВЕТКА CHECKPOINT · /switch ВЕТКА · /branches")
+	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for {
@@ -430,6 +460,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			break
 		}
 		line := strings.TrimSpace(in.Text())
+		if handled, err := handleStrategyCommand(a, line); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ошибка:", err)
+			}
+			continue
+		}
 		switch line {
 		case "":
 			continue
@@ -466,6 +502,7 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			// A failed turn is reported and the conversation goes on: the agent
 			// guarantees the stack was left untouched.
 			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			printFactSpendOnError(reply, quiet, tokens, a)
 			continue
 		}
 		if reply.Warning != "" {
@@ -492,6 +529,34 @@ func recoveredReply(reply agent.Reply, err error) bool {
 }
 
 func printContext(a *agent.Agent) {
+	strategy := a.StrategyState()
+	if strategy.Strategy != "" {
+		fmt.Fprintf(os.Stderr, "стратегия: %s · сырых сообщений: %d", strategy.Strategy, strategy.RawMessages)
+		if strategy.WindowMessages > 0 {
+			fmt.Fprintf(os.Stderr, " из лимита %d", strategy.WindowMessages)
+		}
+		fmt.Fprintln(os.Stderr)
+		switch strategy.Strategy {
+		case agent.ContextFacts:
+			if len(strategy.Facts) == 0 {
+				fmt.Fprintln(os.Stderr, "facts: {}")
+			} else {
+				keys := make([]string, 0, len(strategy.Facts))
+				for key := range strategy.Facts {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					fmt.Fprintf(os.Stderr, "fact %s = %s\n", key, strategy.Facts[key])
+				}
+			}
+			fmt.Fprintln(os.Stderr, "обновление facts:", strategy.FactSpend)
+		case agent.ContextBranching:
+			fmt.Fprintf(os.Stderr, "активная ветка: %s · ветки: %s · checkpoints: %s\n",
+				strategy.ActiveBranch, strings.Join(strategy.Branches, ", "), strings.Join(strategy.Checkpoints, ", "))
+		}
+		return
+	}
 	c := a.ContextState()
 	if !c.Enabled {
 		fmt.Fprintln(os.Stderr, "сжатие: выключено (-keep-last=0); история хранится и отправляется целиком")
@@ -658,10 +723,95 @@ func spend(reply agent.Reply) string {
 	if reply.Dropped > 0 {
 		dropped = fmt.Sprintf(" · отброшено обменов: %d", reply.Dropped)
 	}
-	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s%s · %s · %s%s%s%s]",
+	facts := ""
+	if reply.FactAttempted {
+		facts = fmt.Sprintf(" · facts %d+%d токенов, %s", reply.FactUsage.PromptTokens,
+			reply.FactUsage.CompletionTokens, price(reply.FactUsage))
+	}
+	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s%s%s · %s · %s%s%s%s]",
 		reply.Turn, reply.Model,
-		reply.Usage.PromptTokens, reply.Usage.CompletionTokens, cache, estimate,
+		reply.Usage.PromptTokens, reply.Usage.CompletionTokens, cache, estimate, facts,
 		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned, cut, dropped)
+}
+
+func printFactSpendOnError(reply agent.Reply, quiet, tokens bool, a *agent.Agent) {
+	if !reply.FactAttempted {
+		return
+	}
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "facts до ошибки: %d+%d токенов · %s\n",
+			reply.FactUsage.PromptTokens, reply.FactUsage.CompletionTokens, price(reply.FactUsage))
+	}
+	if tokens {
+		fmt.Fprintln(os.Stderr, a.Totals())
+		printContext(a)
+	}
+}
+
+func handleStrategyCommand(a *agent.Agent, line string) (bool, error) {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return false, nil
+	}
+	switch parts[0] {
+	case "/facts":
+		if len(parts) != 1 {
+			return true, errors.New("формат: /facts")
+		}
+		if a.StrategyState().Strategy != agent.ContextFacts {
+			return true, agent.ErrWrongStrategy
+		}
+		printContext(a)
+		return true, nil
+	case "/checkpoint":
+		if len(parts) != 2 {
+			return true, errors.New("формат: /checkpoint ИМЯ")
+		}
+		if err := a.Checkpoint(parts[1]); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(os.Stderr, "checkpoint %q сохранён\n", parts[1])
+		return true, nil
+	case "/branch":
+		if len(parts) != 3 {
+			return true, errors.New("формат: /branch ВЕТКА CHECKPOINT")
+		}
+		if err := a.Fork(parts[1], parts[2]); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(os.Stderr, "ветка %q создана из checkpoint %q\n", parts[1], parts[2])
+		return true, nil
+	case "/switch":
+		if len(parts) != 2 {
+			return true, errors.New("формат: /switch ВЕТКА")
+		}
+		if err := a.Switch(parts[1]); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(os.Stderr, "активная ветка: %s\n", parts[1])
+		return true, nil
+	case "/branches":
+		if len(parts) != 1 {
+			return true, errors.New("формат: /branches")
+		}
+		if a.StrategyState().Strategy != agent.ContextBranching {
+			return true, agent.ErrWrongStrategy
+		}
+		printContext(a)
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // price says "unknown" rather than "$0.000000" when the model is not in the price

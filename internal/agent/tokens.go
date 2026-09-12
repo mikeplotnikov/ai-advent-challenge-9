@@ -124,6 +124,9 @@ type Estimate struct {
 	// Summary is the compressed older history. It travels inside the system message
 	// but is reported separately from the role instruction and the raw tail.
 	Summary int
+	// Facts is day 10's structured key-value memory. It travels inside the same
+	// system message but remains visible as a separate context cost.
+	Facts   int
 	History int
 	Input   int
 	// Overhead is the chat format's own cost: role markers and delimiters that no
@@ -138,8 +141,8 @@ type Estimate struct {
 
 // String is the one-line form the CLI prints before a call.
 func (e Estimate) String() string {
-	return fmt.Sprintf("система %d + summary %d + история %d (%d обменов) + вопрос %d + формат %d = %d токенов",
-		e.System, e.Summary, e.History, e.Exchanges, e.Input, e.Overhead, e.Total)
+	return fmt.Sprintf("система %d + summary %d + facts %d + история %d (%d обменов) + вопрос %d + формат %d = %d токенов",
+		e.System, e.Summary, e.Facts, e.History, e.Exchanges, e.Input, e.Overhead, e.Total)
 }
 
 // OverflowPolicy is what the agent does when the request does not fit the ceiling it
@@ -149,8 +152,9 @@ func (e Estimate) String() string {
 type OverflowPolicy string
 
 const (
-	// OverflowRefuse does not call the model at all. Nothing is spent and nothing is
-	// forgotten; the caller gets an error naming both numbers.
+	// OverflowRefuse does not send the normal answer request. In Facts mode the
+	// required memory-update call happens first and is reported separately even when
+	// the larger answer request is then refused.
 	OverflowRefuse OverflowPolicy = "refuse"
 	// OverflowTrim drops the oldest exchanges until the request fits. The agent keeps
 	// answering and pays for it in memory — and, on this provider, in cache: the
@@ -190,7 +194,10 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	if summary := a.summaryContext(); summary != "" {
 		e.Summary = EstimateTokens(summary)
 	}
-	if e.System > 0 || e.Summary > 0 {
+	if facts := a.factsContext(); facts != "" {
+		e.Facts = EstimateTokens(facts)
+	}
+	if e.System > 0 || e.Summary > 0 || e.Facts > 0 {
 		e.Messages++
 	}
 	for _, m := range stack {
@@ -204,7 +211,7 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	if a.cfg.ResponseFormat != "" {
 		e.Overhead += tokensForResponseFormat
 	}
-	e.Total = e.System + e.Summary + e.History + e.Input + e.Overhead
+	e.Total = e.System + e.Summary + e.Facts + e.History + e.Input + e.Overhead
 	return e
 }
 
@@ -245,9 +252,9 @@ func (a *Agent) fit(input string) (send []llm.Message, dropped int, warning stri
 			a.Name(), ErrInputAlone, est.Total, limit)
 
 	default: // OverflowRefuse
-		return nil, 0, "", est, fmt.Errorf("%s: %w: оценка %d токенов (система %d + summary %d + история %d + вопрос %d + формат %d) при потолке %d",
+		return nil, 0, "", est, fmt.Errorf("%s: %w: оценка %d токенов (система %d + summary %d + facts %d + история %d + вопрос %d + формат %d) при потолке %d",
 			a.Name(), ErrContextOverflow,
-			est.Total, est.System, est.Summary, est.History, est.Input, est.Overhead, limit)
+			est.Total, est.System, est.Summary, est.Facts, est.History, est.Input, est.Overhead, limit)
 	}
 }
 
