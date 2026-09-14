@@ -115,7 +115,15 @@ func main() {
 	workers := flag.Int("workers", 4, "параллельных вызовов")
 	seed := flag.Int64("seed", 0, "seed перемешивания порядка; 0 — от времени, записывается в план")
 	pilot := flag.Bool("pilot", false, "пилот: одна клетка на пробу вспоминания в руке full, без поведенческих и E0")
+	dump := flag.Bool("dump", false, "выгрузить правила сборки запроса со слоями для сверки витрины и выйти")
 	flag.Parse()
+
+	if *dump {
+		if err := agent.WriteMemoryDefinitions(os.Stdout, webSystem); err != nil {
+			fail(err)
+		}
+		return
+	}
 
 	if *report != "" {
 		rows, err := readRows(*report)

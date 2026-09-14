@@ -32,6 +32,8 @@ const (
 	decisionValue   = "PostgreSQL 16, решение DEC-0412"
 	knowledgeValue  = "stg-orbita5.internal"
 	recallMaxTokens = 80
+	// webSystem is the showcase page's base prompt; the dump carries it to the JS mirror.
+	webSystem       = "Ты ассистент разработчика. Отвечай кратко и по делу, на русском языке."
 	behaviourTokens = 900
 )
 

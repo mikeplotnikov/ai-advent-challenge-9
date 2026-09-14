@@ -117,7 +117,7 @@ func render(r rows, source string) (string, error) {
 	}
 
 	w("# День 11 — слои памяти: результаты прогона\n\n")
-	w("Сгенерировано командой `go run ./day-11 -report %s`. Числа ниже не вписаны руками: `results_test.go` пересобирает этот файл из JSONL и сравнивает побайтно.\n\n", source)
+	w("Сгенерировано командой `go run ./day-11 -report %s`. Числа ниже не вписаны руками: `TestCommittedResultsAreRenderedFromTheCommittedRun` (`day-11/main_test.go`) пересобирает этот файл из JSONL и сравнивает побайтно.\n\n", source)
 	w("- Прогон `%s`, начат %s, коммит `%s`, seed `%d`.\n", r.plan.Run, r.plan.Started, short(r.plan.Commit), r.plan.Seed)
 	w("- Запрошена модель `%s`; ответили: %s. Вызовов в часы пика: %d из %d.\n", r.plan.Model, strings.Join(servedList, ", "), peak, len(r.probes))
 	w("- Расход всего прогона (E0 + пробы): вызовов %d, вход %d токенов (из кэша %s), выход %d, $%.6f.\n",
@@ -186,7 +186,50 @@ func renderRecall(b *strings.Builder, r rows) {
 				counts[verdictFabricated], counts[verdictLeak], counts[verdictParseError], pass, n)
 		}
 	}
+	renderMisses(b, r)
 	fmt.Fprintf(b, "\nПробы на вспоминание проваливаются без слоя почти по построению: без него у модели нет кода. Они проверяют проводку и изоляцию (`fabricated`, `leak`), а не «влияние» — его меряет раздел B.\n\n")
+}
+
+// renderMisses lists what the model actually returned wherever a recall answer did
+// not pass: a count of verdicts says that something went wrong, the values say what.
+func renderMisses(b *strings.Builder, r rows) {
+	type key struct{ arm, probe, verdict, value string }
+	counts := map[key]int{}
+	var order []key
+	for _, row := range r.probes {
+		if row.Family != familyRecall || row.Pass {
+			continue
+		}
+		value := "null"
+		if row.Value != nil {
+			value = *row.Value
+		}
+		if row.Verdict == verdictParseError {
+			value = row.Answer
+		}
+		k := key{row.Arm, row.Probe, row.Verdict, value}
+		if counts[k] == 0 {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
+	if len(order) == 0 {
+		fmt.Fprintf(b, "\nНепрошедших ответов нет.\n")
+		return
+	}
+	sort.Slice(order, func(i, j int) bool {
+		if order[i].arm != order[j].arm {
+			return order[i].arm < order[j].arm
+		}
+		if order[i].probe != order[j].probe {
+			return order[i].probe < order[j].probe
+		}
+		return order[i].value < order[j].value
+	})
+	fmt.Fprintf(b, "\nЧто модель вернула в непрошедших ответах:\n\n| Рука | Проба | Вердикт | Значение | Раз |\n|---|---|---|---|---|\n")
+	for _, k := range order {
+		fmt.Fprintf(b, "| %s | %s | %s | `%s` | %d |\n", k.arm, k.probe, k.verdict, strings.ReplaceAll(k.value, "|", "\\|"), counts[k])
+	}
 }
 
 func renderBehaviour(b *strings.Builder, r rows) {
