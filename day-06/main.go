@@ -72,6 +72,13 @@ func main() {
 		contextStrategy = flag.String("context-strategy", "", "стратегия дня 10: sliding, facts или branching; пусто — режим дней 6–9")
 		windowMessages  = flag.Int("window-messages", 10, "сколько последних user/assistant сообщений хранить в sliding и facts (чётное число)")
 
+		// Day 11: explicit memory layers.
+		layers    = flag.Bool("layers", false, "слои памяти дня 11: краткосрочная (беседа), рабочая (задача) и долговременная (профиль, решения, знания)")
+		user      = flag.String("user", "default", "чья рабочая и долговременная память используется (с -layers)")
+		memoryDir = flag.String("memory-dir", ".memory", "каталог слоёв памяти (с -layers)")
+		task      = flag.String("task", "", "активная задача при старте (с -layers)")
+		inject    = flag.String("inject", "short,working,long", "какие слои уходят в запрос, через запятую; хранятся все (с -layers)")
+
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
 		probeOut  = flag.String("probe-rows", "day-07/context-probe-split.jsonl", "куда дописывать строки замера контекста")
@@ -91,6 +98,27 @@ func main() {
 			}
 		} else {
 			windowValue = *windowMessages
+		}
+	}
+
+	var memory *agent.MemoryConfig
+	if *layers {
+		switch {
+		case *noMemory:
+			fail(errors.New("-layers и -no-memory вместе бессмысленны: краткосрочный слой — это сохранённая беседа"))
+		case *ctxProbe > 0 || *tokenProbe != "" || *compressionProbe || *probe:
+			fail(errors.New("исторические замеры дней 6–9 нельзя совмещать с -layers: их JSONL должны воспроизводиться"))
+		}
+		layersToSend, err := parseInject(*inject)
+		if err != nil {
+			fail(err)
+		}
+		memory = &agent.MemoryConfig{Dir: *memoryDir, User: *user, Session: *session, Task: *task, Inject: layersToSend}
+	} else {
+		for _, name := range []string{"user", "memory-dir", "task", "inject"} {
+			if flagWasSet(name) {
+				fail(fmt.Errorf("-%s действует только вместе с -layers", name))
+			}
 		}
 	}
 
@@ -163,9 +191,15 @@ func main() {
 	// encoding/json at all.
 	var store *agent.FileStore
 	if !*noMemory {
-		store = agent.NewFileStore(agent.SessionPath(*storeDir, *session))
+		path := agent.SessionPath(*storeDir, *session)
+		if memory != nil {
+			// The short-term layer sits beside the user's other two layers.
+			path = agent.MemorySessionPath(*memoryDir, *user, *session)
+		}
+		store = agent.NewFileStore(path)
 		cfg.Store = store
 	}
+	cfg.Memory = memory
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
@@ -452,6 +486,9 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 	if a.StrategyState().Strategy == agent.ContextBranching {
 		fmt.Fprintln(os.Stderr, "branching: /checkpoint ИМЯ · /branch ВЕТКА CHECKPOINT · /switch ВЕТКА · /branches")
 	}
+	if a.MemoryState().Enabled {
+		fmt.Fprintln(os.Stderr, "слои памяти: /memory · /remember task|profile|decision|knowledge КЛЮЧ = ЗНАЧЕНИЕ · /drop ЦЕЛЬ КЛЮЧ · /task new|use ИМЯ · /task done")
+	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for {
@@ -460,6 +497,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			break
 		}
 		line := strings.TrimSpace(in.Text())
+		if handled, err := handleMemoryCommand(a, line); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ошибка:", err)
+			}
+			continue
+		}
 		if handled, err := handleStrategyCommand(a, line); handled {
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "ошибка:", err)
@@ -474,6 +517,10 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 		case "/reset", "/forget":
 			if err := a.Reset(); err != nil {
 				fmt.Fprintln(os.Stderr, "ошибка:", err)
+				continue
+			}
+			if a.MemoryState().Enabled {
+				fmt.Fprintln(os.Stderr, "краткосрочная память очищена; рабочая и долговременная не тронуты")
 				continue
 			}
 			fmt.Fprintln(os.Stderr, "контекст очищен, сохранённая история удалена")
@@ -728,10 +775,10 @@ func spend(reply agent.Reply) string {
 		facts = fmt.Sprintf(" · facts %d+%d токенов, %s", reply.FactUsage.PromptTokens,
 			reply.FactUsage.CompletionTokens, price(reply.FactUsage))
 	}
-	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s%s%s · %s · %s%s%s%s]",
+	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s%s%s · %s · %s%s%s%s%s]",
 		reply.Turn, reply.Model,
 		reply.Usage.PromptTokens, reply.Usage.CompletionTokens, cache, estimate, facts,
-		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned, cut, dropped)
+		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned, cut, dropped, memorySpend(reply))
 }
 
 func printFactSpendOnError(reply agent.Reply, quiet, tokens bool, a *agent.Agent) {

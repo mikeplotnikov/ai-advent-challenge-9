@@ -103,6 +103,10 @@ type Config struct {
 	// выключался" is then a property of the agent, not of the interface around it.
 	Store Store
 
+	// Memory is day 11: the working and long-term layers, stored in their own files
+	// beside the conversation. Nil keeps days 6-10 exactly as they were.
+	Memory *MemoryConfig
+
 	// Validate is the output policy: it inspects the model's text and returns an
 	// error when the answer is unusable. Nil means "any non-empty answer is fine".
 	// Day 2 learned that response_format guarantees valid JSON and not your schema;
@@ -140,6 +144,19 @@ type Reply struct {
 	// answer. It is also included in the conversation Totals, never hidden as free.
 	FactUsage     Usage
 	FactAttempted bool
+	// Memory is which layers travelled in this request and what they weighed by the
+	// local estimate. Zero when layers are off.
+	Memory MemorySent
+}
+
+// MemorySent is the per-request view of day 11's layers: the answer to "what did the
+// model actually get", recorded next to the answer it produced.
+type MemorySent struct {
+	ShortMessages  int `json:"shortMessages"`
+	WorkingEntries int `json:"workingEntries"`
+	LongEntries    int `json:"longEntries"`
+	WorkingTokens  int `json:"workingTokens"`
+	LongTermTokens int `json:"longTermTokens"`
 }
 
 // Usage is the agent's own token accounting, cache split included: the difference
@@ -197,6 +214,7 @@ type Agent struct {
 	activeBranch       string
 	inactiveBranches   map[string][]llm.Message
 	checkpoints        map[string][]llm.Message
+	memory             *memoryState
 	turns              int
 	// restored is what Load found when this agent was built, kept so the interface
 	// can say "загружено N ходов" without asking the store a second time.
@@ -257,8 +275,17 @@ func New(client Caller, cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("agent: OnOverflow = %q без MaxContextTokens — политика без потолка никогда не сработает",
 			cfg.OnOverflow)
 	}
+	if err := validateMemoryConfig(cfg.Memory); err != nil {
+		return nil, err
+	}
 	a := &Agent{cfg: cfg, client: client}
 	a.resetStrategyState()
+	if cfg.Memory != nil {
+		a.memory = newMemoryState(*cfg.Memory)
+		if err := a.memory.reload(); err != nil {
+			return nil, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
 	if err := a.restore(); err != nil {
 		return nil, err
 	}
@@ -371,6 +398,11 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	if input == "" {
 		return Reply{}, ErrEmptyInput
 	}
+	if a.memory != nil {
+		if err := a.memory.reload(); err != nil {
+			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
 
 	factUsage, factErr := a.refreshFacts(ctx, input)
 	factAttempted := a.cfg.ContextStrategy == ContextFacts
@@ -423,6 +455,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		Warning:   warning,
 		Truncated: truncated,
 		FactUsage: factUsage, FactAttempted: factAttempted,
+		Memory: a.memorySent(send),
 	}
 	if err != nil {
 		// A failed call can still have been billed — a request the provider refused,
@@ -553,12 +586,13 @@ func (a *Agent) messagesFor(input string) []llm.Message {
 // messagesWith is messagesFor over a stack the caller chose — the ceiling policy
 // sends a trimmed one without the agent having committed to the trim yet.
 func (a *Agent) messagesWith(stack []llm.Message, input string) []llm.Message {
+	stack = a.sentHistory(stack)
 	out := make([]llm.Message, 0, len(stack)+2)
 	if system := a.contextSystemPrompt(); system != "" {
 		out = append(out, llm.Message{Role: "system", Content: system})
 	}
 	out = append(out, stack...)
-	return append(out, llm.Message{Role: "user", Content: input})
+	return append(out, llm.Message{Role: "user", Content: a.workingContext() + input})
 }
 
 // trim drops the oldest exchanges once the conversation is longer than MaxTurns.
