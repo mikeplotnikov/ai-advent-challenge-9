@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -270,6 +271,11 @@ type Client struct {
 }
 
 // New builds a client from the environment: DEEPSEEK_API_KEY and optional DEEPSEEK_MODEL.
+// ErrEmptyContent is a completed call whose answer has no text. It is the model's
+// outcome, billed like any other, not a transport failure — a measurement that retries
+// it would hide how often the model does this.
+var ErrEmptyContent = errors.New("модель вернула пустой текст")
+
 func New() (*Client, error) {
 	return NewWithKeyEnv("")
 }
@@ -502,7 +508,7 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 			Usage:        parsed.Usage,
 			FinishReason: parsed.Choices[0].FinishReason,
 			Model:        parsed.Model,
-		}, fmt.Errorf("модель вернула пустой текст (finish_reason=%s)", parsed.Choices[0].FinishReason)
+		}, fmt.Errorf("%w (finish_reason=%s)", ErrEmptyContent, parsed.Choices[0].FinishReason)
 	}
 	model := parsed.Model
 	if model == "" {

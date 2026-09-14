@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,6 +72,9 @@ func TestAnEmptyAnswerIsAnErrorThatStillReportsWhatItCost(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), c.wantWords) {
 			t.Errorf("%s: ошибка %q не содержит %q", c.name, err, c.wantWords)
+		}
+		if errors.Is(err, ErrEmptyContent) == c.reasoned {
+			t.Errorf("%s: errors.Is(err, ErrEmptyContent) = %v — пустой ответ без рассуждения должен различаться", c.name, !c.reasoned)
 		}
 		if answer.Usage.CompletionTokens != 4000 || answer.Usage.PromptTokens != 40 {
 			t.Errorf("%s: расход потерян: %+v", c.name, answer.Usage)

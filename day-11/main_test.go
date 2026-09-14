@@ -238,3 +238,41 @@ func TestCommittedResultsAreRenderedFromTheCommittedRun(t *testing.T) {
 }
 
 var _ = agent.LayerShort
+
+// emptyProvider answers every call with no text, as DeepSeek did on the arithmetic
+// control in json_object mode.
+type emptyProvider struct{ calls int }
+
+func (e *emptyProvider) AskWith(context.Context, []llm.Message, llm.Options) (llm.Answer, error) {
+	e.calls++
+	return llm.Answer{Model: "deepseek-flash", FinishReason: "stop"}, fmt.Errorf("%w (finish_reason=stop)", llm.ErrEmptyContent)
+}
+
+type flakyProvider struct{ calls int }
+
+func (f *flakyProvider) AskWith(ctx context.Context, m []llm.Message, o llm.Options) (llm.Answer, error) {
+	f.calls++
+	if f.calls == 1 {
+		return llm.Answer{}, fmt.Errorf("сеть оборвалась")
+	}
+	return fakeProvider{}.AskWith(ctx, m, o)
+}
+
+// An empty answer is the model's outcome and is scored; only a failed call is retried.
+func TestEmptyAnswersAreScoredNotRetriedAndFailedCallsAreRetriedOnce(t *testing.T) {
+	fixture := t.TempDir()
+	if err := buildFixture(fixture); err != nil {
+		t.Fatal(err)
+	}
+	control := cell{familyRecall, recallArms[0], recallProbes[4], 1}
+	empty := &emptyProvider{}
+	row := runCell(context.Background(), empty, "r", fixture, "deepseek-flash", 0, control)
+	if empty.calls != 1 || row.Attempts != 1 || row.Verdict != verdictEmpty || row.Pass || row.Error != "" {
+		t.Fatalf("empty answer: calls %d, row %+v", empty.calls, row)
+	}
+	flaky := &flakyProvider{}
+	row = runCell(context.Background(), flaky, "r", fixture, "deepseek-flash", 0, control)
+	if flaky.calls != 2 || row.Attempts != 2 || len(row.RetryErrors) != 1 || row.Error != "" || !row.Pass {
+		t.Fatalf("failed call: calls %d, row %+v", flaky.calls, row)
+	}
+}

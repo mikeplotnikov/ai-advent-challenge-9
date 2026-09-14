@@ -178,7 +178,7 @@ func renderLifecycle(b *strings.Builder, life []lifecycleRow) {
 func renderRecall(b *strings.Builder, r rows) {
 	fmt.Fprintf(b, "## A. Вспоминание: что доходит до ответа\n\n")
 	fmt.Fprintf(b, "Фикстура одинакова во всех руках; меняется только, какие слои уходят в запрос. Ответ — JSON `{\"value\": строка или null}`. N = %d на клетку.\n\n", r.plan.RecallRepeats)
-	fmt.Fprintf(b, "| Рука | Проба | Ожидалось | hit | correct_null | lost | wrong | fabricated | leak | parse_error | Прошло |\n|---|---|---|---|---|---|---|---|---|---|---|\n")
+	fmt.Fprintf(b, "| Рука | Проба | Ожидалось | hit | correct_null | lost | wrong | fabricated | leak | parse_error | empty | Прошло |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, a := range r.plan.RecallArms {
 		for _, p := range r.plan.RecallProbes {
 			counts := map[string]int{}
@@ -195,9 +195,9 @@ func renderRecall(b *strings.Builder, r rows) {
 				}
 				want = row.Want
 			}
-			fmt.Fprintf(b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d/%d |\n", a.Name, p.Name, orNull(want),
+			fmt.Fprintf(b, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d/%d |\n", a.Name, p.Name, orNull(want),
 				counts[verdictHit], counts[verdictCorrectNull], counts[verdictLost], counts[verdictWrong],
-				counts[verdictFabricated], counts[verdictLeak], counts[verdictParseError], pass, n)
+				counts[verdictFabricated], counts[verdictLeak], counts[verdictParseError], counts[verdictEmpty], pass, n)
 		}
 	}
 	renderMisses(b, r)
@@ -220,6 +220,9 @@ func renderMisses(b *strings.Builder, r rows) {
 		}
 		if row.Verdict == verdictParseError {
 			value = row.Answer
+		}
+		if row.Verdict == verdictEmpty {
+			value = "(пустой ответ)"
 		}
 		k := key{row.Arm, row.Probe, row.Verdict, value}
 		if counts[k] == 0 {
@@ -250,13 +253,13 @@ func renderBehaviour(b *strings.Builder, r rows) {
 	fmt.Fprintf(b, "## B. Поведение: как долговременный профиль меняет ответ\n\n")
 	fmt.Fprintf(b, "В профиле пользователя две записи: «%s» и «%s». Short и working в этой фикстуре пусты, поэтому руки `full` и `no-long` различаются только долговременным слоем. N = %d на клетку.\n\n",
 		styleProfile, stackProfile, r.plan.BehaviourRepeats)
-	fmt.Fprintf(b, "| Проба | Рука | Прошло | Доля | 95%% интервал Уилсона | Оборвано по потолку |\n|---|---|---|---|---|---|\n")
+	fmt.Fprintf(b, "| Проба | Рука | Прошло | Доля | 95%% интервал Уилсона | Оборвано по потолку | Пустых ответов |\n|---|---|---|---|---|---|---|\n")
 	type key struct{ probe, arm string }
 	passes, totals := map[key]int{}, map[key]int{}
 	for _, p := range r.plan.BehaviourProbes {
 		for _, a := range r.plan.BehaviourArms {
 			k := key{p.Name, a.Name}
-			truncated := 0
+			truncated, empty := 0, 0
 			for _, row := range r.probes {
 				if row.Family != familyBehaviour || row.Arm != a.Name || row.Probe != p.Name {
 					continue
@@ -268,10 +271,13 @@ func renderBehaviour(b *strings.Builder, r rows) {
 				if row.Truncated {
 					truncated++
 				}
+				if row.Verdict == verdictEmpty {
+					empty++
+				}
 			}
 			lo, hi := stats.Wilson(passes[k], totals[k])
-			fmt.Fprintf(b, "| %s | %s | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %d |\n", p.Name, a.Name, passes[k], totals[k],
-				100*float64(passes[k])/float64(totals[k]), 100*lo, 100*hi, truncated)
+			fmt.Fprintf(b, "| %s | %s | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %d | %d |\n", p.Name, a.Name, passes[k], totals[k],
+				100*float64(passes[k])/float64(totals[k]), 100*lo, 100*hi, truncated, empty)
 		}
 	}
 	type comparison struct {

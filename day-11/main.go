@@ -225,7 +225,7 @@ func runAll(ctx context.Context, out, model string, recallRepeats, behaviourRepe
 			"порядок клеток перемешан по seed",
 			"temperature не отправляется, thinking выключен",
 			"метка прогона стоит первой в system: кэш прогона холодный на старте",
-			"клетка с ошибкой вызова повторяется один раз; причина и расход первой попытки пишутся в строку",
+			"пустой ответ модели — вердикт empty, без повтора; иная ошибка вызова повторяется один раз, причина и расход первой попытки пишутся в строку",
 		},
 	}
 	rows := []any{plan}
@@ -406,7 +406,7 @@ func runCell(ctx context.Context, client agent.Caller, run, fixture, model strin
 		// A failed attempt can still be billed: its usage joins the cell's, so the
 		// run's spend is not understated by the retry.
 		row.Usage.add(reply.Usage)
-		if err == nil {
+		if err == nil || errors.Is(err, llm.ErrEmptyContent) {
 			break
 		}
 		if attempt < 2 {
@@ -419,6 +419,13 @@ func runCell(ctx context.Context, client agent.Caller, run, fixture, model strin
 	row.Truncated = reply.Truncated
 	if violations := sentViolations(rec.wire, expectedSent(c.Family, c.Arm)); len(violations) > 0 {
 		row.SentViolations = violations
+	}
+	if errors.Is(err, llm.ErrEmptyContent) {
+		row.Verdict, row.Pass = verdictEmpty, false
+		if c.Family == familyRecall {
+			row.Want, row.Forbidden = recallExpectation(c.Arm, c.Probe)
+		}
+		return row
 	}
 	if err != nil {
 		row.Error = err.Error()

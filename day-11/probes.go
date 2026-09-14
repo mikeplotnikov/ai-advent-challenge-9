@@ -127,6 +127,9 @@ const (
 	verdictFabricated  = "fabricated"
 	verdictLeak        = "leak"
 	verdictParseError  = "parse_error"
+	// verdictEmpty is a completed call with no text: the model's outcome, not a failure
+	// of the run, so it is scored and never retried.
+	verdictEmpty = "empty"
 )
 
 type recallScore struct {
