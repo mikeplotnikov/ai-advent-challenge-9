@@ -35,14 +35,43 @@ type usageRow struct {
 	Priced     bool    `json:"priced"`
 }
 
+// add folds one attempt into the cell. An attempt that reported no tokens was not
+// billed and says nothing about pricing; among billed attempts the cell is priced only
+// if every one of them was.
 func (u *usageRow) add(r agent.Usage) {
+	if r.PromptTokens == 0 && r.CompletionTokens == 0 {
+		return
+	}
+	billedBefore := u.Prompt > 0 || u.Completion > 0
 	u.Prompt += r.PromptTokens
 	u.Completion += r.CompletionTokens
 	u.Cached += r.CachedTokens
 	u.Missed += r.MissedTokens
 	u.Reasoning += r.ReasoningTokens
 	u.Cost += r.Cost
-	u.Priced = r.Priced
+	u.Priced = r.Priced && (u.Priced || !billedBefore)
+}
+
+// aggregate adds the probe cells to the run's spend and counts the cells that ended
+// in an error. Calls counts attempts, billed or not.
+func aggregate(spend agent.Totals, results []probeRow) (agent.Totals, int) {
+	errorsCount := 0
+	for _, r := range results {
+		if r.Error != "" {
+			errorsCount++
+		}
+		spend.Calls += r.Attempts
+		spend.PromptTokens += r.Usage.Prompt
+		spend.CompletionTokens += r.Usage.Completion
+		spend.CachedTokens += r.Usage.Cached
+		spend.MissedTokens += r.Usage.Missed
+		spend.ReasoningTokens += r.Usage.Reasoning
+		spend.Cost += r.Usage.Cost
+		if (r.Usage.Prompt > 0 || r.Usage.Completion > 0) && !r.Usage.Priced {
+			spend.Unpriced++
+		}
+	}
+	return spend, errorsCount
 }
 
 type planRow struct {
@@ -263,23 +292,10 @@ func runAll(ctx context.Context, out, model string, recallRepeats, behaviourRepe
 	close(next)
 	wg.Wait()
 
-	errorsCount := 0
 	for _, r := range results {
 		rows = append(rows, r)
-		if r.Error != "" {
-			errorsCount++
-		}
-		spend.Calls += r.Attempts
-		spend.PromptTokens += r.Usage.Prompt
-		spend.CompletionTokens += r.Usage.Completion
-		spend.CachedTokens += r.Usage.Cached
-		spend.MissedTokens += r.Usage.Missed
-		spend.ReasoningTokens += r.Usage.Reasoning
-		spend.Cost += r.Usage.Cost
-		if !r.Usage.Priced {
-			spend.Unpriced++
-		}
 	}
+	spend, errorsCount := aggregate(spend, results)
 	after, err := treeHash(fixture)
 	if err != nil {
 		return err

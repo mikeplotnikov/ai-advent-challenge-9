@@ -157,7 +157,7 @@ func TestOfflineRunSendsExactlyTheArmsLayersAndRendersAReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"| full | short | BUG-7781 |", "| none | short | null |", "full против no-long", "Повторных попыток не было"} {
+	for _, want := range []string{"| full | short | BUG-7781 |", "| none | short | null |", "full против no-long", "Повторных вызовов не было"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("report lacks %q:\n%s", want, text)
 		}
@@ -274,5 +274,28 @@ func TestEmptyAnswersAreScoredNotRetriedAndFailedCallsAreRetriedOnce(t *testing.
 	row = runCell(context.Background(), flaky, "r", fixture, "deepseek-flash", 0, control)
 	if flaky.calls != 2 || row.Attempts != 2 || len(row.RetryErrors) != 1 || row.Error != "" || !row.Pass {
 		t.Fatalf("failed call: calls %d, row %+v", flaky.calls, row)
+	}
+}
+
+func TestUsageAndSpendSurviveTwoFailedAttempts(t *testing.T) {
+	var cell usageRow
+	cell.add(agent.Usage{PromptTokens: 500, CompletionTokens: 7, Cost: 0.00008, Priced: true}) // billed, then failed
+	cell.add(agent.Usage{})                                                                    // transport failure, nothing billed
+	if cell.Prompt != 500 || cell.Cost != 0.00008 || !cell.Priced {
+		t.Fatalf("a failed transport attempt erased the billed one: %+v", cell)
+	}
+	var mixed usageRow
+	mixed.add(agent.Usage{PromptTokens: 10, Cost: 0.1, Priced: true})
+	mixed.add(agent.Usage{PromptTokens: 10, Priced: false})
+	if mixed.Priced {
+		t.Fatal("a cell with an unpriced billed attempt reads as fully priced")
+	}
+	spend, errorsCount := aggregate(agent.Totals{Calls: 3}, []probeRow{
+		{Attempts: 2, Usage: cell, Error: "сеть оборвалась"},
+		{Attempts: 1, Usage: usageRow{Prompt: 100, Completion: 5, Cost: 0.00002, Priced: true}},
+		{Attempts: 2, Usage: usageRow{}, Error: "сеть оборвалась"},
+	})
+	if spend.Calls != 8 || spend.PromptTokens != 600 || errorsCount != 2 || spend.Unpriced != 0 {
+		t.Fatalf("aggregate = %+v, errors %d", spend, errorsCount)
 	}
 }

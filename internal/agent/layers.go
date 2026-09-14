@@ -187,7 +187,7 @@ func validateMemoryConfig(m *MemoryConfig) error {
 		return fmt.Errorf("agent: Memory.User: %w", err)
 	}
 	if m.Task != "" {
-		if _, err := validateStateName(m.Task); err != nil {
+		if _, err := validateTaskName(m.Task); err != nil {
 			return fmt.Errorf("agent: Memory.Task: %w", err)
 		}
 	}
@@ -267,6 +267,31 @@ func (s *memoryState) reload() error {
 	return nil
 }
 
+// validateTaskName is validateStateName plus the one-line rule of entry values: the
+// name is rendered as "task: <name>" right before [USER_MESSAGE], so a line break in it
+// would forge a tag exactly as one in a value would.
+func validateTaskName(name string) (string, error) {
+	name, err := validateStateName(name)
+	if err != nil {
+		return "", err
+	}
+	if !singleLine(name) {
+		return "", fmt.Errorf("имя задачи %q: только одна строка без управляющих символов", name)
+	}
+	return name, nil
+}
+
+// singleLine rejects control characters and U+2028/U+2029, which break lines without
+// being control characters.
+func singleLine(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
+			return false
+		}
+	}
+	return true
+}
+
 func validateLongTerm(m LongTermMemory, user string) error {
 	if m.Version != MemoryLayerVersion {
 		return fmt.Errorf("версия формата %d, эта сборка понимает %d", m.Version, MemoryLayerVersion)
@@ -341,11 +366,8 @@ func normalizeMemoryEntry(key, value string) (string, string, error) {
 	if len([]rune(value)) > maxMemoryValueRunes {
 		return "", "", fmt.Errorf("значение %q длиннее %d символов", key, maxMemoryValueRunes)
 	}
-	for _, r := range value {
-		// U+2028 and U+2029 are not control characters, but they are line breaks.
-		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
-			return "", "", fmt.Errorf("значение %q: только одна строка без управляющих символов", key)
-		}
+	if !singleLine(value) {
+		return "", "", fmt.Errorf("значение %q: только одна строка без управляющих символов", key)
 	}
 	return key, value, nil
 }
@@ -451,7 +473,7 @@ func (a *Agent) StartTask(name string) error {
 	if a.memory == nil {
 		return ErrMemoryOff
 	}
-	name, err := validateStateName(name)
+	name, err := validateTaskName(name)
 	if err != nil {
 		return err
 	}
@@ -495,7 +517,7 @@ func (a *Agent) UseTask(name string) error {
 	if a.memory == nil {
 		return ErrMemoryOff
 	}
-	name, err := validateStateName(name)
+	name, err := validateTaskName(name)
 	if err != nil {
 		return err
 	}
