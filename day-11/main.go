@@ -35,6 +35,16 @@ type usageRow struct {
 	Priced     bool    `json:"priced"`
 }
 
+func (u *usageRow) add(r agent.Usage) {
+	u.Prompt += r.PromptTokens
+	u.Completion += r.CompletionTokens
+	u.Cached += r.CachedTokens
+	u.Missed += r.MissedTokens
+	u.Reasoning += r.ReasoningTokens
+	u.Cost += r.Cost
+	u.Priced = r.Priced
+}
+
 type planRow struct {
 	Kind             string   `json:"kind"`
 	Run              string   `json:"run"`
@@ -93,6 +103,7 @@ type probeRow struct {
 	At             string           `json:"at"`
 	ElapsedMs      int64            `json:"elapsedMs"`
 	Attempts       int              `json:"attempts"`
+	RetryErrors    []string         `json:"retryErrors,omitempty"`
 	Error          string           `json:"error,omitempty"`
 }
 
@@ -214,6 +225,7 @@ func runAll(ctx context.Context, out, model string, recallRepeats, behaviourRepe
 			"порядок клеток перемешан по seed",
 			"temperature не отправляется, thinking выключен",
 			"метка прогона стоит первой в system: кэш прогона холодный на старте",
+			"клетка с ошибкой вызова повторяется один раз; причина и расход первой попытки пишутся в строку",
 		},
 	}
 	rows := []any{plan}
@@ -391,13 +403,15 @@ func runCell(ctx context.Context, client agent.Caller, run, fixture, model strin
 		row.At = started.UTC().Format(time.RFC3339Nano)
 		row.Peak = llm.IsPeak(started)
 		row.ElapsedMs = time.Since(started).Milliseconds()
+		// A failed attempt can still be billed: its usage joins the cell's, so the
+		// run's spend is not understated by the retry.
+		row.Usage.add(reply.Usage)
 		if err == nil {
 			break
 		}
-	}
-	row.Usage = usageRow{
-		Prompt: reply.Usage.PromptTokens, Completion: reply.Usage.CompletionTokens, Cached: reply.Usage.CachedTokens,
-		Missed: reply.Usage.MissedTokens, Reasoning: reply.Usage.ReasoningTokens, Cost: reply.Usage.Cost, Priced: reply.Usage.Priced,
+		if attempt < 2 {
+			row.RetryErrors = append(row.RetryErrors, err.Error())
+		}
 	}
 	row.ServedModel = reply.Model
 	row.Memory = reply.Memory

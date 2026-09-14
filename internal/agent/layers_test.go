@@ -511,3 +511,100 @@ func TestMemoryInputsAreBoundedAtTheWrite(t *testing.T) {
 		t.Fatalf("layers off: %v", err)
 	}
 }
+
+// A failed task operation must leave the active task exactly as it was: the working
+// memory still on disk must not read as empty in the meantime.
+func TestFailedTaskOperationsKeepTheActiveTaskIntact(t *testing.T) {
+	dir := t.TempDir()
+	a := layerAgent(t, &layerCaller{}, Config{Memory: memoryConfig(dir, "u", "")})
+	if err := a.StartTask("T-SYNC"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Remember(TargetTask, "export_code", "EXP-5531"); err != nil {
+		t.Fatal(err)
+	}
+	for name, op := range map[string]func() error{
+		"StartTask of an existing task": func() error { return a.StartTask("T-SYNC") },
+		"UseTask of a missing task":     func() error { return a.UseTask("T-NONE") },
+	} {
+		if err := op(); err == nil {
+			t.Fatalf("%s succeeded", name)
+		}
+		state := a.MemoryState()
+		if state.Task != "T-SYNC" || len(state.Working) != 1 || state.Working[0].Value != "EXP-5531" {
+			t.Fatalf("after a failed %s the active task reads as %q with %+v", name, state.Task, state.Working)
+		}
+	}
+	if err := a.Remember(TargetTask, "deadline", "2026-10-21"); err != nil {
+		t.Fatalf("the restored task cannot be written: %v", err)
+	}
+}
+
+// When the write itself fails, nothing changes in memory: the entry that did not
+// reach disk must not travel in the next request either.
+func TestFailedLayerWritesRollBack(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	c := &layerCaller{}
+	a := layerAgent(t, c, Config{Memory: memoryConfig(dir, "u", "")})
+	if err := a.StartTask("T-SYNC"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Remember(TargetDecision, "storage", "DEC-0412"); err != nil {
+		t.Fatal(err)
+	}
+	userDir := MemoryUserDir(dir, "u")
+	for _, d := range []string{userDir, filepath.Join(userDir, "tasks")} {
+		if err := os.Chmod(d, 0o500); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		os.Chmod(userDir, 0o700)
+		os.Chmod(filepath.Join(userDir, "tasks"), 0o700)
+	})
+
+	if err := a.Remember(TargetDecision, "storage", "DEC-9999"); !errors.Is(err, ErrNotSaved) {
+		t.Fatalf("write into a read-only dir: err = %v, want ErrNotSaved", err)
+	}
+	if err := a.Remember(TargetTask, "export_code", "EXP-9999"); !errors.Is(err, ErrNotSaved) {
+		t.Fatalf("task write into a read-only dir: err = %v", err)
+	}
+	if err := a.StartTask("T-NEW"); !errors.Is(err, ErrNotSaved) {
+		t.Fatalf("StartTask into a read-only dir: err = %v", err)
+	}
+	state := a.MemoryState()
+	if state.Task != "T-SYNC" || len(state.Working) != 0 || len(state.Decisions) != 1 || state.Decisions[0].Value != "DEC-0412" {
+		t.Fatalf("a failed write changed memory: task %q, working %+v, decisions %+v", state.Task, state.Working, state.Decisions)
+	}
+	if _, err := a.Ask(context.Background(), "что с хранилищем?"); err != nil {
+		t.Fatal(err)
+	}
+	if wire := fmt.Sprint(c.last()); strings.Contains(wire, "9999") || !strings.Contains(wire, "DEC-0412") {
+		t.Fatal("an unsaved entry travelled, or the saved one did not")
+	}
+}
+
+// Two agents of one user writing in turn: each write reloads first, so neither
+// overwrites the other's entry.
+func TestTwoAgentsOfOneUserDoNotOverwriteEachOther(t *testing.T) {
+	dir := t.TempDir()
+	first := layerAgent(t, &layerCaller{}, Config{Memory: memoryConfig(dir, "u", "")})
+	second := layerAgent(t, &layerCaller{}, Config{Memory: &MemoryConfig{Dir: dir, User: "u", Session: "s2"}})
+	if err := first.Remember(TargetKnowledge, "vps", "KRASNODAR-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Remember(TargetKnowledge, "staging_host", "stg-orbita5.internal"); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Remember(TargetDecision, "storage", "DEC-0412"); err != nil {
+		t.Fatalf("the first agent could not write after the second one did: %v", err)
+	}
+	third := layerAgent(t, &layerCaller{}, Config{Memory: memoryConfig(dir, "u", "")})
+	state := third.MemoryState()
+	if len(state.Knowledge) != 2 || len(state.Decisions) != 1 {
+		t.Fatalf("an agent overwrote another agent's entry: knowledge %+v, decisions %+v", state.Knowledge, state.Decisions)
+	}
+}

@@ -99,11 +99,20 @@ func render(r rows, source string) (string, error) {
 	w := func(format string, args ...any) { fmt.Fprintf(&b, format, args...) }
 
 	served := map[string]int{}
-	peak := 0
+	peak, retried := 0, 0
+	var retryReasons []string
 	for _, p := range r.probes {
 		served[p.ServedModel]++
 		if p.Peak {
 			peak++
+		}
+		if p.Attempts > 1 {
+			retried++
+			reason := "причина не записана"
+			if len(p.RetryErrors) > 0 {
+				reason = p.RetryErrors[0]
+			}
+			retryReasons = append(retryReasons, fmt.Sprintf("%s/%s/%d: %s", p.Arm, p.Probe, p.Repeat, reason))
 		}
 	}
 	var servedList []string
@@ -122,7 +131,12 @@ func render(r rows, source string) (string, error) {
 	w("- Запрошена модель `%s`; ответили: %s. Вызовов в часы пика: %d из %d.\n", r.plan.Model, strings.Join(servedList, ", "), peak, len(r.probes))
 	w("- Расход всего прогона (E0 + пробы): вызовов %d, вход %d токенов (из кэша %s), выход %d, $%.6f.\n",
 		spend.Calls, spend.PromptTokens, cache, spend.CompletionTokens, spend.Cost)
-	w("- Проверки целостности пройдены: клеток %d по плану, ошибок 0, фикстура до и после прогона одна (`%s`), ни в одном запросе маркеры слоёв не разошлись с рукой.\n\n", len(r.probes), short(r.plan.FixtureSHA256))
+	w("- Проверки целостности пройдены: клеток %d по плану, ошибок в итоге 0, фикстура до и после прогона одна (`%s`), ни в одном запросе маркеры слоёв не разошлись с рукой.\n", len(r.probes), short(r.plan.FixtureSHA256))
+	if retried == 0 {
+		w("- Повторных попыток не было: каждая клетка получила ответ с первого вызова.\n\n")
+	} else {
+		w("- Клеток, получивших ответ со второй попытки: %d. Расход первых попыток входит в итог. Причины: %s.\n\n", retried, strings.Join(retryReasons, "; "))
+	}
 
 	renderLifecycle(&b, r.lifecycle)
 	renderRecall(&b, r)

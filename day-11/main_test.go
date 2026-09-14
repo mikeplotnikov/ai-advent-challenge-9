@@ -157,19 +157,33 @@ func TestOfflineRunSendsExactlyTheArmsLayersAndRendersAReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"| full | short | BUG-7781 |", "| none | short | null |", "full против no-long"} {
+	for _, want := range []string{"| full | short | BUG-7781 |", "| none | short | null |", "full против no-long", "Повторных попыток не было"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("report lacks %q:\n%s", want, text)
 		}
 	}
 
+	retried := r
+	retried.probes = append([]probeRow(nil), r.probes...)
+	retried.probes[0].Attempts, retried.probes[0].RetryErrors = 2, []string{"вызов модели не удался: timeout"}
+	text, err = render(retried, "offline.jsonl")
+	if err != nil || !strings.Contains(text, "со второй попытки: 1") || !strings.Contains(text, "timeout") {
+		t.Fatalf("a retried cell is not disclosed (%v):\n%s", err, text)
+	}
+
 	// Each refusal is reachable.
 	for name, mutate := range map[string]func(*rows){
-		"violation": func(x *rows) { x.probes[0].SentViolations = []string{markerShort} },
-		"pilot":     func(x *rows) { x.plan.Pilot = true },
-		"errors":    func(x *rows) { x.complete.Errors = 1 },
-		"fixture":   func(x *rows) { x.complete.FixtureSHA256After = "other" },
-		"short":     func(x *rows) { x.probes = x.probes[1:] },
+		"violation":               func(x *rows) { x.probes[0].SentViolations = []string{markerShort} },
+		"pilot":                   func(x *rows) { x.plan.Pilot = true },
+		"errors":                  func(x *rows) { x.complete.Errors = 1 },
+		"fixture":                 func(x *rows) { x.complete.FixtureSHA256After = "other" },
+		"short":                   func(x *rows) { x.probes = x.probes[1:] },
+		"no plan":                 func(x *rows) { x.plan.Kind = "" },
+		"no complete":             func(x *rows) { x.complete.Kind = "" },
+		"complete of another run": func(x *rows) { x.complete.Run = "other" },
+		"complete count":          func(x *rows) { x.complete.ProbeRows-- },
+		"lifecycle missing":       func(x *rows) { x.lifecycle = x.lifecycle[1:] },
+		"probe of another run":    func(x *rows) { x.probes[3].Run = "other" },
 	} {
 		copyRows := r
 		copyRows.probes = append([]probeRow(nil), r.probes...)

@@ -342,7 +342,8 @@ func normalizeMemoryEntry(key, value string) (string, string, error) {
 		return "", "", fmt.Errorf("значение %q длиннее %d символов", key, maxMemoryValueRunes)
 	}
 	for _, r := range value {
-		if unicode.IsControl(r) {
+		// U+2028 and U+2029 are not control characters, but they are line breaks.
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
 			return "", "", fmt.Errorf("значение %q: только одна строка без управляющих символов", key)
 		}
 	}
@@ -455,10 +456,10 @@ func (a *Agent) StartTask(name string) error {
 		return err
 	}
 	s := a.memory
-	previous := s.task
+	previous := s.saveTask()
 	s.setTask(name)
 	if exists, err := s.taskFile.exists(); err != nil || exists {
-		s.setTask(previous)
+		s.restoreTask(previous)
 		if err != nil {
 			return err
 		}
@@ -466,11 +467,27 @@ func (a *Agent) StartTask(name string) error {
 	}
 	s.working = WorkingMemory{Version: MemoryLayerVersion, User: s.cfg.User, Task: name, Entries: []MemoryEntry{}, Updated: time.Now()}
 	if err := s.taskFile.write(s.working); err != nil {
-		s.setTask(previous)
-		_ = s.reload()
+		s.restoreTask(previous)
 		return fmt.Errorf("%s: %w: %w", a.Name(), ErrNotSaved, err)
 	}
 	return nil
+}
+
+// taskState is the active task as it stood before a task operation, restored exactly
+// when the operation fails: a failed /task must not blank the working memory that is
+// still on disk.
+type taskState struct {
+	task     string
+	working  WorkingMemory
+	taskFile layerFile
+}
+
+func (s *memoryState) saveTask() taskState {
+	return taskState{task: s.task, working: s.working, taskFile: s.taskFile}
+}
+
+func (s *memoryState) restoreTask(t taskState) {
+	s.task, s.working, s.taskFile = t.task, t.working, t.taskFile
 }
 
 // UseTask makes an existing task active.
@@ -483,7 +500,7 @@ func (a *Agent) UseTask(name string) error {
 		return err
 	}
 	s := a.memory
-	previous := s.task
+	previous := s.saveTask()
 	s.setTask(name)
 	exists, err := s.taskFile.exists()
 	if err == nil && !exists {
@@ -493,8 +510,7 @@ func (a *Agent) UseTask(name string) error {
 		err = s.reload()
 	}
 	if err != nil {
-		s.setTask(previous)
-		_ = s.reload()
+		s.restoreTask(previous)
 		return err
 	}
 	return nil
