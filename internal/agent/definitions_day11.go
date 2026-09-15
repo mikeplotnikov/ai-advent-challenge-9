@@ -26,7 +26,6 @@ type DumpedLayers struct {
 	Inject    []MemoryLayer   `json:"inject"`
 	Task      string          `json:"task"`
 	Working   []DumpedEntry   `json:"working"`
-	Profile   []DumpedEntry   `json:"profile"`
 	Decisions []DumpedEntry   `json:"decisions"`
 	Knowledge []DumpedEntry   `json:"knowledge"`
 	Turns     []string        `json:"turns"`
@@ -74,17 +73,23 @@ func BuildMemoryDefinitions(system string) (MemoryDefinitions, error) {
 			"рабочий слой стоит перед новым вопросом в последнем user-сообщении и в историю не сохраняется",
 			"слой, выключенный в Inject, хранится, но не отправляется; пустой слой не даёт ни байта",
 			"писать в рабочий и долговременный слои можно только явной командой; ответы модели туда не попадают",
+			"профиль пользователя с дня 12 живёт отдельно от памяти и в этих примерах не участвует",
 		},
 	}
+	// TargetProfile is deliberately absent from the table: since day 12 it names the
+	// profile, not a layer, and a routing table that answered "" for it would read as
+	// "goes nowhere" instead of "went somewhere else".
 	for _, target := range MemoryTargets {
-		layer, _ := target.Layer()
+		layer, err := target.Layer()
+		if err != nil {
+			continue
+		}
 		defs.Routes[target] = layer
 	}
 
 	full := DumpedLayers{
 		Task:      "T-SYNC",
 		Working:   []DumpedEntry{{"export_code", "EXP-5531"}, {"deadline", "2026-10-21"}},
-		Profile:   []DumpedEntry{{"answer_format", "Начинай каждый ответ строкой «ИТОГ:»"}},
 		Decisions: []DumpedEntry{{"storage", "PostgreSQL 16, решение DEC-0412"}},
 		Knowledge: []DumpedEntry{{"staging_host", "stg-orbita5.internal"}},
 		Turns:     []string{"тикет BUG-7781", "второй вопрос"},
@@ -101,10 +106,10 @@ func BuildMemoryDefinitions(system string) (MemoryDefinitions, error) {
 		{"без долговременного", []MemoryLayer{LayerShort, LayerWorking}, nil},
 		{"ни одного слоя", []MemoryLayer{}, nil},
 		{"пустые слои", AllMemoryLayers, func(d *DumpedLayers) {
-			d.Task, d.Working, d.Profile, d.Decisions, d.Knowledge = "", nil, nil, nil, nil
+			d.Task, d.Working, d.Decisions, d.Knowledge = "", nil, nil, nil
 		}},
 		{"только знание, нет задачи", AllMemoryLayers, func(d *DumpedLayers) {
-			d.Task, d.Working, d.Profile, d.Decisions = "", nil, nil, nil
+			d.Task, d.Working, d.Decisions = "", nil, nil
 		}},
 	}
 	for _, c := range cases {
@@ -197,7 +202,7 @@ func recordLayered(system string, d DumpedLayers) ([]DumpedMessage, error) {
 	for _, group := range []struct {
 		target  MemoryTarget
 		entries []DumpedEntry
-	}{{TargetTask, d.Working}, {TargetProfile, d.Profile}, {TargetDecision, d.Decisions}, {TargetKnowledge, d.Knowledge}} {
+	}{{TargetTask, d.Working}, {TargetDecision, d.Decisions}, {TargetKnowledge, d.Knowledge}} {
 		for _, e := range group.entries {
 			if err := writer.Remember(group.target, e.Key, e.Value); err != nil {
 				return nil, err

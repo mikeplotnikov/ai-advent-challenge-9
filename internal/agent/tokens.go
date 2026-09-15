@@ -131,7 +131,13 @@ type Estimate struct {
 	// message, the second in front of the new question. Zero when layers are off.
 	LongTerm int
 	Working  int
-	History  int
+	// Profile is day 12's personalization block, at the head of the system message.
+	// Plan is the plan-answer pipeline's scaffolding in front of the question; the
+	// separator both it and Working force is counted inside Working when there is
+	// working memory, so Plan alone under-counts by that one tag.
+	Profile int
+	Plan    int
+	History int
 	Input    int
 	// Overhead is the chat format's own cost: role markers and delimiters that no
 	// character count sees.
@@ -145,8 +151,20 @@ type Estimate struct {
 
 // String is the one-line form the CLI prints before a call.
 func (e Estimate) String() string {
-	return fmt.Sprintf("система %d + summary %d + facts %d%s + история %d (%d обменов) + вопрос %d + формат %d = %d токенов",
-		e.System, e.Summary, e.Facts, e.layers(), e.History, e.Exchanges, e.Input, e.Overhead, e.Total)
+	return fmt.Sprintf("система %d + summary %d + facts %d%s%s + история %d (%d обменов) + вопрос %d + формат %d = %d токенов",
+		e.System, e.Summary, e.Facts, e.personalization(), e.layers(), e.History, e.Exchanges, e.Input, e.Overhead, e.Total)
+}
+
+// personalization is printed only when day 12 contributed, so days 8-11 read exactly
+// as before.
+func (e Estimate) personalization() string {
+	switch {
+	case e.Profile == 0 && e.Plan == 0:
+		return ""
+	case e.Plan == 0:
+		return fmt.Sprintf(" + профиль %d", e.Profile)
+	}
+	return fmt.Sprintf(" + профиль %d + план %d", e.Profile, e.Plan)
 }
 
 // layers is printed only when day 11 contributed, so days 8-10 read exactly as before.
@@ -212,10 +230,16 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	if long := a.longTermContext(); long != "" {
 		e.LongTerm = EstimateTokens(long)
 	}
+	if profile := a.profileContext(); profile != "" {
+		e.Profile = EstimateTokens(profile)
+	}
 	if working := a.workingContext(); working != "" {
 		e.Working = EstimateTokens(working)
 	}
-	if e.System > 0 || e.Summary > 0 || e.Facts > 0 || e.LongTerm > 0 {
+	if plan := a.planContext(); plan != "" {
+		e.Plan = EstimateTokens(plan)
+	}
+	if e.System > 0 || e.Summary > 0 || e.Facts > 0 || e.LongTerm > 0 || e.Profile > 0 {
 		e.Messages++
 	}
 	stack = a.sentHistory(stack)
@@ -230,7 +254,8 @@ func (a *Agent) estimate(input string, stack []llm.Message) Estimate {
 	if a.cfg.ResponseFormat != "" {
 		e.Overhead += tokensForResponseFormat
 	}
-	e.Total = e.System + e.Summary + e.Facts + e.LongTerm + e.Working + e.History + e.Input + e.Overhead
+	e.Total = e.System + e.Summary + e.Facts + e.Profile + e.LongTerm + e.Working + e.Plan +
+		e.History + e.Input + e.Overhead
 	return e
 }
 

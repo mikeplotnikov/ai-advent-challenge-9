@@ -355,7 +355,16 @@ func buildFixture(dir string) error {
 		func() error { return recall.Remember(agent.TargetDecision, "storage", decisionValue) },
 		func() error { return recall.Remember(agent.TargetKnowledge, "staging_host", knowledgeValue) },
 	}
-	behaviour, err := agent.New(&recorder{}, agent.Config{Memory: &agent.MemoryConfig{Dir: dir, User: behaviourUser, Session: fixtureSession}})
+	// The behaviour fixture is two user preferences. Day 11 kept them in the long-term
+	// layer; day 12 moved the profile out of memory (chat #2898-2899), so the same two
+	// rules are now written to the profile and the arms ablate them there. What the
+	// experiment compares is unchanged — preferences present against absent — but a
+	// re-run after day 12 sends them in a [PROFILE] block, not inside the layer. The
+	// committed numbers in RESULTS.md come from the recorded run, not from a re-run.
+	behaviour, err := agent.New(&recorder{}, agent.Config{
+		Memory:  &agent.MemoryConfig{Dir: dir, User: behaviourUser, Session: fixtureSession},
+		Profile: &agent.ProfileConfig{Dir: dir, User: behaviourUser},
+	})
 	if err != nil {
 		return err
 	}
@@ -404,6 +413,14 @@ func runCell(ctx context.Context, client agent.Caller, run, fixture, model strin
 		cfg.MaxTokens = behaviourTokens
 	}
 	cfg.Memory = &agent.MemoryConfig{Dir: fixture, User: user, Session: fixtureSession, Task: c.Arm.Task, Inject: c.Arm.Inject}
+	// An arm that drops the long-term layer drops the user's preferences with it: that
+	// is what "no-long" meant when the profile lived inside the layer, and it has to go
+	// on meaning it now that the profile is its own entity.
+	profileInject := agent.AllProfileBlocks
+	if !injects(c.Arm, agent.LayerLong) {
+		profileInject = []agent.ProfileBlock{}
+	}
+	cfg.Profile = &agent.ProfileConfig{Dir: fixture, User: user, Inject: profileInject}
 
 	var reply agent.Reply
 	var err error

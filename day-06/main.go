@@ -77,7 +77,11 @@ func main() {
 		user      = flag.String("user", "default", "чья рабочая и долговременная память используется (с -layers)")
 		memoryDir = flag.String("memory-dir", ".memory", "каталог слоёв памяти (с -layers)")
 		task      = flag.String("task", "", "активная задача при старте (с -layers)")
-		inject    = flag.String("inject", "short,working,long", "какие слои уходят в запрос, через запятую; хранятся все (с -layers)")
+		inject    = flag.String("inject", "short,working,long,profile", "что уходит в запрос, через запятую: слои short, working, long и блоки профиля profile (все три) или style, constraints, context; хранится всё (с -layers)")
+
+		// Day 12: the user's own profile, beside the layers.
+		profileName  = flag.String("profile", agent.DefaultProfileName, "какой профиль пользователя подмешивать в каждый запрос (с -layers)")
+		profileRoute = flag.Bool("profile-route", false, "выбирать профиль роутером на каждый вопрос, а не держать один на сессию (с -layers)")
 
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
@@ -102,6 +106,7 @@ func main() {
 	}
 
 	var memory *agent.MemoryConfig
+	var profile *agent.ProfileConfig
 	if *layers {
 		switch {
 		case *noMemory:
@@ -109,13 +114,19 @@ func main() {
 		case *ctxProbe > 0 || *tokenProbe != "" || *compressionProbe || *probe:
 			fail(errors.New("исторические замеры дней 6–9 нельзя совмещать с -layers: их JSONL должны воспроизводиться"))
 		}
-		layersToSend, err := parseInject(*inject)
+		layersToSend, blocksToSend, err := parseInject(*inject)
 		if err != nil {
 			fail(err)
 		}
 		memory = &agent.MemoryConfig{Dir: *memoryDir, User: *user, Session: *session, Task: *task, Inject: layersToSend}
+		// The profile rides with the layers: day 12 is "персонализация поверх модели
+		// памяти", and a -layers session whose /remember profile had nowhere to land
+		// would be a regression of day 11's interface.
+		profile = &agent.ProfileConfig{
+			Dir: *memoryDir, User: *user, Name: *profileName, Inject: blocksToSend, Route: *profileRoute,
+		}
 	} else {
-		for _, name := range []string{"user", "memory-dir", "task", "inject"} {
+		for _, name := range []string{"user", "memory-dir", "task", "inject", "profile", "profile-route"} {
 			if flagWasSet(name) {
 				fail(fmt.Errorf("-%s действует только вместе с -layers", name))
 			}
@@ -200,6 +211,7 @@ func main() {
 		cfg.Store = store
 	}
 	cfg.Memory = memory
+	cfg.Profile = profile
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
@@ -488,6 +500,7 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 	}
 	if a.MemoryState().Enabled {
 		fmt.Fprintln(os.Stderr, "слои памяти: /memory · /remember task|profile|decision|knowledge КЛЮЧ = ЗНАЧЕНИЕ · /drop ЦЕЛЬ КЛЮЧ · /task new|use ИМЯ · /task done")
+		fmt.Fprintln(os.Stderr, "профиль: /profile · /profile init · /profile set style|constraints|context КЛЮЧ = ЗНАЧЕНИЕ · /profile use ИМЯ · /profile list · /profile pipeline direct|plan-answer · /profile route ПОДСТРОКА = ИМЯ")
 	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -497,6 +510,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			break
 		}
 		line := strings.TrimSpace(in.Text())
+		if handled, err := handleProfileCommand(a, in, line); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ошибка:", err)
+			}
+			continue
+		}
 		if handled, err := handleMemoryCommand(a, line); handled {
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "ошибка:", err)
@@ -778,7 +797,8 @@ func spend(reply agent.Reply) string {
 	return fmt.Sprintf("[ход %d · %s · %d+%d токенов%s%s%s · %s · %s%s%s%s%s]",
 		reply.Turn, reply.Model,
 		reply.Usage.PromptTokens, reply.Usage.CompletionTokens, cache, estimate, facts,
-		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned, cut, dropped, memorySpend(reply))
+		price(reply.Usage), reply.Elapsed.Round(time.Millisecond), reasoned, cut, dropped,
+		memorySpend(reply)+profileSpend(reply))
 }
 
 func printFactSpendOnError(reply agent.Reply, quiet, tokens bool, a *agent.Agent) {

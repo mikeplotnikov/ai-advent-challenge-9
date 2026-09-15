@@ -107,6 +107,14 @@ type Config struct {
 	// beside the conversation. Nil keeps days 6-10 exactly as they were.
 	Memory *MemoryConfig
 
+	// Profile is day 12: the user's own preferences — style, constraints, context —
+	// in their own files beside the layers, injected into every request. Nil keeps
+	// days 6-11 exactly as they were, down to the bytes of the request.
+	//
+	// It is separate from Memory because the host separated them: "Нет. Память это
+	// память", "А профиль это нюансы конкретного пользователя" (chat #2898-2899).
+	Profile *ProfileConfig
+
 	// Validate is the output policy: it inspects the model's text and returns an
 	// error when the answer is unusable. Nil means "any non-empty answer is fine".
 	// Day 2 learned that response_format guarantees valid JSON and not your schema;
@@ -144,6 +152,20 @@ type Reply struct {
 	// answer. It is also included in the conversation Totals, never hidden as free.
 	FactUsage     Usage
 	FactAttempted bool
+
+	// Profile is which profile answered this turn. Empty when personalization is off.
+	// It is reported rather than assumed because the router may choose a different one
+	// per message, and a measurement that guessed the profile would be measuring the
+	// wrong thing.
+	Profile string
+	// Plan is the plan-answer pipeline's first step, kept for display and for the
+	// measurement. It is never part of the conversation.
+	Plan string
+	// PlanUsage is the separate provider call that produced Plan. Like FactUsage it is
+	// reported apart from the answer's own usage: the whole point of comparing the two
+	// pipelines is knowing what the extra call cost.
+	PlanUsage     Usage
+	PlanAttempted bool
 	// Memory is which layers travelled in this request and what they weighed by the
 	// local estimate. Zero when layers are off.
 	Memory MemorySent
@@ -215,7 +237,13 @@ type Agent struct {
 	inactiveBranches   map[string][]llm.Message
 	checkpoints        map[string][]llm.Message
 	memory             *memoryState
-	turns              int
+	profile            *profileState
+	// turnPlan is the plan-answer pipeline's scaffolding for the current turn. It is
+	// deliberately not persisted anywhere: it belongs to one question, and storing it
+	// would make the agent's own planning look like something the user said.
+	turnPlan  string
+	planSpend Totals
+	turns     int
 	// restored is what Load found when this agent was built, kept so the interface
 	// can say "загружено N ходов" without asking the store a second time.
 	restored Restored
@@ -278,11 +306,29 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if err := validateMemoryConfig(cfg.Memory); err != nil {
 		return nil, err
 	}
+	if err := validateProfileConfig(cfg.Profile, cfg.Memory); err != nil {
+		return nil, err
+	}
 	a := &Agent{cfg: cfg, client: client}
 	a.resetStrategyState()
+	// The day-11 layer file loses its profile section before anything reads it, so
+	// neither the layers nor the profile ever sees a half-migrated tree. Either config
+	// is enough to trigger it: validateProfileConfig has already established that when
+	// both are set they name the same user and the same directory.
+	if dir, user, ok := memoryLocation(cfg); ok {
+		if err := migrateLongTerm(dir, user); err != nil {
+			return nil, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
 	if cfg.Memory != nil {
 		a.memory = newMemoryState(*cfg.Memory)
 		if err := a.memory.reload(); err != nil {
+			return nil, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
+	if cfg.Profile != nil {
+		a.profile = newProfileState(*cfg.Profile)
+		if err := a.profile.reload(); err != nil {
 			return nil, fmt.Errorf("%s: %w", a.Name(), err)
 		}
 	}
@@ -403,11 +449,34 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
 		}
 	}
+	// The profile is re-read every turn for the same reason the layers are: it is a
+	// file the user edits, possibly from another terminal, between two questions.
+	if a.profile != nil {
+		if a.profile.cfg.Route {
+			if err := a.routeProfile(input); err != nil {
+				return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
+			}
+		} else if err := a.profile.reload(); err != nil {
+			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
+	// The plan belongs to this question only; nothing may carry it into the next one.
+	defer func() { a.turnPlan = "" }()
+
+	planUsage, planErr := a.refreshPlan(ctx, input)
+	planAttempted := a.profile != nil && a.profile.pipeline() == PipelinePlanAnswer
+	if planErr != nil {
+		base := Reply{PlanUsage: planUsage, PlanAttempted: planAttempted, Profile: a.profileName()}
+		return a.persistFailedReply(base, planErr, nil)
+	}
 
 	factUsage, factErr := a.refreshFacts(ctx, input)
 	factAttempted := a.cfg.ContextStrategy == ContextFacts
 	if factErr != nil {
-		base := Reply{FactUsage: factUsage, FactAttempted: factAttempted}
+		base := Reply{
+			FactUsage: factUsage, FactAttempted: factAttempted,
+			PlanUsage: planUsage, PlanAttempted: planAttempted, Profile: a.profileName(),
+		}
 		return a.persistFailedReply(base, factErr, nil)
 	}
 
@@ -423,7 +492,10 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	// money is already spent. A refusal here costs nothing at all.
 	send, dropped, warning, est, err := a.fit(input)
 	if err != nil {
-		base := Reply{Estimated: est, FactUsage: factUsage, FactAttempted: factAttempted}
+		base := Reply{
+			Estimated: est, FactUsage: factUsage, FactAttempted: factAttempted,
+			PlanUsage: planUsage, PlanAttempted: planAttempted, Profile: a.profileName(),
+		}
 		// A preflight refusal still happens after an attempted compression when a
 		// legacy session was too long. Persist that attempt (including any billed
 		// failed summary call) before returning. Facts mode deliberately updates its
@@ -455,6 +527,8 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		Warning:   warning,
 		Truncated: truncated,
 		FactUsage: factUsage, FactAttempted: factAttempted,
+		PlanUsage: planUsage, PlanAttempted: planAttempted,
+		Plan: a.turnPlan, Profile: a.profileName(),
 		Memory: a.memorySent(send),
 	}
 	if err != nil {
@@ -592,7 +666,7 @@ func (a *Agent) messagesWith(stack []llm.Message, input string) []llm.Message {
 		out = append(out, llm.Message{Role: "system", Content: system})
 	}
 	out = append(out, stack...)
-	return append(out, llm.Message{Role: "user", Content: a.workingContext() + input})
+	return append(out, llm.Message{Role: "user", Content: a.turnPrefix() + input})
 }
 
 // trim drops the oldest exchanges once the conversation is longer than MaxTurns.

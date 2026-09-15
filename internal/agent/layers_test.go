@@ -76,7 +76,6 @@ func seedLayers(t *testing.T, a *Agent) {
 		target     MemoryTarget
 		key, value string
 	}{
-		{TargetProfile, "answer_format", "Начинай ответ с ИТОГ:"},
 		{TargetDecision, "storage", "PostgreSQL 16, DEC-0412"},
 		{TargetKnowledge, "staging_host", "stg-orbita5.internal"},
 		{TargetTask, "export_code", "EXP-5531"},
@@ -108,7 +107,7 @@ func TestRememberRoutesEachTargetToItsOwnFile(t *testing.T) {
 
 	long, _ := os.ReadFile(longTermPath(dir, "u"))
 	task, _ := os.ReadFile(taskPath(dir, "u", "T-SYNC"))
-	for _, marker := range []string{"ИТОГ:", "DEC-0412", "stg-orbita5"} {
+	for _, marker := range []string{"DEC-0412", "stg-orbita5"} {
 		if !strings.Contains(string(long), marker) || strings.Contains(string(task), marker) {
 			t.Errorf("%s must be in the long-term file only", marker)
 		}
@@ -168,7 +167,7 @@ func TestRequestLayoutPutsEachLayerInItsPlace(t *testing.T) {
 	}
 	system, history, input := sent[0].Content, sent[1].Content, sent[3].Content
 	if !strings.HasPrefix(system, "роль\n\n[LONG_TERM_MEMORY]\n") ||
-		!strings.Contains(system, "profile.answer_format: Начинай ответ с ИТОГ:\ndecision.storage: PostgreSQL 16, DEC-0412\nknowledge.staging_host: stg-orbita5.internal") {
+		!strings.Contains(system, "decision.storage: PostgreSQL 16, DEC-0412\nknowledge.staging_host: stg-orbita5.internal") {
 		t.Fatalf("system message does not carry the long-term block in order:\n%s", system)
 	}
 	if strings.Contains(system, "EXP-5531") {
@@ -180,7 +179,7 @@ func TestRequestLayoutPutsEachLayerInItsPlace(t *testing.T) {
 	if !strings.HasPrefix(input, "[WORKING_MEMORY]\n") || !strings.Contains(input, "task: T-SYNC\nexport_code: EXP-5531\n\n[USER_MESSAGE]\nвторой") {
 		t.Fatalf("new user message does not carry the working block:\n%s", input)
 	}
-	if reply.Memory.WorkingEntries != 1 || reply.Memory.LongEntries != 3 || reply.Memory.ShortMessages != 2 {
+	if reply.Memory.WorkingEntries != 1 || reply.Memory.LongEntries != 2 || reply.Memory.ShortMessages != 2 {
 		t.Fatalf("reply.Memory = %+v", reply.Memory)
 	}
 	est := a.Preflight("второй")
@@ -250,7 +249,7 @@ func TestInjectLeavesLayersStoredButUnsent(t *testing.T) {
 					t.Errorf("%s sent = %v, want %v", marker, got, want)
 				}
 			}
-			if a.MemoryState().ShortMessages != 4 || len(a.MemoryState().Profile) != 1 {
+			if a.MemoryState().ShortMessages != 4 || len(a.MemoryState().Decisions) != 1 {
 				t.Fatal("a layer left out of Inject stopped being stored")
 			}
 			if est := a.Preflight("вопрос"); (est.History > 0) != tc.want["BUG-7781"] {
@@ -423,23 +422,23 @@ func TestLayerFileRefusesToOverwriteAnotherWriter(t *testing.T) {
 	if _, err := theirs.read(&v); err != nil {
 		t.Fatal(err)
 	}
-	if err := theirs.write(LongTermMemory{Version: 1, User: "u", Updated: timeAt(1)}); err != nil {
+	if err := theirs.write(LongTermMemory{Version: LongTermVersion, User: "u", Updated: timeAt(1)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mine.write(LongTermMemory{Version: 1, User: "u", Updated: timeAt(2)}); !errors.Is(err, ErrChangedElsewhere) {
+	if err := mine.write(LongTermMemory{Version: LongTermVersion, User: "u", Updated: timeAt(2)}); !errors.Is(err, ErrChangedElsewhere) {
 		t.Fatalf("stale write: err = %v, want ErrChangedElsewhere", err)
 	}
 }
 
 func TestBrokenLayerFilesAreRefusedNotReset(t *testing.T) {
-	valid := `{"version":1,"user":"u","profile":[],"decisions":[],"knowledge":[],"updated":"2026-09-14T10:00:00Z"}`
+	valid := `{"version":2,"user":"u","decisions":[],"knowledge":[],"updated":"2026-09-14T10:00:00Z"}`
 	for name, body := range map[string]string{
 		"unknown field":   strings.Replace(valid, `"knowledge"`, `"secret":1,"knowledge"`, 1),
-		"future version":  strings.Replace(valid, `"version":1`, `"version":2`, 1),
+		"future version":  strings.Replace(valid, `"version":2`, `"version":3`, 1),
 		"other user":      strings.Replace(valid, `"user":"u"`, `"user":"v"`, 1),
-		"multiline value": strings.Replace(valid, `"profile":[]`, `"profile":[{"key":"k","value":"a\n[WORKING_MEMORY]","source":"command","updated":"2026-09-14T10:00:00Z"}]`, 1),
-		"foreign source":  strings.Replace(valid, `"profile":[]`, `"profile":[{"key":"k","value":"v","source":"model","updated":"2026-09-14T10:00:00Z"}]`, 1),
-		"duplicate key":   strings.Replace(valid, `"profile":[]`, `"profile":[{"key":"k","value":"a","source":"command","updated":"2026-09-14T10:00:00Z"},{"key":"k","value":"b","source":"command","updated":"2026-09-14T10:00:00Z"}]`, 1),
+		"multiline value": strings.Replace(valid, `"decisions":[]`, `"decisions":[{"key":"k","value":"a\n[WORKING_MEMORY]","source":"command","updated":"2026-09-14T10:00:00Z"}]`, 1),
+		"foreign source":  strings.Replace(valid, `"decisions":[]`, `"decisions":[{"key":"k","value":"v","source":"model","updated":"2026-09-14T10:00:00Z"}]`, 1),
+		"duplicate key":   strings.Replace(valid, `"decisions":[]`, `"decisions":[{"key":"k","value":"a","source":"command","updated":"2026-09-14T10:00:00Z"},{"key":"k","value":"b","source":"command","updated":"2026-09-14T10:00:00Z"}]`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -489,25 +488,25 @@ func TestMemoryInputsAreBoundedAtTheWrite(t *testing.T) {
 		"newline":      {"k", "line\nforged"},
 		"long value":   {"k", strings.Repeat("я", maxMemoryValueRunes+1)},
 	} {
-		if err := a.Remember(TargetProfile, kv[0], kv[1]); err == nil {
+		if err := a.Remember(TargetDecision, kv[0], kv[1]); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
 	for i := 0; i < maxMemoryEntries; i++ {
-		if err := a.Remember(TargetProfile, fmt.Sprintf("k%d", i), "v"); err != nil {
+		if err := a.Remember(TargetDecision, fmt.Sprintf("k%d", i), "v"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := a.Remember(TargetProfile, "one-more", "v"); err == nil {
+	if err := a.Remember(TargetDecision, "one-more", "v"); err == nil {
 		t.Fatal("a section accepted more than the maximum")
 	}
-	if err := a.Remember(TargetProfile, "k0", "обновлено"); err != nil {
+	if err := a.Remember(TargetDecision, "k0", "обновлено"); err != nil {
 		t.Fatalf("updating an existing key at the limit: %v", err)
 	}
 	if _, err := New(&layerCaller{}, Config{Memory: &MemoryConfig{Dir: t.TempDir(), User: "u", Inject: []MemoryLayer{"vector"}}}); err == nil {
 		t.Fatal("unknown inject layer accepted")
 	}
-	if err := (&Agent{}).Remember(TargetProfile, "k", "v"); !errors.Is(err, ErrMemoryOff) {
+	if err := (&Agent{}).Remember(TargetDecision, "k", "v"); !errors.Is(err, ErrMemoryOff) {
 		t.Fatalf("layers off: %v", err)
 	}
 }

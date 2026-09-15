@@ -13,22 +13,45 @@ import (
 
 // parseInject turns "-inject short,working,long" into the agent's layer list. An
 // empty flag value means no layer travels, which is a legitimate control.
-func parseInject(value string) ([]agent.MemoryLayer, error) {
-	out := []agent.MemoryLayer{}
+// parseInject reads the one flag that decides what travels: day 11's three layers and
+// day 12's three profile blocks. `profile` is shorthand for all three blocks.
+//
+// Both lists are returned as explicit slices, empty rather than nil, because in the
+// agent nil means "everything" and an empty slice means "nothing": a flag that listed
+// only layers must switch the profile off, not silently send all of it.
+func parseInject(value string) ([]agent.MemoryLayer, []agent.ProfileBlock, error) {
+	layers := []agent.MemoryLayer{}
+	blocks := []agent.ProfileBlock{}
+	seenBlock := map[agent.ProfileBlock]bool{}
+	addBlock := func(b agent.ProfileBlock) {
+		if !seenBlock[b] {
+			seenBlock[b] = true
+			blocks = append(blocks, b)
+		}
+	}
 	for _, part := range strings.Split(value, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-		layer := agent.MemoryLayer(part)
-		switch layer {
+		switch layer := agent.MemoryLayer(part); layer {
 		case agent.LayerShort, agent.LayerWorking, agent.LayerLong:
-		default:
-			return nil, fmt.Errorf("-inject: слой %q неизвестен, допустимы short, working, long", part)
+			layers = append(layers, layer)
+			continue
 		}
-		out = append(out, layer)
+		if part == "profile" {
+			for _, b := range agent.AllProfileBlocks {
+				addBlock(b)
+			}
+			continue
+		}
+		block, err := agent.ParseProfileBlock(part)
+		if err != nil {
+			return nil, nil, fmt.Errorf("-inject: %q неизвестно, допустимы short, working, long, profile, style, constraints, context", part)
+		}
+		addBlock(block)
 	}
-	return out, nil
+	return layers, blocks, nil
 }
 
 // handleMemoryCommand runs /remember, /drop, /task and /memory. The bool reports
@@ -57,6 +80,16 @@ func handleMemoryCommand(a *agent.Agent, line string) (bool, error) {
 		}
 		if err := a.Remember(target, key, value); err != nil {
 			return true, err
+		}
+		// Since day 12 `profile` is not a layer: the write lands in the profile's style
+		// block. Say so instead of naming a layer, and say where else it could go —
+		// silently redirecting a command is how a user ends up with preferences they
+		// cannot find.
+		if target == agent.TargetProfile {
+			fmt.Fprintf(os.Stderr, "сохранено: profile → профиль %s, блок style (%s = %s)\n"+
+				"  для других блоков: /profile set constraints|context КЛЮЧ = ЗНАЧЕНИЕ\n",
+				a.ProfileState().Name, key, value)
+			return true, nil
 		}
 		layer, _ := target.Layer()
 		fmt.Fprintf(os.Stderr, "сохранено: %s → %s слой (%s = %s)\n", target, layerName(layer), key, value)
@@ -161,7 +194,7 @@ func printMemory(a *agent.Agent) {
 	for _, section := range []struct {
 		name    string
 		entries []agent.MemoryEntry
-	}{{"profile", m.Profile}, {"decision", m.Decisions}, {"knowledge", m.Knowledge}} {
+	}{{"decision", m.Decisions}, {"knowledge", m.Knowledge}} {
 		if len(section.entries) > 0 {
 			fmt.Fprintf(os.Stderr, "  %s:\n", section.name)
 			printEntries("    ", section.entries)

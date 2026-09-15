@@ -56,8 +56,12 @@ func (a *Agent) ContextState() ContextState {
 // contextSystemPrompt is the one system message sent to the provider. Keeping it
 // one message avoids relying on provider-specific ordering rules for several system
 // messages, while summary remains a distinct field in memory and on disk.
+// The order is the host's, from lesson 3 (09:12): "общий prompt, потом данные
+// персонализации, потом summary с предыдущего шага". The long-term layer sits between
+// them because it changes less often than a summary and more often than a profile, and
+// the provider caches whatever prefix stays put.
 func (a *Agent) contextSystemPrompt() string {
-	extra := a.longTermContext() + a.summaryContext() + a.factsContext()
+	extra := a.profileContext() + a.longTermContext() + a.summaryContext() + a.factsContext()
 	if a.cfg.SystemPrompt == "" {
 		return strings.TrimSpace(extra)
 	}

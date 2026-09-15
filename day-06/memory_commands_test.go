@@ -20,15 +20,35 @@ func TestParseRememberKeepsTheValueWhole(t *testing.T) {
 }
 
 func TestParseInjectRejectsUnknownLayers(t *testing.T) {
-	got, err := parseInject(" short, long ")
+	got, blocks, err := parseInject(" short, long ")
 	if err != nil || len(got) != 2 || got[0] != agent.LayerShort || got[1] != agent.LayerLong {
 		t.Fatalf("parseInject = %v %v", got, err)
 	}
-	if got, err := parseInject(""); err != nil || got == nil || len(got) != 0 {
-		t.Fatalf("empty -inject must mean no layer, got %v %v", got, err)
+	// A flag that names only layers must switch the profile off, not leave it nil and
+	// therefore fully injected.
+	if blocks == nil || len(blocks) != 0 {
+		t.Fatalf("-inject without profile blocks must send none, got %v", blocks)
 	}
-	if _, err := parseInject("short,vector"); err == nil {
+	if got, blocks, err := parseInject(""); err != nil || got == nil || len(got) != 0 || blocks == nil || len(blocks) != 0 {
+		t.Fatalf("empty -inject must mean nothing travels, got %v %v %v", got, blocks, err)
+	}
+	if _, _, err := parseInject("short,vector"); err == nil {
 		t.Fatal("unknown layer accepted")
+	}
+}
+
+func TestParseInjectReadsProfileBlocks(t *testing.T) {
+	// `profile` is shorthand for the three blocks, and it must not duplicate a block
+	// that was also named on its own.
+	layers, blocks, err := parseInject("short,profile,style")
+	if err != nil || len(layers) != 1 {
+		t.Fatalf("parseInject = %v %v %v", layers, blocks, err)
+	}
+	if len(blocks) != 3 || blocks[0] != agent.BlockStyle || blocks[1] != agent.BlockConstraints || blocks[2] != agent.BlockContext {
+		t.Fatalf("blocks = %v", blocks)
+	}
+	if _, blocks, err := parseInject("constraints"); err != nil || len(blocks) != 1 || blocks[0] != agent.BlockConstraints {
+		t.Fatalf("single block: %v %v", blocks, err)
 	}
 }
 
