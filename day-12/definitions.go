@@ -42,6 +42,10 @@ func buildDefinitions() (definitions, error) {
 	// stored profile with no injected block costs nothing.
 	examples := append([]arm(nil), behaviourArms...)
 	examples = append(examples, arm{profileSenior + "-style-only", profileSenior, []agent.ProfileBlock{agent.BlockStyle}})
+	// The plan-answer arm records its SECOND request — the one carrying the [PLAN]
+	// block — because that is the message the page has to reproduce. The recorder
+	// answers the planning call with a fixed text, so the example is deterministic.
+	examples = append(examples, arm{profileSenior + "-plan", profileSenior + "-plan", allBlocks})
 	for _, a := range examples {
 		sent, err := recordProfiled(dir, a)
 		if err != nil {

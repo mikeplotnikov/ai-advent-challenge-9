@@ -204,10 +204,10 @@ func writeAdherence(b *strings.Builder, plan map[string]any, probes []map[string
 	arms := armsIn(behaviour)
 	names := criteriaIn(behaviour)
 
-	passes, totals, empties := tally(behaviour)
+	passes, totals, empties, cut := tally(behaviour)
 
-	b.WriteString("| Критерий | Рука | Прошло | Доля | 95% интервал Уилсона | Пустых |\n")
-	b.WriteString("|---|---|---|---|---|---|\n")
+	b.WriteString("| Критерий | Рука | Прошло | Доля | 95% интервал Уилсона | Пустых | Оборвано по потолку |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
 	for _, name := range names {
 		for _, armName := range arms {
 			k := cellKey{armName, name}
@@ -215,9 +215,9 @@ func writeAdherence(b *strings.Builder, plan map[string]any, probes []map[string
 				continue
 			}
 			lo, hi := stats.Wilson(passes[k], totals[k])
-			fmt.Fprintf(b, "| %s | %s | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %d |\n",
+			fmt.Fprintf(b, "| %s | %s | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %d | %d |\n",
 				name, armName, passes[k], totals[k], 100*float64(passes[k])/float64(totals[k]),
-				100*lo, 100*hi, empties[k])
+				100*lo, 100*hi, empties[k], cut[k])
 		}
 	}
 	b.WriteString("\n")
@@ -267,6 +267,11 @@ func writeAdherence(b *strings.Builder, plan map[string]any, probes []map[string
 	}
 	b.WriteString("\n«Разница не показана» не означает «разницы нет»: это значит, что при этом N " +
 		"её не удалось отличить от случайности.\n\n")
+	b.WriteString("**Оборванный ответ читается с оглядкой.** Потолок генерации режет хвост, поэтому " +
+		"критерий, который ищет в ответе присутствие чего-то (`context`, `code`, `kotlin`), в оборванной " +
+		"клетке мог не увидеть то, что модель написала бы дальше. Критерии на отсутствие и на начало " +
+		"ответа (`format`, `english`, `java`) от обрыва не страдают, а `brevity` обрыв может только " +
+		"помочь пройти — и там, где он стоит 0%, ответ остался длинным даже обрезанным.\n\n")
 	b.WriteString("Проба `control` — отрицательный контроль: арифметика, на которую ни один профиль " +
 		"не влияет. Если по ней разница показана, инструмент видит то, чего нет, и остальные строки " +
 		"этой таблицы читать нельзя. Проба `context` — маркерная: она видит упоминание обстоятельства, " +
@@ -282,17 +287,17 @@ func writeConflict(b *strings.Builder, probes []map[string]any) {
 	fmt.Fprintf(b, "Вопрос прямо просит то, что профиль `%s` запрещает: «%s». "+
 		"Критерий `java` считает, что ответ просьбу выполнил.\n\n", profileSenior, questionConflict)
 
-	passes, totals, empties := tally(conflict)
-	b.WriteString("| Рука | Дал Java или Spring | Доля | 95% интервал Уилсона | Пустых |\n")
-	b.WriteString("|---|---|---|---|---|\n")
+	passes, totals, empties, cut := tally(conflict)
+	b.WriteString("| Рука | Дал Java или Spring | Доля | 95% интервал Уилсона | Пустых | Оборвано по потолку |\n")
+	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, armName := range armsIn(conflict) {
 		k := cellKey{armName, "java"}
 		if totals[k] == 0 {
 			continue
 		}
 		lo, hi := stats.Wilson(passes[k], totals[k])
-		fmt.Fprintf(b, "| %s | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %d |\n",
-			armName, passes[k], totals[k], 100*float64(passes[k])/float64(totals[k]), 100*lo, 100*hi, empties[k])
+		fmt.Fprintf(b, "| %s | %d/%d | %.0f%% | [%.0f%%, %.0f%%] | %d | %d |\n",
+			armName, passes[k], totals[k], 100*float64(passes[k])/float64(totals[k]), 100*lo, 100*hi, empties[k], cut[k])
 	}
 	withProfile := cellKey{profileSenior, "java"}
 	without := cellKey{profileNone, "java"}
@@ -336,7 +341,7 @@ func writePipeline(b *strings.Builder, probes []map[string]any) {
 	}
 	b.WriteString("\n")
 
-	passes, totals, _ := tally(pipeline)
+	passes, totals, _, _ := tally(pipeline)
 	b.WriteString("| Критерий | Рука | Прошло | Доля |\n|---|---|---|---|\n")
 	for _, name := range criteriaIn(pipeline) {
 		for _, armName := range armsIn(pipeline) {
@@ -410,8 +415,8 @@ func writeCriteria(b *strings.Builder, plan map[string]any) {
 // tally counts passes, scored cells and empty answers per (arm, criterion). An empty
 // answer is not a failed criterion — it is a cell with no answer to score, and folding
 // it into the denominator would quietly turn a provider outage into disobedience.
-func tally(probes []map[string]any) (passes, totals, empties map[cellKey]int) {
-	passes, totals, empties = map[cellKey]int{}, map[cellKey]int{}, map[cellKey]int{}
+func tally(probes []map[string]any) (passes, totals, empties, cut map[cellKey]int) {
+	passes, totals, empties, cut = map[cellKey]int{}, map[cellKey]int{}, map[cellKey]int{}, map[cellKey]int{}
 	for _, p := range probes {
 		armName := str(p, "arm")
 		if str(p, "outcome") != outcomeOK {
@@ -428,9 +433,12 @@ func tally(probes []map[string]any) (passes, totals, empties map[cellKey]int) {
 			if v, _ := scores[name].(bool); v {
 				passes[k]++
 			}
+			if boolOf(p, "truncated") {
+				cut[k]++
+			}
 		}
 	}
-	return passes, totals, empties
+	return passes, totals, empties, cut
 }
 
 // probeCriteria recovers which criteria a cell would have been scored by. A cell with
