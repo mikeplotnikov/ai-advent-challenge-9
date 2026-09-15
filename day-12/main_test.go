@@ -457,11 +457,16 @@ func TestCommittedRunRescoresIdenticallyWithTodaysCriteria(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scored, moved := 0, 0
+	scored, expected, moved := 0, 0, 0
 	for _, r := range rows {
 		if str(r, "kind") != "probe" || str(r, "outcome") != outcomeOK {
 			continue
 		}
+		// What the row SHOULD carry comes from the probe's own definition, not from the
+		// row. Counting only what the row happens to hold would let a regression that
+		// empties the scores defeat the guard while it reports success — checked by
+		// stripping 903 of 920 recorded verdicts, which an earlier version survived.
+		expected += len(probeCriteria(r))
 		answer := str(r, "answer")
 		recorded, _ := r["scores"].(map[string]any)
 		for name, raw := range recorded {
@@ -481,12 +486,51 @@ func TestCommittedRunRescoresIdenticallyWithTodaysCriteria(t *testing.T) {
 			}
 		}
 	}
-	if scored == 0 {
-		t.Fatal("ни одна клетка не пересчитана — сторож ничего не сторожит")
+	if expected == 0 {
+		t.Fatal("в прогоне нет ни одной оценённой клетки — сторож ничего не сторожит")
+	}
+	if scored != expected {
+		t.Fatalf("пересчитано %d оценок, а пробы прогона обещают %d: "+
+			"в JSONL пропали записанные вердикты, и сторож больше не сторожит весь прогон", scored, expected)
 	}
 	if moved > 0 {
 		t.Fatalf("правка критериев сдвинула %d из %d клеток опубликованного прогона: "+
 			"либо правка неверна, либо прогон надо повторить и пересобрать RESULTS.md", moved, scored)
 	}
-	t.Logf("пересчитано клеток: %d, расхождений с прогоном: 0", scored)
+	t.Logf("пересчитано оценок: %d из %d обещанных, расхождений с прогоном: 0", scored, expected)
+}
+
+// E0 has its own failure handling, separate from runCell's: it never retries, and a
+// transport failure stops the remaining arms instead of publishing a partial E0. Both
+// branches ship in the report, so both get a test.
+func TestShowcaseSeparatesAnEmptyAnswerFromAFailedCall(t *testing.T) {
+	fixture := t.TempDir()
+	if err := buildFixture(fixture); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, _, err := runShowcase(context.Background(), failingProvider{err: llm.ErrEmptyContent}, "m", fixture, "r")
+	if err != nil {
+		t.Fatalf("пустой ответ — исход модели, а не сбой прогона: %v", err)
+	}
+	if len(rows) != len(behaviourArms) {
+		t.Fatalf("строк E0 %d, рук %d — пустой ответ оборвал обход", len(rows), len(behaviourArms))
+	}
+	for _, r := range rows {
+		if r.Outcome != outcomeEmpty || r.Answer != "" || r.Scores != nil {
+			t.Fatalf("пустая клетка E0 оценена: %+v", r)
+		}
+	}
+
+	rows, _, err = runShowcase(context.Background(), failingProvider{err: errors.New("timeout"), usage: 5}, "m", fixture, "r")
+	if err == nil {
+		t.Fatal("сбой вызова в E0 не остановил обход")
+	}
+	if len(rows) != 1 || rows[0].Outcome != outcomeTransport || rows[0].Error == "" {
+		t.Fatalf("после сбоя E0 = %+v", rows)
+	}
+	// The billed attempt is still recorded: a spend that omits failures under-reports.
+	if rows[0].Usage.Prompt != 5 {
+		t.Fatalf("расход неудавшегося вызова E0 потерян: %+v", rows[0].Usage)
+	}
 }

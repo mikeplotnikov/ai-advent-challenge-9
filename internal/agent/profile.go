@@ -347,7 +347,10 @@ func validateProfile(p Profile, user, name string) error {
 	// Two profile names can sanitise to one file name; the name inside the file keeps
 	// them from silently sharing preferences.
 	if p.Name != name {
-		if strings.EqualFold(p.Name, name) {
+		// Compared through the file name, not EqualFold: Go's simple folding says
+		// "İstanbul" and "istanbul" differ while ToLower maps both to istanbul.json, so
+		// EqualFold would miss exactly the collision this message exists to explain.
+		if profileFileName(p.Name) == profileFileName(name) {
 			return fmt.Errorf("файл принадлежит профилю %q — имя %q отличается только регистром, "+
 				"а файл у них один; выберите другое имя или работайте с %q", p.Name, name, p.Name)
 		}

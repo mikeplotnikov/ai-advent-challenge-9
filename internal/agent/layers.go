@@ -297,22 +297,24 @@ func validateTaskName(name string) (string, error) {
 // singleLine rejects control characters and U+2028/U+2029, which break lines without
 // being control characters.
 //
-// It also rejects the format category (Cf): bidi overrides and isolates reorder what a
-// person reads without changing what the model receives, and zero-width joiners and
-// soft hyphens hide inside a value. None of them can forge a block boundary — that
-// still needs a real line break — but a preference the owner reads one way and the
-// model reads another is worth refusing at the door.
+// It also rejects the bidirectional formatting characters: overrides, embeddings and
+// isolates reorder what a person reads while the model receives something else, so a
+// preference could be shown to its owner as one rule and sent as another. None of them
+// can forge a block boundary — that still needs a real line break — but a value that
+// reads two ways has no business being stored.
 //
-// U+FEFF is the one exception. Go's strings.TrimSpace keeps it while JavaScript's
-// trim() strips it, so day 11 pinned the difference in its dumped validation cases and
-// the showcase mirrors it deliberately. Rejecting it here would silently move a
-// boundary two published pages are checked against.
+// The rejection is deliberately narrow. An earlier version refused the whole format
+// category (Cf) and took ordinary text with it: U+200D and U+200C join the codepoints
+// of compound emoji and are required in Persian and several Indic scripts. That version
+// also gated the plan-answer pipeline's own model-generated plan, where a joined emoji
+// in the model's output would have failed the turn. Zero-width joiners are not the
+// threat; reordering is.
 func singleLine(s string) bool {
 	for _, r := range s {
 		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
 			return false
 		}
-		if r != '\uFEFF' && unicode.In(r, unicode.Cf) {
+		if unicode.In(r, unicode.Bidi_Control) {
 			return false
 		}
 	}

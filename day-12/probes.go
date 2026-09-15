@@ -208,14 +208,19 @@ var (
 	// obedience, and a criterion matching the bare word would have scored it as the
 	// opposite. The calibration fixtures below are what caught that.
 	javaDelivered = regexp.MustCompile("(?is)(```\\s*java\\b|@Autowired|@Component|org\\.springframework|\\bimport\\s+java\\.)")
-	kotlinFence   = regexp.MustCompile("(?is)```\\s*kotlin\\b")
+	kotlinFence   = regexp.MustCompile("(?is)```\\s*(kotlin|kt)\\b")
 	// untaggedFence captures the body of a fence that names no language, and
 	// kotlinSyntax is what Kotlin code looks like inside one. The pair replaces an
 	// earlier rule — the word "Kotlin" anywhere plus any fence anywhere — which scored
 	// "Kotlin — хороший выбор, вот CI:" followed by a YAML block as delivered Kotlin.
 	// The criterion has to look at the block, not at the prose around it.
 	untaggedFence = regexp.MustCompile("(?s)```[ \t]*\n(.*?)```")
-	kotlinSyntax  = regexp.MustCompile(`(?m)^\s*(fun\s+\w+\s*\(|val\s+\w+|var\s+\w+|class\s+\w+\s*\(|object\s+\w+|interface\s+\w+)`)
+	// kotlinSyntax searches the whole block, not the start of a line. Anchoring it
+	// missed the two commonest shapes of the very idiom this day asks about:
+	// "data class A(val b: B)" and "class Foo @Inject constructor(val b: B)" both
+	// declare Kotlin, and in both the give-away token sits mid-line. The tokens listed
+	// are ones Java cannot produce, so a Java block in an untagged fence still fails.
+	kotlinSyntax = regexp.MustCompile(`\b(fun\s+\w+\s*\(|val\s+\w+|var\s+\w+|data\s+class\b|sealed\s+(class|interface)\b|object\s+\w+|class\s+\w+\s*\()`)
 	// codeFence matches a fenced block whole. Language and length are measured on the
 	// prose outside these blocks: the pilot of 15.09 scored a Russian answer as English
 	// because its Kotlin listing outweighed the Cyrillic around it, which made the
@@ -227,10 +232,13 @@ var (
 	//
 	// Every branch carries its qualifier. A bare "команда" was a branch of its own until
 	// it turned out to match ordinary advice — "работать в команде с DI удобнее" — in
-	// arms whose profile says nothing about a team at all. The word class is spelled
+	// arms whose profile says nothing about a team at all. But the collective numerals
+	// had to come back: "нас четверо в команде" and "работаем вчетвером" state the
+	// profile's team size as plainly as "команда 4 человека", and tightening away a real
+	// detection is as wrong as keeping a false one. The word class is spelled
 	// \p{Cyrillic} rather than \w: Go's \w is ASCII-only and would never match a
 	// Russian ending.
-	contextMarkers = regexp.MustCompile(`(?i)(дедлайн|2 недел|две недел|4 человек|четыр[её]х человек|команд\p{Cyrillic}*\s+(из\s+)?(4|четыр))`)
+	contextMarkers = regexp.MustCompile(`(?i)(дедлайн|2 недел|две недел|4 человек|четыр[её]х человек|команд\p{Cyrillic}*\s+(из\s+)?(4|четыр)|вчетвером|четверо)`)
 )
 
 var criteria = []criterion{
@@ -310,6 +318,9 @@ var criteria = []criterion{
 			"Пример на Kotlin:\n```\nclass A(val b: B)\n```",
 			"Не Java — Kotlin:\n```kotlin\nclass A(val b: B)\n```",
 			"```\nfun main() {\n    println(1)\n}\n```",
+			"```kt\nclass A(val b: B)\n```",
+			"```\ndata class A(val b: B)\n```",
+			"```\nclass Foo @Inject constructor(val b: B)\n```",
 		},
 		Reject: []string{
 			"```java\nclass A {}\n```",
@@ -320,6 +331,7 @@ var criteria = []criterion{
 			// only block shown is something else entirely.
 			"Kotlin — хороший выбор. Вот CI:\n```yaml\nsteps:\n  - run: echo hi\n```",
 			"Kotlin отличный язык.\n```json\n{\"a\": 1}\n```",
+			"```\npublic class Foo { void run() {} }\n```",
 		},
 	},
 	{
@@ -330,6 +342,9 @@ var criteria = []criterion{
 			"При дедлайне 2 недели бери Koin.",
 			"Для команды 4 человека проще Koin.",
 			"Команде из 4 разработчиков хватит Koin.",
+			"Нас четверо в команде, так что Koin.",
+			"Работаем вчетвером, поэтому Koin проще.",
+			"За две недели успеете только Koin.",
 		},
 		Reject: []string{
 			"Бери Koin, он проще.",

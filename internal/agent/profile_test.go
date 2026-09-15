@@ -510,25 +510,36 @@ func TestProfileNamesFoldCaseSoTheyBehaveTheSameOnEveryFilesystem(t *testing.T) 
 	}
 }
 
-// Format characters — bidi overrides, isolates, zero-width joiners, soft hyphens —
-// cannot forge a block boundary, but they make a preference read one way to a person
-// and another to the model. U+FEFF stays accepted on purpose: day 11 pinned it.
-func TestProfileRefusesFormatCharactersButKeepsTheDocumentedBOM(t *testing.T) {
+// Bidirectional formatting characters reorder what a person reads while the model
+// receives something else, so a preference could be shown to its owner as one rule and
+// sent as another. They are refused. Zero-width joiners are NOT: they compose ordinary
+// emoji and are required in Persian and several Indic scripts, and the first version of
+// this rule refused the whole format category and took them with it — including in the
+// model's own plan, where a joined emoji would have failed the turn. U+FEFF stays
+// accepted on purpose: day 11 pinned it.
+func TestProfileRefusesReorderingCharactersButNotOrdinaryJoiners(t *testing.T) {
 	dir := t.TempDir()
 	a := layerAgent(t, &layerCaller{}, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
 	for name, value := range map[string]string{
-		"bidi RLO":          "обычный" + string(rune(0x202E)) + "перевёрнутый",
-		"bidi LRO":          "обычный" + string(rune(0x202D)) + "текст",
-		"bidi isolate":      "текст" + string(rune(0x2066)) + "скрытый",
-		"zero-width joiner": "те" + string(rune(0x200D)) + "кст",
-		"soft hyphen":       "те" + string(rune(0xAD)) + "кст",
+		"bidi RLO":      "обычный" + string(rune(0x202E)) + "перевёрнутый",
+		"bidi LRO":      "обычный" + string(rune(0x202D)) + "текст",
+		"bidi isolate":  "текст" + string(rune(0x2066)) + "скрытый",
+		"bidi PDI":      "текст" + string(rune(0x2069)) + "хвост",
+		"bidi mark LRM": "текст" + string(rune(0x200E)) + "хвост",
 	} {
 		if err := a.SetPreference(BlockStyle, "k", value); err == nil {
-			t.Errorf("%s: принято", name)
+			t.Errorf("%s: принято, а переставляет прочтение", name)
 		}
 	}
-	if err := a.SetPreference(BlockStyle, "bom", string(rune(0xFEFF))+"значение"); err != nil {
-		t.Fatalf("U+FEFF должен оставаться принятым, как в дне 11: %v", err)
+	for name, value := range map[string]string{
+		"эмодзи через ZWJ":     "люблю 🧑" + string(rune(0x200D)) + "💻",
+		"персидский ZWNJ":      "می" + string(rune(0x200C)) + "روم",
+		"мягкий перенос":       "те" + string(rune(0xAD)) + "кст",
+		"U+FEFF, как в дне 11": string(rune(0xFEFF)) + "значение",
+	} {
+		if err := a.SetPreference(BlockStyle, "ok", value); err != nil {
+			t.Errorf("%s: отклонено, хотя это обычный текст: %v", name, err)
+		}
 	}
 }
 
@@ -555,10 +566,11 @@ func TestAPlanThatForgesATagFailsTheTurn(t *testing.T) {
 			t.Errorf("%s: после отклонённого плана всё равно ушёл второй вызов", name)
 		}
 	}
-	// A plan that is an ordinary numbered list must still pass: the guard must not
-	// reject the shape it exists to allow.
+	// A plan that is an ordinary numbered list must still pass, and so must one with a
+	// joined emoji: the guard must not reject the shapes it exists to allow. The first
+	// version of it failed the whole turn on 🧑‍💻.
 	dir := t.TempDir()
-	c := &planCaller{plan: "1. Уточнить стек\n2. Дать пример\n\tс отступом"}
+	c := &planCaller{plan: "1. Уточнить стек\n2. Дать пример 🧑\u200d💻\n\tс отступом"}
 	a := callerAgent(t, c, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
 	if err := a.SetPipeline(PipelinePlanAnswer); err != nil {
 		t.Fatal(err)
@@ -620,5 +632,56 @@ func TestProfileEnforcesItsOwnLimitsAndRefusesABrokenFile(t *testing.T) {
 				t.Fatal("испорченный файл профиля принят, а не отвергнут")
 			}
 		})
+	}
+}
+
+// The crash midpoint the migration's comment promises to survive: the profile file is
+// already written while the long-term file is still v1 with its profile section intact.
+// Two full runs do not reach this state; only starting from it does.
+func TestMigrationResumesFromTheCrashMidpoint(t *testing.T) {
+	dir := t.TempDir()
+	long := longTermPath(dir, "u")
+	if err := os.MkdirAll(filepath.Dir(long), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const v1 = `{"version":1,"user":"u","profile":[{"key":"answer_format","value":"Начинай с ИТОГ:","source":"command","updated":"2026-09-14T10:00:00Z"},{"key":"tone","value":"сухо","source":"command","updated":"2026-09-14T10:00:00Z"}],"decisions":[],"knowledge":[],"updated":"2026-09-14T10:00:00Z"}`
+	if err := os.WriteFile(long, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The first of the two writes landed; the second did not.
+	first := layerFile{path: profilePath(dir, "u", DefaultProfileName)}
+	if err := os.MkdirAll(filepath.Dir(first.path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.write(Profile{
+		Version: ProfileVersion, User: "u", Name: DefaultProfileName, Pipeline: PipelineDirect,
+		Style: []MemoryEntry{{Key: "answer_format", Value: "Начинай с ИТОГ:", Source: SourceCommand, Updated: timeAt(1)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := layerAgent(t, &layerCaller{}, Config{
+		Memory:  memoryConfig(dir, "u", ""),
+		Profile: profileConfig(dir, "u", DefaultProfileName),
+	})
+	style := a.ProfileState().Style
+	if len(style) != 2 {
+		t.Fatalf("после возобновления в профиле %d записей, ожидалось 2: %+v", len(style), style)
+	}
+	// The entry that made it across first is not duplicated, and the one that did not
+	// is not lost.
+	seen := map[string]int{}
+	for _, e := range style {
+		seen[e.Key]++
+	}
+	if seen["answer_format"] != 1 || seen["tone"] != 1 {
+		t.Fatalf("записи после возобновления: %+v", seen)
+	}
+	raw, err := os.ReadFile(long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"profile"`) {
+		t.Fatal("долговременный слой остался в версии 1 — миграция не завершилась")
 	}
 }
