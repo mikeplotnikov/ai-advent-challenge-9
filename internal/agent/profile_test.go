@@ -685,3 +685,81 @@ func TestMigrationResumesFromTheCrashMidpoint(t *testing.T) {
 		t.Fatal("долговременный слой остался в версии 1 — миграция не завершилась")
 	}
 }
+
+// Two terminals, one profile. The guarantee here is not the stale-write detector — it is
+// the reload that runs before every write, which makes clobbering structurally
+// impossible: a second writer merges with what is on disk and adds its own change on top.
+// The detector is the backstop for the window between that reload and the write, and it
+// had no test on the profile or the router until now.
+func TestTwoWritersToOneProfileBothSurvive(t *testing.T) {
+	dir := t.TempDir()
+	mine := layerAgent(t, &layerCaller{}, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
+	theirs := layerAgent(t, &layerCaller{}, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
+
+	// Each agent holds the empty state it was built with. Different keys: both must live.
+	if err := mine.SetPreference(BlockStyle, "tone", "формально"); err != nil {
+		t.Fatal(err)
+	}
+	if err := theirs.SetPreference(BlockStyle, "language", "русский"); err != nil {
+		t.Fatalf("вторая правка отклонена, хотя ключи разные: %v", err)
+	}
+	fresh := layerAgent(t, &layerCaller{}, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
+	got := map[string]string{}
+	for _, e := range fresh.ProfileState().Style {
+		got[e.Key] = e.Value
+	}
+	if got["tone"] != "формально" || got["language"] != "русский" {
+		t.Fatalf("правка потерялась: %+v", got)
+	}
+
+	// Same key from two terminals is an upsert, not corruption: the later value wins and
+	// the neighbouring entry is untouched.
+	if err := theirs.SetPreference(BlockStyle, "tone", "разговорно"); err != nil {
+		t.Fatal(err)
+	}
+	fresh = layerAgent(t, &layerCaller{}, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
+	if state := fresh.ProfileState().Style; len(state) != 2 {
+		t.Fatalf("после повторной записи того же ключа записей %d: %+v", len(state), state)
+	}
+
+	// The same for the router, which is a separate file with the same machinery.
+	if err := mine.SetRoute("отчёт", "analyst"); err != nil {
+		t.Fatal(err)
+	}
+	if err := theirs.SetRoute("код", "junior"); err != nil {
+		t.Fatalf("второе правило отклонено: %v", err)
+	}
+	fresh = layerAgent(t, &layerCaller{}, Config{Profile: profileConfig(dir, "u", DefaultProfileName)})
+	if rules := fresh.ProfileState().Rules; len(rules) != 2 {
+		t.Fatalf("правила роутера после двух писателей: %+v", rules)
+	}
+}
+
+// The backstop itself: a file that changed between the read and the write is refused
+// rather than overwritten. Reproduced by writing through a second handle in that window.
+func TestAProfileChangedBetweenReadAndWriteIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := profilePath(dir, "u", DefaultProfileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mine := layerFile{path: path}
+	theirs := layerFile{path: path}
+	profile := Profile{Version: ProfileVersion, User: "u", Name: DefaultProfileName, Pipeline: PipelineDirect}
+
+	// Both read the same absent file, then one writes.
+	if _, err := mine.read(&Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := theirs.read(&Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	profile.Updated = timeAt(1)
+	if err := theirs.write(profile); err != nil {
+		t.Fatal(err)
+	}
+	profile.Updated = timeAt(2)
+	if err := mine.write(profile); !errors.Is(err, ErrChangedElsewhere) {
+		t.Fatalf("устаревшая запись прошла: %v", err)
+	}
+}

@@ -113,3 +113,72 @@ func TestLayersRefuseHistoricalProbesAndStrayFlags(t *testing.T) {
 		}
 	}
 }
+
+// The flag-to-Config wiring is separate code from parseInject and can break on its own:
+// the two lists it produces feed two different configs, and the guard that -inject and
+// -profile mean nothing without -layers lives here rather than in the parser. This test
+// drives the real binary, so a misrouted slice shows up as a missing block in the bytes
+// that would go to the provider.
+func TestProfileFlagsReachTheRequestAndRefuseToWorkWithoutLayers(t *testing.T) {
+	p := &provider{}
+	srv := p.start(t)
+	bin := build(t)
+	work := t.TempDir()
+	mem := filepath.Join(work, "mem")
+	base := []string{"-layers", "-memory-dir", mem, "-user", "михаил", "-session", "s1"}
+
+	// Configure two profiles, then ask under each.
+	repl(t, bin, srv.URL, work,
+		"/profile set style detail = Отвечай коротко\n"+
+			"/profile set constraints stack = Только Kotlin\n"+
+			"/profile use analyst\n"+
+			"/profile set style format = Начинай с SUMMARY:\n"+
+			"/profile use default\n"+
+			"/remember decision storage = DEC-0412\n/exit\n",
+		base...)
+
+	repl(t, bin, srv.URL, work, "вопрос\n/exit\n", base...)
+	sent := contentsOf(p.request(t, p.calls()-1))
+	for _, want := range []string{"[PROFILE]", "style.detail: Отвечай коротко", "constraints.stack: Только Kotlin"} {
+		if !strings.Contains(sent, want) {
+			t.Fatalf("профиль не доехал до запроса (%s):\n%s", want, sent)
+		}
+	}
+	if strings.Index(sent, "[PROFILE]") > strings.Index(sent, "[LONG_TERM_MEMORY]") {
+		t.Fatal("профиль должен стоять перед долговременным слоем")
+	}
+
+	// -profile selects a different file; -inject decides which blocks travel.
+	repl(t, bin, srv.URL, work, "вопрос\n/exit\n", append(append([]string{}, base...), "-profile", "analyst")...)
+	sent = contentsOf(p.request(t, p.calls()-1))
+	if !strings.Contains(sent, "Начинай с SUMMARY:") || strings.Contains(sent, "Отвечай коротко") {
+		t.Fatalf("-profile выбрал не тот файл:\n%s", sent)
+	}
+
+	repl(t, bin, srv.URL, work, "вопрос\n/exit\n", append(append([]string{}, base...), "-inject", "short,working,long,style")...)
+	sent = contentsOf(p.request(t, p.calls()-1))
+	if !strings.Contains(sent, "style.detail") || strings.Contains(sent, "constraints.stack") {
+		t.Fatalf("-inject не отфильтровал блоки профиля:\n%s", sent)
+	}
+	if !strings.Contains(sent, "decision.storage: DEC-0412") {
+		t.Fatalf("-inject потерял слой памяти, разложив списки не по тем конфигам:\n%s", sent)
+	}
+
+	// Layers off: the profile flags have nothing to attach to and must say so.
+	for _, args := range [][]string{
+		{"-profile", "analyst", "вопрос"},
+		{"-profile-route", "вопрос"},
+		{"-inject", "style", "вопрос"},
+	} {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = work
+		cmd.Env = append(os.Environ(), "DEEPSEEK_API_URL=http://127.0.0.1:1", "DEEPSEEK_API_KEY=e2e")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("%v принято без -layers", args)
+		}
+		if !strings.Contains(string(out), "только вместе с -layers") {
+			t.Fatalf("%v: вывод не называет причину: %s", args, out)
+		}
+	}
+}
