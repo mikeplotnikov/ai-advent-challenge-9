@@ -183,8 +183,18 @@ func ProfileDir(dir, user string) string {
 	return filepath.Join(MemoryUserDir(dir, user), "profiles")
 }
 
+// profileFileName folds case. macOS and Windows resolve "Senior.json" and
+// "senior.json" to one file while Linux does not, so without the fold the same profile
+// name would mean one thing on the owner's laptop and another on a CI runner — and a
+// name differing only in case would quietly share, or quietly corrupt, its neighbour's
+// preferences. Folding makes the collision deterministic everywhere, and the ownership
+// check inside the file then refuses it with a message instead of merging.
+func profileFileName(name string) string {
+	return strings.ToLower(sessionFileName(name))
+}
+
 func profilePath(dir, user, name string) string {
-	return filepath.Join(ProfileDir(dir, user), sessionFileName(name)+".json")
+	return filepath.Join(ProfileDir(dir, user), profileFileName(name)+".json")
 }
 
 func profileRouterPath(dir, user string) string {
@@ -202,7 +212,10 @@ func validateProfileName(name string) (string, error) {
 	if !singleLine(name) {
 		return "", fmt.Errorf("имя профиля %q: только одна строка без управляющих символов", name)
 	}
-	if sessionFileName(name) == routerFileName {
+	// Case-folded: on a case-insensitive filesystem "_Router" and "_router" are the
+	// same file, and writing a profile over the router breaks profile selection with an
+	// error that points nowhere near the cause.
+	if strings.EqualFold(sessionFileName(name), routerFileName) {
 		return "", fmt.Errorf("имя профиля %q зарезервировано под таблицу роутера", name)
 	}
 	return name, nil
@@ -334,6 +347,10 @@ func validateProfile(p Profile, user, name string) error {
 	// Two profile names can sanitise to one file name; the name inside the file keeps
 	// them from silently sharing preferences.
 	if p.Name != name {
+		if strings.EqualFold(p.Name, name) {
+			return fmt.Errorf("файл принадлежит профилю %q — имя %q отличается только регистром, "+
+				"а файл у них один; выберите другое имя или работайте с %q", p.Name, name, p.Name)
+		}
 		return fmt.Errorf("файл принадлежит профилю %q, а не %q", p.Name, name)
 	}
 	if _, err := ParseProfilePipeline(string(p.Pipeline)); err != nil {
@@ -481,7 +498,7 @@ func (a *Agent) Profiles() ([]string, error) {
 			continue
 		}
 		name := strings.TrimSuffix(item.Name(), ".json")
-		if name == routerFileName {
+		if strings.EqualFold(name, routerFileName) {
 			continue
 		}
 		// The name inside the file is the real one: sanitising is lossy.

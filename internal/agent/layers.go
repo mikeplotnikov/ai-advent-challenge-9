@@ -296,9 +296,23 @@ func validateTaskName(name string) (string, error) {
 
 // singleLine rejects control characters and U+2028/U+2029, which break lines without
 // being control characters.
+//
+// It also rejects the format category (Cf): bidi overrides and isolates reorder what a
+// person reads without changing what the model receives, and zero-width joiners and
+// soft hyphens hide inside a value. None of them can forge a block boundary — that
+// still needs a real line break — but a preference the owner reads one way and the
+// model reads another is worth refusing at the door.
+//
+// U+FEFF is the one exception. Go's strings.TrimSpace keeps it while JavaScript's
+// trim() strips it, so day 11 pinned the difference in its dumped validation cases and
+// the showcase mirrors it deliberately. Rejecting it here would silently move a
+// boundary two published pages are checked against.
 func singleLine(s string) bool {
 	for _, r := range s {
 		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) {
+			return false
+		}
+		if r != '\uFEFF' && unicode.In(r, unicode.Cf) {
 			return false
 		}
 	}

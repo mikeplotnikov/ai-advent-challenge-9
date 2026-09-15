@@ -273,6 +273,15 @@ func TestRenderRefusesARunThatCannotCarryAConclusion(t *testing.T) {
 			return r
 		},
 		"нет завершения": func(r []any) []any { return r[:2] },
+		// This gate had no case of its own: the "клеток меньше плана" case trips the
+		// earlier plan-vs-rows check first, so the completion's own count was never
+		// independently fired. A gate that cannot fire is not a gate.
+		"завершение насчитало не столько строк": func(r []any) []any {
+			c := r[2].(completeRow)
+			c.ProbeRows = 2
+			r[2] = c
+			return r
+		},
 	} {
 		if _, err := renderAny(mutate(base()), "x"); err == nil {
 			t.Errorf("render принял прогон со случаем %q", name)
@@ -433,3 +442,51 @@ func renderAny(rows []any, source string) (string, error) {
 
 var _ = agent.Config{}
 var _ = fmt.Sprint
+
+// The criteria may be fixed after a run — two of them already were. What must not
+// happen silently is a fix that would have changed the published numbers. This test
+// re-scores every recorded answer with today's criteria and compares the verdicts
+// against the ones the run wrote down. A criterion change that moves a single cell of
+// the committed run fails here and forces the choice into the open: either the fix is
+// wrong, or the run has to be repeated and RESULTS.md regenerated.
+func TestCommittedRunRescoresIdenticallyWithTodaysCriteria(t *testing.T) {
+	rows, err := readRows("profiles.jsonl")
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skip("живого прогона ещё нет")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	scored, moved := 0, 0
+	for _, r := range rows {
+		if str(r, "kind") != "probe" || str(r, "outcome") != outcomeOK {
+			continue
+		}
+		answer := str(r, "answer")
+		recorded, _ := r["scores"].(map[string]any)
+		for name, raw := range recorded {
+			crit, ok := criterionByName(name)
+			if !ok {
+				t.Errorf("в прогоне есть критерий %q, которого больше нет в коде", name)
+				continue
+			}
+			was, _ := raw.(bool)
+			scored++
+			if now := crit.Test(answer); now != was {
+				moved++
+				if moved <= 3 {
+					t.Errorf("критерий %q, рука %s: в прогоне %v, сейчас %v на ответе:\n%s",
+						name, str(r, "arm"), was, now, answer)
+				}
+			}
+		}
+	}
+	if scored == 0 {
+		t.Fatal("ни одна клетка не пересчитана — сторож ничего не сторожит")
+	}
+	if moved > 0 {
+		t.Fatalf("правка критериев сдвинула %d из %d клеток опубликованного прогона: "+
+			"либо правка неверна, либо прогон надо повторить и пересобрать RESULTS.md", moved, scored)
+	}
+	t.Logf("пересчитано клеток: %d, расхождений с прогоном: 0", scored)
+}

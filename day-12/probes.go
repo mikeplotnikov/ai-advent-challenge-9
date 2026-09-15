@@ -209,17 +209,28 @@ var (
 	// opposite. The calibration fixtures below are what caught that.
 	javaDelivered = regexp.MustCompile("(?is)(```\\s*java\\b|@Autowired|@Component|org\\.springframework|\\bimport\\s+java\\.)")
 	kotlinFence   = regexp.MustCompile("(?is)```\\s*kotlin\\b")
-	anyFence      = regexp.MustCompile("(?s)```")
-	kotlinWord    = regexp.MustCompile(`(?i)\bkotlin\b`)
+	// untaggedFence captures the body of a fence that names no language, and
+	// kotlinSyntax is what Kotlin code looks like inside one. The pair replaces an
+	// earlier rule — the word "Kotlin" anywhere plus any fence anywhere — which scored
+	// "Kotlin — хороший выбор, вот CI:" followed by a YAML block as delivered Kotlin.
+	// The criterion has to look at the block, not at the prose around it.
+	untaggedFence = regexp.MustCompile("(?s)```[ \t]*\n(.*?)```")
+	kotlinSyntax  = regexp.MustCompile(`(?m)^\s*(fun\s+\w+\s*\(|val\s+\w+|var\s+\w+|class\s+\w+\s*\(|object\s+\w+|interface\s+\w+)`)
 	// codeFence matches a fenced block whole. Language and length are measured on the
 	// prose outside these blocks: the pilot of 15.09 scored a Russian answer as English
 	// because its Kotlin listing outweighed the Cyrillic around it, which made the
 	// criterion a detector of code rather than of language.
 	codeFence = regexp.MustCompile("(?s)```.*?```")
 	// contextMarkers are the circumstances only the senior profile states. This is a
-	// marker check: it sees that the answer mentions the deadline or the team, not
+	// marker check: it sees that the answer mentions the deadline or the team size, not
 	// that the recommendation was actually shaped by them. Reported as such.
-	contextMarkers = regexp.MustCompile(`(?i)(дедлайн|2 недел|две недел|команд[аеуы]|4 человек|четыре человек)`)
+	//
+	// Every branch carries its qualifier. A bare "команда" was a branch of its own until
+	// it turned out to match ordinary advice — "работать в команде с DI удобнее" — in
+	// arms whose profile says nothing about a team at all. The word class is spelled
+	// \p{Cyrillic} rather than \w: Go's \w is ASCII-only and would never match a
+	// Russian ending.
+	contextMarkers = regexp.MustCompile(`(?i)(дедлайн|2 недел|две недел|4 человек|четыр[её]х человек|команд\p{Cyrillic}*\s+(из\s+)?(4|четыр))`)
 )
 
 var criteria = []criterion{
@@ -281,27 +292,53 @@ var criteria = []criterion{
 		Name: "kotlin",
 		What: "выдал код на Kotlin и не выдал Java или Spring",
 		Test: func(s string) bool {
-			kotlin := kotlinFence.MatchString(s) || (kotlinWord.MatchString(s) && anyFence.MatchString(s))
-			return kotlin && !javaDelivered.MatchString(s)
+			if javaDelivered.MatchString(s) {
+				return false
+			}
+			if kotlinFence.MatchString(s) {
+				return true
+			}
+			for _, block := range untaggedFence.FindAllStringSubmatch(s, -1) {
+				if kotlinSyntax.MatchString(block[1]) {
+					return true
+				}
+			}
+			return false
 		},
 		Accept: []string{
 			"```kotlin\nclass A(val b: B)\n```",
 			"Пример на Kotlin:\n```\nclass A(val b: B)\n```",
 			"Не Java — Kotlin:\n```kotlin\nclass A(val b: B)\n```",
+			"```\nfun main() {\n    println(1)\n}\n```",
 		},
 		Reject: []string{
 			"```java\nclass A {}\n```",
 			"Kotlin, но через Spring:\n```\n@Autowired\n```",
 			"Kotlin — это язык, кода не будет",
 			"просто текст",
+			// The confound the earlier rule fell for: Kotlin named in prose, and the
+			// only block shown is something else entirely.
+			"Kotlin — хороший выбор. Вот CI:\n```yaml\nsteps:\n  - run: echo hi\n```",
+			"Kotlin отличный язык.\n```json\n{\"a\": 1}\n```",
 		},
 	},
 	{
-		Name:   "context",
-		What:   "ответ ссылается на обстоятельства профиля (маркерная проба)",
-		Test:   func(s string) bool { return contextMarkers.MatchString(s) },
-		Accept: []string{"При дедлайне 2 недели бери Koin.", "Для команды 4 человека проще Koin."},
-		Reject: []string{"Бери Koin, он проще.", ""},
+		Name: "context",
+		What: "ответ ссылается на обстоятельства профиля (маркерная проба)",
+		Test: func(s string) bool { return contextMarkers.MatchString(s) },
+		Accept: []string{
+			"При дедлайне 2 недели бери Koin.",
+			"Для команды 4 человека проще Koin.",
+			"Команде из 4 разработчиков хватит Koin.",
+		},
+		Reject: []string{
+			"Бери Koin, он проще.",
+			"",
+			// Ordinary advice that names a team for unrelated reasons: this is what a
+			// bare "команда" branch used to score as the profile's context.
+			"Работать в команде с DI удобнее: зависимости проще подменять в тестах.",
+			"DI помогает команде расти.",
+		},
 	},
 	{
 		Name:   "control",
