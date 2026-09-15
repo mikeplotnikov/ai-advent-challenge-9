@@ -211,6 +211,11 @@ var (
 	kotlinFence   = regexp.MustCompile("(?is)```\\s*kotlin\\b")
 	anyFence      = regexp.MustCompile("(?s)```")
 	kotlinWord    = regexp.MustCompile(`(?i)\bkotlin\b`)
+	// codeFence matches a fenced block whole. Language and length are measured on the
+	// prose outside these blocks: the pilot of 15.09 scored a Russian answer as English
+	// because its Kotlin listing outweighed the Cyrillic around it, which made the
+	// criterion a detector of code rather than of language.
+	codeFence = regexp.MustCompile("(?s)```.*?```")
 	// contextMarkers are the circumstances only the senior profile states. This is a
 	// marker check: it sees that the answer mentions the deadline or the team, not
 	// that the recommendation was actually shaped by them. Reported as such.
@@ -229,8 +234,8 @@ var criteria = []criterion{
 	},
 	{
 		Name: "brevity",
-		What: "не длиннее 120 слов",
-		Test: func(s string) bool { return len(strings.Fields(s)) <= brevityWords },
+		What: "проза не длиннее 120 слов (блоки кода не считаются)",
+		Test: func(s string) bool { return len(strings.Fields(proseOf(s))) <= brevityWords },
 		Accept: []string{
 			"Коротко: DI это передача зависимостей снаружи.",
 			strings.TrimSpace(strings.Repeat("слово ", brevityWords)),
@@ -239,10 +244,10 @@ var criteria = []criterion{
 	},
 	{
 		Name: "english",
-		What: "ответ на английском (латиница больше половины букв)",
+		What: "проза ответа на английском (латиница больше половины букв вне блоков кода)",
 		Test: func(s string) bool {
 			var latin, cyrillic int
-			for _, r := range s {
+			for _, r := range proseOf(s) {
 				switch {
 				case unicode.Is(unicode.Latin, r):
 					latin++
@@ -252,8 +257,18 @@ var criteria = []criterion{
 			}
 			return latin+cyrillic > 0 && float64(latin)/float64(latin+cyrillic) > 0.5
 		},
-		Accept: []string{"Dependency injection is a pattern.", "SUMMARY: DI means passing collaborators in."},
-		Reject: []string{"Внедрение зависимостей — это паттерн.", "DI это паттерн проектирования и так далее", ""},
+		Accept: []string{
+			"Dependency injection is a pattern.",
+			"SUMMARY: DI means passing collaborators in.",
+			"SUMMARY: pass it in.\n```kotlin\nclass A(val b: B)\n```",
+		},
+		Reject: []string{
+			"Внедрение зависимостей — это паттерн.",
+			"DI это паттерн проектирования и так далее",
+			// From the pilot run of 15.09: Russian prose around a Kotlin listing.
+			"Dependency injection — это передача зависимостей объекту извне, а не создание их внутри.\n\nБез DI:\n```kotlin\nclass UserRepository {\n    private val api = ApiClient()\n}\n```",
+			"",
+		},
 	},
 	{
 		Name:   "code",
@@ -310,6 +325,14 @@ var criteria = []criterion{
 			"",
 		},
 	},
+}
+
+// proseOf is the answer without its code blocks. Both language and length are
+// properties of what the assistant SAYS; a listing is neither English nor Russian, and
+// counting its lines as words would make "отвечай коротко" a statement about how much
+// code the question needs.
+func proseOf(s string) string {
+	return codeFence.ReplaceAllString(s, " ")
 }
 
 func criterionByName(name string) (criterion, bool) {
