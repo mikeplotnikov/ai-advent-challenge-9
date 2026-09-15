@@ -138,7 +138,7 @@ type Estimate struct {
 	Profile int
 	Plan    int
 	History int
-	Input    int
+	Input   int
 	// Overhead is the chat format's own cost: role markers and delimiters that no
 	// character count sees.
 	Overhead int
