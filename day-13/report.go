@@ -412,35 +412,64 @@ func writeCarry(b *strings.Builder, probes []map[string]any) {
 
 func writeCost(b *strings.Builder, probes []map[string]any) {
 	b.WriteString("## C — что стоит состояние\n\n")
-	withState := filter(probes, func(p map[string]any) bool { return str(p, "stateBlock") != "" })
-	if len(withState) == 0 {
+	// Only the resume family: its three arms get the SAME question, so a difference in
+	// tokens or money is a difference in what travelled. Pooling every family would
+	// compare the cost of the state block with the cost of a different question, and
+	// print the result as if it were the block's price.
+	rows := filter(probes, func(p map[string]any) bool { return str(p, "family") == familyResume })
+	if len(rows) == 0 {
 		return
 	}
-	var tokens []float64
-	for _, p := range withState {
-		tokens = append(tokens, num(p, "stateTokens"))
-	}
-	b.WriteString("| Рука | Клеток | Медиана токенов запроса | Доля кэша | Цена клетки |\n|---|---|---|---|---|\n")
-	for _, arm := range valuesIn(probes, "arm") {
-		cells := filter(probes, func(p map[string]any) bool { return str(p, "arm") == arm })
-		var total, cached, cost, est []float64
+	b.WriteString("Считается только по семейству A: там все три руки получают **один и тот же вопрос**, " +
+		"поэтому разница в токенах и деньгах — это разница в том, что уехало. Смешивать сюда другие " +
+		"семейства нельзя: тогда сравнивалась бы цена блока с ценой другого вопроса.\n\n")
+	b.WriteString("| Рука | Клеток | Медиана токенов входа | Доля кэша | Цена клетки | Блок состояния |\n")
+	b.WriteString("|---|---|---|---|---|---|\n")
+	for _, arm := range valuesIn(rows, "arm") {
+		cells := filter(rows, func(p map[string]any) bool { return str(p, "arm") == arm })
+		var prompt, share, cost, block []float64
 		for _, p := range cells {
 			u, _ := p["usage"].(map[string]any)
-			total = append(total, num(u, "prompt"))
-			if prompt := num(u, "prompt"); prompt > 0 {
-				cached = append(cached, num(u, "cached")/prompt)
+			prompt = append(prompt, num(u, "prompt"))
+			if n := num(u, "prompt"); n > 0 {
+				share = append(share, num(u, "cached")/n)
 			}
 			cost = append(cost, num(u, "cost"))
-			est = append(est, num(p, "estimateTotal"))
+			block = append(block, num(p, "stateTokens"))
 		}
-		fmt.Fprintf(b, "| `%s` | %d | %.0f | %.0f%% | $%.6f |\n",
-			arm, len(cells), median(total), median(cached)*100, median(cost))
+		fmt.Fprintf(b, "| `%s` | %d | %.0f | %.0f%% | $%.6f | %.0f токенов |\n",
+			arm, len(cells), median(prompt), median(share)*100, median(cost), median(block))
 	}
-	fmt.Fprintf(b, "\nСам блок состояния весит по локальной оценке %.0f токенов (медиана по %d клеткам, где он был).\n\n",
-		median(tokens), len(withState))
-	b.WriteString("Блок стоит в хвосте запроса, перед вопросом, а не в начале system, как на слайде 21. " +
-		"Причина в замере дня 12: состояние меняется каждый ход, а сдвиг кэшируемого префикса дал " +
+	b.WriteString("\n")
+
+	// The one comparison worth stating in words, computed rather than eyeballed.
+	stateCost, stateTokens := medianOf(rows, "state", "cost"), medianOf(rows, "state", "prompt")
+	plainCost, plainTokens := medianOf(rows, "no-state", "cost"), medianOf(rows, "no-state", "prompt")
+	if plainCost > 0 && plainTokens > 0 {
+		fmt.Fprintf(b, "Блок несёт в %.1f раза больше токенов входа, а стоит дороже только в %.1f раза.\n\n",
+			stateTokens/plainTokens, stateCost/plainCost)
+		b.WriteString("Откуда берётся эта разница — видно из доли кэша, и здесь надо быть точным. " +
+			"**Факт:** кэшируемая часть запроса (system плюс история) в руках `state` и `no-state` " +
+			"одна и та же, побайтно; блок состояния едет в хвосте, то есть в префикс он не входит. " +
+			"При этом в длинной руке провайдер зачёл из кэша заметную долю, а в короткой — ноль. " +
+			"**Вывод, который отсюда следует:** дело не в содержании префикса, а в длине запроса — " +
+			"на коротком провайдер кэш не включает вовсе. Это согласуется с замером недели 1 " +
+			"(кэш берёт блоки по 64 токена, на коротких промптах скидки нет), но отдельно на " +
+			"пороге здесь не проверялось и остаётся выводом, а не замером.\n\n")
+	}
+	b.WriteString("Именно поэтому блок стоит в хвосте, а не в начале system, как на слайде 21. " +
+		"Замер дня 12: состояние меняется каждый ход, и сдвиг кэшируемого префикса дал тогда " +
 		"в 2.2 раза меньше токенов и на 64% больше денег.\n\n")
+}
+
+// medianOf is the median of one usage field in one arm.
+func medianOf(rows []map[string]any, arm, field string) float64 {
+	var values []float64
+	for _, p := range filter(rows, func(p map[string]any) bool { return str(p, "arm") == arm }) {
+		u, _ := p["usage"].(map[string]any)
+		values = append(values, num(u, field))
+	}
+	return median(values)
 }
 
 func writeCriteria(b *strings.Builder, plan map[string]any) {
