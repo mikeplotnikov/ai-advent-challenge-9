@@ -20,7 +20,7 @@ func TestParseRememberKeepsTheValueWhole(t *testing.T) {
 }
 
 func TestParseInjectRejectsUnknownLayers(t *testing.T) {
-	got, blocks, err := parseInject(" short, long ")
+	got, blocks, _, err := parseInject(" short, long ")
 	if err != nil || len(got) != 2 || got[0] != agent.LayerShort || got[1] != agent.LayerLong {
 		t.Fatalf("parseInject = %v %v", got, err)
 	}
@@ -29,25 +29,33 @@ func TestParseInjectRejectsUnknownLayers(t *testing.T) {
 	if blocks == nil || len(blocks) != 0 {
 		t.Fatalf("-inject without profile blocks must send none, got %v", blocks)
 	}
-	if got, blocks, err := parseInject(""); err != nil || got == nil || len(got) != 0 || blocks == nil || len(blocks) != 0 {
+	if got, blocks, _, err := parseInject(""); err != nil || got == nil || len(got) != 0 || blocks == nil || len(blocks) != 0 {
 		t.Fatalf("empty -inject must mean nothing travels, got %v %v %v", got, blocks, err)
 	}
-	if _, _, err := parseInject("short,vector"); err == nil {
+	if _, _, _, err := parseInject("short,vector"); err == nil {
 		t.Fatal("unknown layer accepted")
+	}
+	// Day 13: the state is one switch, and a flag that does not name it must leave the
+	// state stored but unsent — the ablation arm of the day's measurement.
+	if _, _, state, err := parseInject("short,working,long,profile"); err != nil || state {
+		t.Fatalf("-inject without state must not send it, got %v %v", state, err)
+	}
+	if _, _, state, err := parseInject("state"); err != nil || !state {
+		t.Fatalf("-inject=state must send the state, got %v %v", state, err)
 	}
 }
 
 func TestParseInjectReadsProfileBlocks(t *testing.T) {
 	// `profile` is shorthand for the three blocks, and it must not duplicate a block
 	// that was also named on its own.
-	layers, blocks, err := parseInject("short,profile,style")
+	layers, blocks, _, err := parseInject("short,profile,style")
 	if err != nil || len(layers) != 1 {
 		t.Fatalf("parseInject = %v %v %v", layers, blocks, err)
 	}
 	if len(blocks) != 3 || blocks[0] != agent.BlockStyle || blocks[1] != agent.BlockConstraints || blocks[2] != agent.BlockContext {
 		t.Fatalf("blocks = %v", blocks)
 	}
-	if _, blocks, err := parseInject("constraints"); err != nil || len(blocks) != 1 || blocks[0] != agent.BlockConstraints {
+	if _, blocks, _, err := parseInject("constraints"); err != nil || len(blocks) != 1 || blocks[0] != agent.BlockConstraints {
 		t.Fatalf("single block: %v %v", blocks, err)
 	}
 }

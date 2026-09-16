@@ -77,11 +77,17 @@ func main() {
 		user      = flag.String("user", "default", "чья рабочая и долговременная память используется (с -layers)")
 		memoryDir = flag.String("memory-dir", ".memory", "каталог слоёв памяти (с -layers)")
 		task      = flag.String("task", "", "активная задача при старте (с -layers)")
-		inject    = flag.String("inject", "short,working,long,profile", "что уходит в запрос, через запятую: слои short, working, long и блоки профиля profile (все три) или style, constraints, context; хранится всё (с -layers)")
+		inject    = flag.String("inject", "short,working,long,profile,state", "что уходит в запрос, через запятую: слои short, working, long, блоки профиля profile (все три) или style, constraints, context, и состояние задачи state; хранится всё (с -layers)")
 
 		// Day 12: the user's own profile, beside the layers.
 		profileName  = flag.String("profile", agent.DefaultProfileName, "какой профиль пользователя подмешивать в каждый запрос (с -layers)")
 		profileRoute = flag.Bool("profile-route", false, "выбирать профиль роутером на каждый вопрос, а не держать один на сессию (с -layers)")
+
+		// День 13 — состояние задачи как конечный автомат.
+		taskState = flag.Bool("task-state", false, "стейт-машина задачи дня 13: стадия, шаг и ожидаемое действие (с -layers)")
+		stages    = flag.String("stages", "", "набор стадий: standard или bugfix; пусто — как просит профиль (с -task-state)")
+		taskAuto  = flag.Bool("task-auto", false, "заводить задачу с первого же сообщения, если активной нет (с -task-state)")
+		autoName  = flag.String("task-auto-name", "task", "имя задачи, которую заводит -task-auto")
 
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
@@ -107,6 +113,7 @@ func main() {
 
 	var memory *agent.MemoryConfig
 	var profile *agent.ProfileConfig
+	var task13 *agent.TaskConfig
 	if *layers {
 		switch {
 		case *noMemory:
@@ -114,7 +121,7 @@ func main() {
 		case *ctxProbe > 0 || *tokenProbe != "" || *compressionProbe || *probe:
 			fail(errors.New("исторические замеры дней 6–9 нельзя совмещать с -layers: их JSONL должны воспроизводиться"))
 		}
-		layersToSend, blocksToSend, err := parseInject(*inject)
+		layersToSend, blocksToSend, injectState, err := parseInject(*inject)
 		if err != nil {
 			fail(err)
 		}
@@ -125,8 +132,20 @@ func main() {
 		profile = &agent.ProfileConfig{
 			Dir: *memoryDir, User: *user, Name: *profileName, Inject: blocksToSend, Route: *profileRoute,
 		}
+		if *taskState {
+			task13 = &agent.TaskConfig{
+				Stages: *stages, Inject: injectState, Auto: *taskAuto, AutoName: *autoName,
+			}
+		} else {
+			for _, name := range []string{"stages", "task-auto", "task-auto-name"} {
+				if flagWasSet(name) {
+					fail(fmt.Errorf("-%s действует только вместе с -task-state", name))
+				}
+			}
+		}
 	} else {
-		for _, name := range []string{"user", "memory-dir", "task", "inject", "profile", "profile-route"} {
+		for _, name := range []string{"user", "memory-dir", "task", "inject", "profile", "profile-route",
+			"task-state", "stages", "task-auto", "task-auto-name"} {
 			if flagWasSet(name) {
 				fail(fmt.Errorf("-%s действует только вместе с -layers", name))
 			}
@@ -212,6 +231,7 @@ func main() {
 	}
 	cfg.Memory = memory
 	cfg.Profile = profile
+	cfg.Task = task13
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
@@ -516,6 +536,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			}
 			continue
 		}
+		if handled, err := handleStateCommand(a, line); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ошибка:", err)
+			}
+			continue
+		}
 		if handled, err := handleMemoryCommand(a, line); handled {
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "ошибка:", err)
@@ -575,6 +601,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 			fmt.Fprintln(os.Stderr, "ВНИМАНИЕ:", reply.Warning)
 		}
 		fmt.Println(reply.Text)
+		// Day 13: what the model asked of the machine, and what the table answered.
+		// It is printed even when nothing moved, because "модель попросила пропустить
+		// стадию, и ей отказали" is the interesting half of the day.
+		if reply.Move.Note != "" {
+			fmt.Fprintln(os.Stderr, "состояние:", reply.Move.Note)
+		}
 		if !quiet {
 			fmt.Fprintln(os.Stderr, spend(reply))
 		}

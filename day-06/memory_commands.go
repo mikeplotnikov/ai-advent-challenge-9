@@ -19,9 +19,14 @@ import (
 // Both lists are returned as explicit slices, empty rather than nil, because in the
 // agent nil means "everything" and an empty slice means "nothing": a flag that listed
 // only layers must switch the profile off, not silently send all of it.
-func parseInject(value string) ([]agent.MemoryLayer, []agent.ProfileBlock, error) {
+// parseInject splits -inject into what each layer of the agent sends. The third
+// result is day 13's task state, which is a single switch rather than a list: the
+// state block is one block, and there is nothing inside it a person would ablate
+// separately.
+func parseInject(value string) ([]agent.MemoryLayer, []agent.ProfileBlock, bool, error) {
 	layers := []agent.MemoryLayer{}
 	blocks := []agent.ProfileBlock{}
+	state := false
 	seenBlock := map[agent.ProfileBlock]bool{}
 	addBlock := func(b agent.ProfileBlock) {
 		if !seenBlock[b] {
@@ -39,6 +44,10 @@ func parseInject(value string) ([]agent.MemoryLayer, []agent.ProfileBlock, error
 			layers = append(layers, layer)
 			continue
 		}
+		if part == "state" {
+			state = true
+			continue
+		}
 		if part == "profile" {
 			for _, b := range agent.AllProfileBlocks {
 				addBlock(b)
@@ -47,11 +56,11 @@ func parseInject(value string) ([]agent.MemoryLayer, []agent.ProfileBlock, error
 		}
 		block, err := agent.ParseProfileBlock(part)
 		if err != nil {
-			return nil, nil, fmt.Errorf("-inject: %q неизвестно, допустимы short, working, long, profile, style, constraints, context", part)
+			return nil, nil, false, fmt.Errorf("-inject: %q неизвестно, допустимы short, working, long, profile, style, constraints, context, state", part)
 		}
 		addBlock(block)
 	}
-	return layers, blocks, nil
+	return layers, blocks, state, nil
 }
 
 // handleMemoryCommand runs /remember, /drop, /task and /memory. The bool reports

@@ -1,0 +1,188 @@
+package main
+
+// Day 13's half of the interface: the commands with which a person drives the task's
+// state machine. They exist because the transitions belong to the program — "мы можем
+// жёстко задать транзишены детерминированно в программе, в коде" (lesson 3) — so the
+// user asks for a move the same way the model does, and the same table answers both.
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
+)
+
+// handleStateCommand runs /state, /plan, /step, /go, /pause and /resume. The bool
+// reports whether the line was one of them.
+func handleStateCommand(a *agent.Agent, line string) (bool, error) {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return false, nil
+	}
+	switch parts[0] {
+	case "/state", "/plan", "/step", "/go", "/pause", "/resume":
+	default:
+		return false, nil
+	}
+	if !a.TaskState().Enabled {
+		return true, fmt.Errorf("%w — запусти с -layers -task-state", agent.ErrTaskStateOff)
+	}
+
+	switch parts[0] {
+	case "/state":
+		printTaskState(a)
+		return true, nil
+
+	case "/plan":
+		steps, err := parsePlan(line)
+		if err != nil {
+			return true, err
+		}
+		if err := a.PlanTask(steps); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(os.Stderr, "план утверждён: %d шагов\n", len(steps))
+		printTaskState(a)
+		return true, nil
+
+	case "/step":
+		if len(parts) != 2 || parts[1] != "done" {
+			return true, errors.New("формат: /step done")
+		}
+		if err := a.StepDone(); err != nil {
+			return true, err
+		}
+		v := a.TaskState()
+		fmt.Fprintf(os.Stderr, "шаг закрыт, теперь %d/%d — %s\n", v.Step, v.Total, v.Current)
+		return true, nil
+
+	case "/go":
+		target, carry, err := parseGo(line)
+		if err != nil {
+			return true, err
+		}
+		from := a.TaskState().State
+		if err := a.TaskGo(target, carry); err != nil {
+			return true, err
+		}
+		fmt.Fprintf(os.Stderr, "переход %s → %s\n", from, a.TaskState().State)
+		printTaskState(a)
+		return true, nil
+
+	case "/pause":
+		if err := a.PauseTask(); err != nil {
+			return true, err
+		}
+		v := a.TaskState()
+		// What is printed is the promise being made: the process may die now, and
+		// this is where it will come back.
+		fmt.Fprintf(os.Stderr, "пауза: %s, шаг %s. Состояние в %s\n",
+			v.State, stepLabel(v), v.Path)
+		return true, nil
+
+	case "/resume":
+		v, err := a.ResumeTask()
+		if err != nil {
+			return true, err
+		}
+		// Slide 22, in the agent's own voice: state, step, and the step's own words.
+		fmt.Fprintf(os.Stderr, "State: %s, шаг %s.%s\n", v.State, stepLabel(v), continueLabel(v))
+		return true, nil
+	}
+	return true, nil
+}
+
+// parsePlan reads "/plan шаг; шаг; шаг". The separator is ';' rather than whitespace
+// because a step is a phrase, not a word.
+func parsePlan(line string) ([]string, error) {
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "/plan"))
+	if rest == "" {
+		return nil, errors.New("формат: /plan первый шаг; второй шаг; третий шаг")
+	}
+	var steps []string
+	for _, part := range strings.Split(rest, ";") {
+		if step := strings.TrimSpace(part); step != "" {
+			steps = append(steps, step)
+		}
+	}
+	if len(steps) == 0 {
+		return nil, errors.New("в плане нет ни одного шага")
+	}
+	return steps, nil
+}
+
+// parseGo reads "/go СТАДИЯ" and the optional "/go СТАДИЯ = итог стадии". Without the
+// tail the caller passes the last answer, which is the round-5 mechanism: the result of
+// the previous prompt travels into the next stage.
+func parseGo(line string) (agent.TaskStage, string, error) {
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "/go"))
+	if rest == "" {
+		return "", "", errors.New("формат: /go СТАДИЯ  или  /go СТАДИЯ = итог стадии")
+	}
+	stage, carry := rest, ""
+	if i := strings.Index(rest, "="); i >= 0 {
+		stage, carry = strings.TrimSpace(rest[:i]), strings.TrimSpace(rest[i+1:])
+	}
+	if stage == "" {
+		return "", "", errors.New("не названа стадия: /go СТАДИЯ")
+	}
+	return agent.TaskStage(stage), carry, nil
+}
+
+func stepLabel(v agent.TaskStateView) string {
+	if v.Total == 0 {
+		return "плана ещё нет"
+	}
+	return fmt.Sprintf("%d/%d", v.Step, v.Total)
+}
+
+func continueLabel(v agent.TaskStateView) string {
+	if v.Current == "" {
+		return ""
+	}
+	return " Продолжаю: " + v.Current + "."
+}
+
+func printTaskState(a *agent.Agent) {
+	v := a.TaskState()
+	if v.Task == "" {
+		fmt.Fprintln(os.Stderr, "активной задачи нет — /task new ИМЯ")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "задача: %s (набор стадий %s)\n", v.Task, v.StageSet)
+	fmt.Fprintf(os.Stderr, "стадия: %s из %s\n", v.State, joinStages(v.Stages))
+	fmt.Fprintf(os.Stderr, "шаг: %s", stepLabel(v))
+	if v.Current != "" {
+		fmt.Fprintf(os.Stderr, " — %s", v.Current)
+	}
+	fmt.Fprintln(os.Stderr)
+	for i, step := range v.Done {
+		fmt.Fprintf(os.Stderr, "  сделано %d. %s\n", i+1, step)
+	}
+	for _, e := range v.Carry {
+		fmt.Fprintf(os.Stderr, "  итог стадии %s: %s\n", e.Key, e.Value)
+	}
+	fmt.Fprintf(os.Stderr, "ожидается: %s\n", v.Expect)
+	if len(v.Allowed) > 0 {
+		fmt.Fprintf(os.Stderr, "разрешённые переходы: %s\n", joinStages(v.Allowed))
+	} else {
+		fmt.Fprintln(os.Stderr, "переходов нет — это конечная стадия")
+	}
+	if v.Paused {
+		fmt.Fprintln(os.Stderr, "задача на паузе — /resume")
+	}
+	if !v.Inject {
+		fmt.Fprintln(os.Stderr, "состояние НЕ уходит в запрос (-inject без state); хранится всё")
+	}
+	fmt.Fprintf(os.Stderr, "в запросе: %d токенов по локальной оценке\n", v.Tokens)
+}
+
+func joinStages(stages []agent.TaskStage) string {
+	parts := make([]string, 0, len(stages))
+	for _, s := range stages {
+		parts = append(parts, string(s))
+	}
+	return strings.Join(parts, " → ")
+}
