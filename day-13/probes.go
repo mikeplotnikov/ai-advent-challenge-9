@@ -337,6 +337,31 @@ var reaskPhrases = []phrase{
 	{"не понимаю, что", false}, {"что именно продолж", false}, {"что нужно сделать", false},
 }
 
+// reaskPatterns are the shapes a phrase list cannot express: a clause whose order varies
+// ("нет контекста" / "контекста нет") or one with a word inserted in the middle ("что
+// именно продолжить" / "что именно НУЖНО продолжить"). The second review wave found ten
+// real answers in the recorded corpus that plainly admit missing context and were scored
+// as if they had not — every one of them in the arm with no context at all, which is
+// precisely where the criterion had to work.
+var reaskPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)контекст[а-яё]*\s+(?:нет|не\s+(?:переда|сохран|виж|прише))`),
+	regexp.MustCompile(`(?i)что\s+именно\s+(?:\S+\s+){0,2}продолж`),
+	regexp.MustCompile(`(?i)не\s+вижу,?\s+что`),
+	regexp.MustCompile(`(?i)не\s+указал[аи]?,?\s+что`),
+	regexp.MustCompile(`(?i)пришл(?:и|ите)[^.!?\n]{0,40}?(?:предыдущ|контекст|последн|задач|текст|фрагмент|сообщени|код|вопрос)`),
+	regexp.MustCompile(`(?i)что\s+(?:\S+\s+){0,2}нужно\s+(?:сделать|продолж)`),
+	regexp.MustCompile(`(?i)ну?жен\s+контекст|мне\s+нужен\s+контекст`),
+}
+
+func matchesReaskPattern(answer string) bool {
+	for _, re := range reaskPatterns {
+		if re.MatchString(answer) {
+			return true
+		}
+	}
+	return false
+}
+
 // containsPhrase is containsAny with an optional right word boundary. Go's \b is
 // ASCII-only, so against Cyrillic it is useless here and the boundary is checked by
 // looking at the rune that follows the match.
@@ -446,7 +471,7 @@ var criteria = []criterion{
 			"Что именно продолжить?",
 		},
 		Test: func(answer string, _ scoreCtx) bool {
-			return !containsPhrase(answer, reaskPhrases)
+			return !containsPhrase(answer, reaskPhrases) && !matchesReaskPattern(answer)
 		},
 	},
 	{

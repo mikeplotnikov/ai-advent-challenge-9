@@ -183,8 +183,12 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
+		rescored, err := rescore(rows)
+		if err != nil {
+			fail(err)
+		}
 		scored := make([]any, 0, len(rows))
-		for _, r := range rescore(rows) {
+		for _, r := range rescored {
 			scored = append(scored, r)
 		}
 		if err := writeRows(*out, scored, nil); err != nil {
@@ -863,7 +867,7 @@ func probeByName(name string) (probe, bool) {
 // It touches only `scores`: the answers, the usage and the machine's own decisions stay
 // exactly as the run wrote them. Verdicts read from the machine (`asked_*`) are taken
 // from the recorded move fields rather than recomputed from text.
-func rescore(rows []map[string]any) []map[string]any {
+func rescore(rows []map[string]any) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		copied := map[string]any{}
@@ -871,8 +875,23 @@ func rescore(rows []map[string]any) []map[string]any {
 			copied[k] = v
 		}
 		if str(copied, "kind") == "probe" && str(copied, "outcome") == outcomeOK {
-			if p, ok := probeByName(str(copied, "probe")); ok {
-				if sc, ok := scenarioByName(str(copied, "scenario")); ok {
+			// A row naming a probe or scenario this build no longer has cannot be
+			// rescored, and silently keeping its old verdicts would present stale,
+			// pre-fix numbers as freshly recomputed ones. Refuse instead: the whole
+			// point of the command is that every verdict in the output came from
+			// today's criteria.
+			p, okProbe := probeByName(str(copied, "probe"))
+			sc, okScenario := scenarioByName(str(copied, "scenario"))
+			if !okProbe {
+				return nil, fmt.Errorf("строка %v: пробы %q нет в предрегистрации — пересчитать её нечем",
+					copied["order"], str(copied, "probe"))
+			}
+			if !okScenario {
+				return nil, fmt.Errorf("строка %v: сценария %q нет в предрегистрации — пересчитать её нечем",
+					copied["order"], str(copied, "scenario"))
+			}
+			{
+				{
 					answer := str(copied, "answer")
 					move := agent.TaskMove{
 						StepAsked:    boolOf(copied, "moveStepAsked"),
@@ -897,5 +916,5 @@ func rescore(rows []map[string]any) []map[string]any {
 		}
 		out = append(out, copied)
 	}
-	return out
+	return out, nil
 }

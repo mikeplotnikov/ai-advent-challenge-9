@@ -972,15 +972,24 @@ func TestTwoWritersOnOneTaskAreLastWriterWinsLikeTheLayers(t *testing.T) {
 // nothing re-examines. Found by the second review wave, against the fix the first wave
 // had just landed — which is the whole reason a second wave exists.
 func TestStrippingTagsCannotSpliceANewOne(t *testing.T) {
-	for _, in := range []string{
-		"[USER_[TASK_STATE]MESSAGE]",
-		"[TASK_[PROFILE]STATE]",
-		"[USER_[TASK_[PROFILE]STATE]MESSAGE]",
-		"итог работы [WORKING_[PLAN]MEMORY] и ещё текст",
+	// The expected OUTPUT is asserted, not merely "does not forge". Both matter and they
+	// are not the same check: there is an independent last-resort net that drops a value
+	// which still forges after stripping, and against "does not forge" alone a revert to
+	// single-pass stripping stays green — the net silently eats the whole result instead.
+	// The second review wave demonstrated exactly that by reverting the loop.
+	for _, tc := range []struct{ in, want string }{
+		{"[USER_[TASK_STATE]MESSAGE]", ""},
+		{"[TASK_[PROFILE]STATE]", ""},
+		{"[USER_[TASK_[PROFILE]STATE]MESSAGE]", ""},
+		{"итог работы [WORKING_[PLAN]MEMORY] и ещё текст", "итог работы и ещё текст"},
+		{"решено [TASK_[TASK_STATE]STATE] дальше по плану", "решено дальше по плану"},
 	} {
-		out := summariseForCarry(in)
+		out := summariseForCarry(tc.in)
 		if forgesBlockBoundary(out) {
-			t.Errorf("санитайзер собрал тег из обрезков: %q → %q", in, out)
+			t.Errorf("санитайзер собрал тег из обрезков: %q → %q", tc.in, out)
+		}
+		if out != tc.want {
+			t.Errorf("вырезание не дошло до неподвижной точки: %q → %q, ожидалось %q", tc.in, out, tc.want)
 		}
 	}
 	// And an ordinary result still survives: the guard must not eat what it exists for.

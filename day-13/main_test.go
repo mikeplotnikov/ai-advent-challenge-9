@@ -584,8 +584,14 @@ func TestRescoringIsAPureFunctionOfTheRecordedAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	once := rescore(rows)
-	twice := rescore(once)
+	once, err := rescore(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twice, err := rescore(once)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, _ := json.Marshal(once)
 	b, _ := json.Marshal(twice)
 	if string(a) != string(b) {
@@ -666,5 +672,64 @@ func TestRescoreCommandRefusesToOverwriteItsSourceAndWritesAFullFile(t *testing.
 	// The report builds from the rescored file, which is the point of the command.
 	if _, err := render(got, reportSource); err != nil {
 		t.Fatalf("отчёт из пересчитанной выгрузки не строится: %v", err)
+	}
+}
+
+// A row naming a probe or scenario this build no longer has must stop the rescore, not
+// slip through with its old verdicts. The second review wave demonstrated the silent
+// path: a renamed probe kept a poisoned score byte-for-byte, and the output file looked
+// like a freshly rescored one.
+func TestRescoreRefusesARowItCannotRescore(t *testing.T) {
+	rows, err := readRows("state.jsonl")
+	if os.IsNotExist(err) {
+		t.Skip("прогона ещё не было")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"probe", "scenario"} {
+		t.Run(field, func(t *testing.T) {
+			broken := make([]map[string]any, 0, len(rows))
+			renamed := false
+			for _, r := range rows {
+				copied := map[string]any{}
+				for k, v := range r {
+					copied[k] = v
+				}
+				if !renamed && str(copied, "kind") == "probe" && str(copied, "outcome") == outcomeOK {
+					copied[field] = "снято-из-предрегистрации"
+					renamed = true
+				}
+				broken = append(broken, copied)
+			}
+			if !renamed {
+				t.Fatal("в выгрузке нет ни одной клетки с ответом")
+			}
+			if _, err := rescore(broken); err == nil {
+				t.Fatalf("пересчёт принял строку с неизвестным полем %s и сохранил её старые вердикты", field)
+			}
+		})
+	}
+}
+
+// The distance bound inside namesStage is load-bearing: it is what keeps a stage word in
+// one sentence from being licensed by a marker word in another. The wave-2 test review
+// showed the bound could be removed entirely without any test noticing.
+func TestNamesStageWillNotCrossASentence(t *testing.T) {
+	crit, _ := criterionByName("names_stage")
+	ctx := scoreCtx{Stage: agent.StageValidation, Step: 4, Total: 4}
+	for _, silent := range []string{
+		"Сейчас стадия исполнения. При валидации проверять подпись и срок.",
+		"Форма задачи: stage → done. Продолжаю валидацию токена.",
+		"Этап понятен.\nПроверка подписи идёт.",
+		"Стадия ясна — двигаемся. Тестирование будет позже, отдельным шагом работы.",
+	} {
+		if crit.Test(silent, ctx) {
+			t.Errorf("маркер из одного предложения узаконил доменное слово из другого: %q", silent)
+		}
+	}
+	// And the construction it exists to catch still fires.
+	if !crit.Test("Стадия validation, шаг 4/4.", ctx) {
+		t.Error("настоящее называние стадии перестало засчитываться")
 	}
 }

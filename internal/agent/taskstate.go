@@ -553,6 +553,9 @@ func summariseForCarry(text string) string {
 			break
 		}
 	}
+	// Stripping leaves the gaps where the tags were; collapse once more so a stored
+	// result does not carry the scars of its own sanitising.
+	text = strings.Join(strings.Fields(text), " ")
 	var b strings.Builder
 	for _, r := range text {
 		if singleLine(string(r)) {
