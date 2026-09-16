@@ -291,6 +291,10 @@ func validateTaskName(name string) (string, error) {
 	if !singleLine(name) {
 		return "", fmt.Errorf("имя задачи %q: только одна строка без управляющих символов", name)
 	}
+	// Since day 13 the name is printed inside the injected state block.
+	if forgesBlockBoundary(name) {
+		return "", fmt.Errorf("имя задачи %q содержит служебный маркер или тег блока", name)
+	}
 	return name, nil
 }
 

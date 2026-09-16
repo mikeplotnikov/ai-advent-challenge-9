@@ -366,6 +366,10 @@ func validateTaskContext(c TaskContext, user, task string) error {
 	if c.Task != task {
 		return fmt.Errorf("файл принадлежит задаче %q, а не %q", c.Task, task)
 	}
+	// The task name is printed inside the block as "task: …".
+	if forgesBlockBoundary(c.Task) {
+		return errors.New("имя задачи содержит служебный маркер или тег блока")
+	}
 	if err := validatePlan(c.Plan); err != nil {
 		return err
 	}
@@ -397,8 +401,13 @@ func validatePlan(plan []string) error {
 		if !singleLine(step) {
 			return fmt.Errorf("шаг %d: только одна строка без управляющих символов", i+1)
 		}
-		if containsControlMarker(step) {
-			return fmt.Errorf("шаг %d содержит служебный маркер перехода", i+1)
+		// The same rule as the carried result, for the same reason: a plan step is
+		// re-injected into every later request, so it may not impersonate a section of
+		// the request it lands in — even though a step is written by the user, who is
+		// the principal here. Consistency matters more than the threat model: the
+		// showcase takes a plan from an untrusted client and shares this contract.
+		if forgesBlockBoundary(step) {
+			return fmt.Errorf("шаг %d содержит служебный маркер или тег блока", i+1)
 		}
 	}
 	return nil
