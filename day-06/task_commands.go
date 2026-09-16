@@ -43,7 +43,7 @@ func handleStateCommand(a *agent.Agent, line string) (bool, error) {
 		if err := a.PlanTask(steps); err != nil {
 			return true, err
 		}
-		fmt.Fprintf(os.Stderr, "план утверждён: %d шагов\n", len(steps))
+		fmt.Fprintf(os.Stderr, "план утверждён, шагов: %d\n", len(steps))
 		printTaskState(a)
 		return true, nil
 
@@ -166,7 +166,9 @@ func printTaskState(a *agent.Agent) {
 	}
 	fmt.Fprintf(os.Stderr, "ожидается: %s\n", v.Expect)
 	if len(v.Allowed) > 0 {
-		fmt.Fprintf(os.Stderr, "разрешённые переходы: %s\n", joinStages(v.Allowed))
+		// Запятая, а не стрелка: это список вариантов, а не последовательность.
+		// Стрелка здесь читалась бы как «сначала validation, потом planning».
+		fmt.Fprintf(os.Stderr, "разрешённые переходы: %s\n", listStages(v.Allowed))
 	} else {
 		fmt.Fprintln(os.Stderr, "переходов нет — это конечная стадия")
 	}
@@ -179,10 +181,14 @@ func printTaskState(a *agent.Agent) {
 	fmt.Fprintf(os.Stderr, "в запросе: %d токенов по локальной оценке\n", v.Tokens)
 }
 
-func joinStages(stages []agent.TaskStage) string {
+func joinStages(stages []agent.TaskStage) string { return joinStagesWith(stages, " → ") }
+
+func listStages(stages []agent.TaskStage) string { return joinStagesWith(stages, ", ") }
+
+func joinStagesWith(stages []agent.TaskStage, sep string) string {
 	parts := make([]string, 0, len(stages))
 	for _, s := range stages {
 		parts = append(parts, string(s))
 	}
-	return strings.Join(parts, " → ")
+	return strings.Join(parts, sep)
 }

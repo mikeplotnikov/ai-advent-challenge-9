@@ -143,17 +143,21 @@ func handleTask(a *agent.Agent, args []string) error {
 		fmt.Fprintln(os.Stderr, "активная задача:", task)
 		return nil
 	}
+	// The name is everything after the verb, not one word: the agent's own validator
+	// accepts a phrase ("сервис авторизации"), and a CLI that silently required a
+	// single word made the documented example impossible to type.
+	name := strings.TrimSpace(strings.Join(args[1:], " "))
 	switch {
-	case args[0] == "new" && len(args) == 2:
-		if err := a.StartTask(args[1]); err != nil {
+	case args[0] == "new" && name != "":
+		if err := a.StartTask(name); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "задача %q создана и активна\n", args[1])
-	case args[0] == "use" && len(args) == 2:
-		if err := a.UseTask(args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "задача %q создана и активна\n", name)
+	case args[0] == "use" && name != "":
+		if err := a.UseTask(name); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "активная задача: %s\n", args[1])
+		fmt.Fprintf(os.Stderr, "активная задача: %s\n", name)
 	case args[0] == "done" && len(args) == 1:
 		task := a.MemoryState().Task
 		if err := a.FinishTask(); err != nil {

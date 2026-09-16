@@ -587,14 +587,35 @@ func joinStagesWith(stages []TaskStage, sep string) string {
 	return strings.Join(parts, sep)
 }
 
-// save writes the state file. Every mutation persists immediately: "пауза на любом
-// этапе" is not a command the agent has to be given, it is the process being allowed
-// to die at any point without the task losing its place.
-func (s *taskStateState) save() error {
-	s.ctx.Version = TaskStateVersion
-	s.ctx.Stages = s.set.Name
-	s.ctx.Updated = time.Now().UTC()
-	return s.file.write(s.ctx)
+// clone is a copy a mutator may work on without touching what the agent is currently
+// serving. The slices are copied too: sharing their backing arrays would let a
+// discarded change survive in the original.
+func (c TaskContext) clone() TaskContext {
+	out := c
+	out.Plan = append([]string(nil), c.Plan...)
+	out.Carry = append([]MemoryEntry(nil), c.Carry...)
+	return out
+}
+
+// commit writes a modified context and adopts it ONLY if the write succeeded.
+//
+// The order matters and was wrong once: mutating s.ctx first and saving after left the
+// agent serving a stage that is not on disk whenever the write failed — and the write
+// fails exactly in the case the file layer exists to catch, a second process having
+// changed the file since this one read it. The state that answers the next request has
+// to be the state that is stored, or "детерминизм" is a word in a README.
+//
+// Every mutation persists immediately, which is what makes "пауза на любом этапе" a
+// property rather than a command: the process may die at any point.
+func (s *taskStateState) commit(next TaskContext) error {
+	next.Version = TaskStateVersion
+	next.Stages = s.set.Name
+	next.Updated = time.Now().UTC()
+	if err := s.file.write(next); err != nil {
+		return err
+	}
+	s.ctx = next
+	return nil
 }
 
 // requireTask is the guard every command shares.
@@ -643,9 +664,10 @@ func (a *Agent) PlanTask(steps []string) error {
 		return fmt.Errorf("%s: план меняется только на стадии %q, а задача на %q",
 			a.Name(), s.set.First(), s.ctx.State)
 	}
-	s.ctx.Plan = clean
-	s.ctx.Step = 1
-	return a.saveTaskState(s)
+	next := s.ctx.clone()
+	next.Plan = clean
+	next.Step = 1
+	return a.commitTaskState(s, next)
 }
 
 // StepDone closes the current step. It stops at the last one instead of walking off the
@@ -661,8 +683,9 @@ func (a *Agent) StepDone() error {
 	if s.ctx.Step >= s.ctx.Total() {
 		return fmt.Errorf("%s: %w: шаг %d из %d", a.Name(), ErrPlanExhausted, s.ctx.Step, s.ctx.Total())
 	}
-	s.ctx.Step++
-	return a.saveTaskState(s)
+	next := s.ctx.clone()
+	next.Step++
+	return a.commitTaskState(s, next)
 }
 
 // TaskGo is the transition, and the only way the State field ever changes. carry is
@@ -696,18 +719,21 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string) (T
 		return from, fmt.Errorf("%s: %w: %s → %s; из %s разрешено: %s",
 			a.Name(), ErrTransition, from, target, from, allowed)
 	}
+	next := s.ctx.clone()
 	if summary := summariseForCarry(carry); summary != "" {
-		entries, err := upsertEntry(s.ctx.Carry, MemoryEntry{
+		entries, err := upsertEntry(next.Carry, MemoryEntry{
 			Key: string(from), Value: summary, Source: SourceCommand, Updated: time.Now().UTC(),
 		})
 		// A carried result that will not fit is dropped, not fatal: the transition the
 		// table approved must still happen. The state stays consistent either way.
 		if err == nil {
-			s.ctx.Carry = entries
+			next.Carry = entries
 		}
 	}
-	s.ctx.State = target
-	return from, a.saveTaskState(s)
+	next.State = target
+	// A failed write leaves the agent on the stage it was on. The caller is told the
+	// move did not happen, and what it reads afterwards agrees with the disk.
+	return from, a.commitTaskState(s, next)
 }
 
 // PauseTask marks the task as put down. The state is already on disk — every mutation
@@ -718,8 +744,9 @@ func (a *Agent) PauseTask() error {
 	if err != nil {
 		return err
 	}
-	s.ctx.Paused = true
-	return a.saveTaskState(s)
+	next := s.ctx.clone()
+	next.Paused = true
+	return a.commitTaskState(s, next)
 }
 
 // ResumeTask is slide 22's "Продолжай": it clears the pause and hands back the state
@@ -730,16 +757,17 @@ func (a *Agent) ResumeTask() (TaskStateView, error) {
 		return TaskStateView{}, err
 	}
 	if s.ctx.Paused {
-		s.ctx.Paused = false
-		if err := a.saveTaskState(s); err != nil {
+		next := s.ctx.clone()
+		next.Paused = false
+		if err := a.commitTaskState(s, next); err != nil {
 			return TaskStateView{}, err
 		}
 	}
 	return a.TaskState(), nil
 }
 
-func (a *Agent) saveTaskState(s *taskStateState) error {
-	if err := s.save(); err != nil {
+func (a *Agent) commitTaskState(s *taskStateState, next TaskContext) error {
+	if err := s.commit(next); err != nil {
 		return fmt.Errorf("%s: %w", a.Name(), err)
 	}
 	return nil
@@ -887,7 +915,7 @@ func (a *Agent) initTaskState() error {
 	if exists {
 		return nil
 	}
-	return a.saveTaskState(a.task)
+	return a.commitTaskState(a.task, a.task.ctx.clone())
 }
 
 // configuredStageSet is which automaton a task started now would run on. The profile

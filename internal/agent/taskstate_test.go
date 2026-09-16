@@ -830,3 +830,56 @@ func TestADayTwelveProfileFileStillParses(t *testing.T) {
 		t.Fatalf("набор %q, без поля ожидался %q", got, StandardStages)
 	}
 }
+
+// A write that loses a race must not advance the agent anyway. The file layer refuses a
+// write whose file changed since this handle read it — and before this test existed, the
+// refusal came AFTER the in-memory stage had already moved, so the agent went on serving
+// a stage nobody had written and injected it into the next request.
+//
+// Found by the first review wave; the repro it wrote is kept as the guard.
+func TestAFailedWriteLeavesTheAgentOnTheStageTheDiskHolds(t *testing.T) {
+	dir := t.TempDir()
+	a := stateAgent(t, &layerCaller{}, dir, "сервис")
+	planOf(t, a, "шаг")
+
+	// Simulate the exact TOCTOU window transition() is exposed to under real
+	// concurrency: a has already reloaded (state = planning) and is mid-transition
+	// when a second handle's write lands on disk between a's reload and a's save.
+	// transition() itself never reloads — only requireTask() does — so this is the
+	// state the package's own code operates on inside that window; a real race just
+	// needs two goroutines timed to land here, which is exactly what the file layer's
+	// checkUnchanged staleness guard exists to police.
+	s := a.task
+	if err := s.reload(a.taskUser()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	before := s.ctx.State
+	if before != StagePlanning {
+		t.Fatalf("precondition: a should still see planning after reload, got %q", before)
+	}
+
+	// A second handle on the same task writes concurrently — the same legal move a is
+	// about to attempt — changing the on-disk stamp s.file.lastSeen does not know.
+	b := stateAgent(t, &layerCaller{}, dir, "")
+	if err := b.UseTask("сервис"); err != nil {
+		t.Fatalf("b.UseTask: %v", err)
+	}
+	if err := b.TaskGo(StageExecution, "b advanced it"); err != nil {
+		t.Fatalf("b.TaskGo: %v", err)
+	}
+
+	// a's own transition is legal per the transition table (planning -> execution, the
+	// stale view it read at reload time); only the concurrent write makes it stale.
+	_, err := a.transition(s, StageExecution, "a's own result")
+	if err == nil {
+		t.Fatalf("expected a write-conflict error, transition succeeded silently")
+	}
+	if !errors.Is(err, ErrChangedElsewhere) {
+		t.Fatalf("expected ErrChangedElsewhere, got %v", err)
+	}
+
+	after := s.ctx.State
+	if after != before {
+		t.Fatalf("INVARIANT VIOLATED: failed/refused transition changed in-memory state: %q -> %q (disk holds b's write, not this)", before, after)
+	}
+}
