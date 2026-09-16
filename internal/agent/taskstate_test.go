@@ -925,3 +925,44 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// Two writers on one open task: the LAST one wins, silently. This is the same behaviour
+// the day-11 layers have, and the test exists to pin it rather than to complain about it
+// — a command reloads the file immediately before writing, so a refusal here would make
+// /plan fail whenever anything else had touched the task, which is worse for a CLI whose
+// whole promise is that the work survives interruption.
+//
+// The conversation is the deliberate exception and is checked alongside, because that is
+// what makes this a decision instead of an oversight: history is appended, so a second
+// writer would destroy the first one's turn, and there the write IS refused.
+func TestTwoWritersOnOneTaskAreLastWriterWinsLikeTheLayers(t *testing.T) {
+	dir := t.TempDir()
+	first := stateAgent(t, &layerCaller{}, dir, "общая")
+	second := stateAgent(t, &layerCaller{}, dir, "")
+	if err := second.UseTask("общая"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.PlanTask([]string{"шаг один", "шаг два"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.PlanTask([]string{"другой шаг"}); err != nil {
+		t.Fatalf("второй писатель отклонён — поведение изменилось, и это надо решать, а не чинить тест: %v", err)
+	}
+	// What is on disk is the second writer's plan, and a third handle reads exactly it.
+	third := stateAgent(t, &layerCaller{}, dir, "")
+	if err := third.UseTask("общая"); err != nil {
+		t.Fatal(err)
+	}
+	if v := third.TaskState(); v.Total != 1 || v.Plan[0] != "другой шаг" {
+		t.Fatalf("на диске оказался не план второго писателя: %v", v.Plan)
+	}
+
+	// The memory layer behaves the same way — this is the family the state belongs to.
+	if err := first.Remember(TargetDecision, "k", "первое"); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Remember(TargetDecision, "k", "второе"); err != nil {
+		t.Fatalf("слой памяти отклонил второго писателя, а состояние — нет: поведение разошлось: %v", err)
+	}
+}

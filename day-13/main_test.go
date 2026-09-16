@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -600,5 +601,62 @@ func TestRescoringIsAPureFunctionOfTheRecordedAnswers(t *testing.T) {
 	}
 	if promised == 0 || promised != got {
 		t.Fatalf("оценок %d, пробы обещали %d", got, promised)
+	}
+}
+
+// The -rescore CLI path, not just the pure function inside it. RESULTS.md's own
+// regeneration instructions send a person through this command, and it is the sanctioned
+// way to fix a miscalibrated instrument without paying for the run again — which this
+// day has now done twice. A test that only calls rescore() leaves the wiring unguarded.
+func TestRescoreCommandRefusesToOverwriteItsSourceAndWritesAFullFile(t *testing.T) {
+	rows, err := readRows("state.jsonl")
+	if os.IsNotExist(err) {
+		t.Skip("прогона ещё не было")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The guard that keeps the raw run from being rewritten in place: -rescore without
+	// -out must refuse, because the answers are the only thing a rescore cannot rebuild.
+	bin := filepath.Join(t.TempDir(), "day13")
+	if out, err := exec.Command("go", "build", "-o", bin,
+		"github.com/mikeplotnikov/ai-advent-challenge-9/day-13").CombinedOutput(); err != nil {
+		t.Fatalf("сборка: %v\n%s", err, out)
+	}
+	cmd := exec.Command(bin, "-rescore", "state.jsonl")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("-rescore без -out не отказал: исходная выгрузка переписывается на месте")
+	}
+	if !strings.Contains(string(out), "-out") {
+		t.Fatalf("отказ не объясняет, чего не хватает:\n%s", out)
+	}
+
+	// And with -out it writes every row, not only the scored ones.
+	target := filepath.Join(t.TempDir(), "rescored.jsonl")
+	if out, err := exec.Command(bin, "-rescore", "state.jsonl", "-out", target).CombinedOutput(); err != nil {
+		t.Fatalf("-rescore: %v\n%s", err, out)
+	}
+	got, err := readRows(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(rows) {
+		t.Fatalf("строк в пересчитанной выгрузке %d, в исходной %d", len(got), len(rows))
+	}
+	// The answers and the machine's own decisions are untouched: a rescore may only
+	// change verdicts, or it is not a rescore.
+	for i := range rows {
+		if str(rows[i], "answer") != str(got[i], "answer") {
+			t.Fatalf("строка %d: пересчёт изменил ответ модели", i)
+		}
+		if boolOf(rows[i], "moveIllegal") != boolOf(got[i], "moveIllegal") {
+			t.Fatalf("строка %d: пересчёт изменил решение машины", i)
+		}
+	}
+	// The report builds from the rescored file, which is the point of the command.
+	if _, err := render(got, reportSource); err != nil {
+		t.Fatalf("отчёт из пересчитанной выгрузки не строится: %v", err)
 	}
 }
