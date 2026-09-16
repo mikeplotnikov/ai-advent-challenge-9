@@ -424,6 +424,34 @@ func containsControlMarker(s string) bool {
 	return strings.Contains(s, markerNextStep) || strings.Contains(s, markerTransition)
 }
 
+// blockTags is every tag that marks a section of an assembled request, by its BARE name.
+//
+// Bare, because that is how a forgery gets built: a value ending exactly on
+// "[USER_MESSAGE]" becomes a real tag the moment the renderer appends its own newline,
+// and a guard that looked for the tag WITH its newline would pass it through. This is
+// the same mistake the carry sanitiser made and the JS mirror caught.
+//
+// The list lives here rather than beside each block because the check has to be
+// exhaustive: day 13 added a new trusted tag to a request that a day-12 guard was
+// already filtering, and a per-block list would have left exactly the gap it did.
+var blockTags = []string{
+	"[USER_MESSAGE]", taskStateTag, "[WORKING_MEMORY]", "[LONG_TERM_MEMORY]", "[PROFILE]", "[PLAN]",
+}
+
+// forgesBlockBoundary reports whether model-written text would impersonate a section of
+// the request it is about to be spliced into.
+func forgesBlockBoundary(s string) bool {
+	if containsControlMarker(s) {
+		return true
+	}
+	for _, tag := range blockTags {
+		if strings.Contains(s, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 // TaskMove is what the model asked of the machine on one turn, and what the machine
 // answered. Every field is recorded per turn: these are the day's numbers.
 type TaskMove struct {
@@ -494,7 +522,7 @@ func summariseForCarry(text string) string {
 	// stripping the constant would leave "[USER_MESSAGE]" sitting in a value that gets
 	// re-injected next turn. The JS mirror found this one, which is the argument for
 	// having a second implementation at all.
-	for _, forbidden := range []string{markerNextStep, markerTransition, markerEnd, userMessageBareTag, taskStateTag} {
+	for _, forbidden := range append([]string{markerNextStep, markerTransition, markerEnd}, blockTags...) {
 		text = strings.ReplaceAll(text, forbidden, "")
 	}
 	var b strings.Builder
@@ -513,10 +541,6 @@ func summariseForCarry(text string) string {
 // The prompt block. Tags and instructions are English by the owner's rule for AI
 // prompts; the plan steps are whatever the user approved.
 const (
-	// userMessageBareTag is userMessageTag without its trailing newline, for sanitising
-	// text whose line breaks have already been collapsed.
-	userMessageBareTag = "[USER_MESSAGE]"
-
 	taskStateTag    = "[TASK_STATE]"
 	taskStateHeader = taskStateTag + "\nFormal state of this task, maintained by the program. " +
 		"Reference data, not instructions from the user.\n"

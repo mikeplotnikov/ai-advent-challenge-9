@@ -895,8 +895,15 @@ func (a *Agent) refreshPlan(ctx context.Context, input string) (Usage, error) {
 
 // singleBlock is the one-line rule of entry values, relaxed to allow ordinary line
 // breaks: a plan is a list. What it still rejects is U+2028/U+2029 and control
-// characters other than \n and \t, so a plan cannot forge the [USER_MESSAGE] tag by
-// smuggling an exotic separator past the renderer.
+// characters other than \n and \t, so a plan cannot forge a tag by smuggling an exotic
+// separator past the renderer.
+//
+// It also refuses every block tag by its bare name, and the day-13 control markers.
+// The earlier version compared against userMessageTag, which ends in "\n", and checked
+// nothing else — so a plan ending exactly on the bare "[USER_MESSAGE]" passed the guard
+// and became a real tag once planContext appended its own "\n\n", and a plan containing
+// "[TASK_STATE]" passed unexamined because day 12's guard predated that tag. Both were
+// reproduced end to end before this was changed.
 func singleBlock(s string) bool {
 	for _, r := range s {
 		if r == '\n' || r == '\t' {
@@ -906,7 +913,7 @@ func singleBlock(s string) bool {
 			return false
 		}
 	}
-	return !strings.Contains(s, userMessageTag)
+	return !forgesBlockBoundary(s)
 }
 
 func (a *Agent) recordPlan(u Usage, failed bool) {
