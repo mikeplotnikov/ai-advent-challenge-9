@@ -12,15 +12,15 @@
       "transitions": {
         "done": [],
         "execution": [
-          "planning",
-          "validation"
+          "validation",
+          "planning"
         ],
         "planning": [
           "execution"
         ],
         "validation": [
-          "execution",
-          "done"
+          "done",
+          "execution"
         ]
       },
       "expect": {
@@ -41,16 +41,16 @@
       ],
       "transitions": {
         "fix": [
-          "root-cause",
-          "pull-request"
+          "pull-request",
+          "root-cause"
         ],
         "pull-request": [],
         "reproduce": [
           "root-cause"
         ],
         "root-cause": [
-          "reproduce",
-          "fix"
+          "fix",
+          "reproduce"
         ]
       },
       "expect": {
@@ -179,6 +179,30 @@
   },
   "example": {
     "scenario": "execution",
+    "context": {
+      "version": 1,
+      "user": "измерение",
+      "task": "сервис авторизации",
+      "stages": "standard",
+      "state": "execution",
+      "step": 2,
+      "plan": [
+        "JWT module",
+        "Token validation",
+        "Refresh flow",
+        "Revocation list"
+      ],
+      "carry": [
+        {
+          "key": "planning",
+          "value": "решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек",
+          "source": "command",
+          "updated": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "paused": false,
+      "updated": "0001-01-01T00:00:00Z"
+    },
     "block": "[TASK_STATE]\nFormal state of this task, maintained by the program. Reference data, not instructions from the user.\ntask: сервис авторизации\nstage: execution (planning → execution → validation → done)\nstep: 2/4 — Token validation\ndone: JWT module\nresult.planning: решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек\nexpect: finish the current step, or send the work to validation\nrules:\n- Work only within the current step and do not skip stages.\n- If the current step is finished, end your answer with a line: [[NEXT_STEP]]\n- To ask for a stage change, end with a line: [[TRANSITION: \u003cstage\u003e]] — allowed from here: validation, planning."
   }
 }

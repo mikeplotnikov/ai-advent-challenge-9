@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"time"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
@@ -46,11 +47,11 @@ func buildDefinitions() (definitions, error) {
 		}
 		for _, stage := range set.Stages() {
 			dump.Stages = append(dump.Stages, string(stage))
+			// In the rule's own order, which is the order the prompt prints — not sorted
+			// by the stage list, or the showcase would match a table the model never saw.
 			allowed := []string{}
-			for _, to := range set.Stages() {
-				if set.Allowed(stage, to) {
-					allowed = append(allowed, string(to))
-				}
+			for _, to := range set.Allow(stage) {
+				allowed = append(allowed, string(to))
 			}
 			dump.Transitions[string(stage)] = allowed
 			dump.Expect[string(stage)] = set.Expect(stage)
@@ -58,11 +59,11 @@ func buildDefinitions() (definitions, error) {
 		defs.StageSets = append(defs.StageSets, dump)
 	}
 
-	block, err := recordBlock(resumeScenarios[1]) // execution, step 2/4, with a carried result
+	block, ctx, err := recordBlock(resumeScenarios[1]) // execution, step 2/4, with a carried result
 	if err != nil {
 		return defs, err
 	}
-	defs.Example = exampleDump{Scenario: resumeScenarios[1].Name, Block: block}
+	defs.Example = exampleDump{Scenario: resumeScenarios[1].Name, Context: ctx, Block: block}
 	return defs, nil
 }
 
@@ -86,23 +87,38 @@ func (e errorString) Error() string { return string(e) }
 // recordBlock builds one real request through the agent and returns the state block it
 // carried. The dump therefore shows what the code sends, not what a comment says it
 // sends — the same arrangement day 5 introduced and every day since has relied on.
-func recordBlock(sc scenario) (string, error) {
+func recordBlock(sc scenario) (string, agent.TaskContext, error) {
+	var ctx agent.TaskContext
 	dir, err := os.MkdirTemp("", "day13-dump-")
 	if err != nil {
-		return "", err
+		return "", ctx, err
 	}
 	defer os.RemoveAll(dir)
 	if err := seed(dir, sc, agent.StandardStages, true, sc.Carry); err != nil {
-		return "", err
+		return "", ctx, err
 	}
 	rec := &recorderOnly{}
 	a, err := agent.New(rec, measureConfig(dir, agent.StandardStages, true, true))
 	if err != nil {
-		return "", err
+		return "", ctx, err
 	}
 	// The call fails on purpose; the request is what is wanted.
 	_, _ = a.Ask(context.Background(), resumeQuestion)
-	return stateBlockOf(rec.wire), nil
+	raw, err := os.ReadFile(a.TaskState().Path)
+	if err != nil {
+		return "", ctx, err
+	}
+	if err := json.Unmarshal(raw, &ctx); err != nil {
+		return "", ctx, err
+	}
+	// The timestamps change on every generation and say nothing the showcase needs.
+	// Leaving them in would make the dump differ from itself on every run, and a parity
+	// test that always fails is a parity test nobody reads.
+	ctx.Updated = time.Time{}
+	for i := range ctx.Carry {
+		ctx.Carry[i].Updated = time.Time{}
+	}
+	return stateBlockOf(rec.wire), ctx, nil
 }
 
 // readDump parses a previously written dump, for the test that keeps it from going

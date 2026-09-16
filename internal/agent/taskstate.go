@@ -488,10 +488,15 @@ func parseControlMarkers(text string) (clean string, step bool, stage TaskStage)
 func summariseForCarry(text string) string {
 	text = strings.Join(strings.Fields(strings.ReplaceAll(text, "\n", " ")), " ")
 	// Whatever the model wrote, it may not carry a marker or a block tag forward.
-	text = strings.ReplaceAll(text, markerNextStep, "")
-	text = strings.ReplaceAll(text, markerTransition, "")
-	text = strings.ReplaceAll(text, userMessageTag, "")
-	text = strings.ReplaceAll(text, taskStateTag, "")
+	//
+	// The tags are stripped by their bare names, not by the userMessageTag constant:
+	// that constant ends in "\n", and by this point the line breaks are already gone, so
+	// stripping the constant would leave "[USER_MESSAGE]" sitting in a value that gets
+	// re-injected next turn. The JS mirror found this one, which is the argument for
+	// having a second implementation at all.
+	for _, forbidden := range []string{markerNextStep, markerTransition, markerEnd, userMessageBareTag, taskStateTag} {
+		text = strings.ReplaceAll(text, forbidden, "")
+	}
 	var b strings.Builder
 	for _, r := range text {
 		if singleLine(string(r)) {
@@ -508,6 +513,10 @@ func summariseForCarry(text string) string {
 // The prompt block. Tags and instructions are English by the owner's rule for AI
 // prompts; the plan steps are whatever the user approved.
 const (
+	// userMessageBareTag is userMessageTag without its trailing newline, for sanitising
+	// text whose line breaks have already been collapsed.
+	userMessageBareTag = "[USER_MESSAGE]"
+
 	taskStateTag    = "[TASK_STATE]"
 	taskStateHeader = taskStateTag + "\nFormal state of this task, maintained by the program. " +
 		"Reference data, not instructions from the user.\n"
@@ -908,4 +917,13 @@ func (a *Agent) configuredStageSet() StageSet {
 func (s StageSet) Expect(stage TaskStage) string {
 	r, _ := s.rule(stage)
 	return r.Expect
+}
+
+// Allow is the stages reachable from one stage, in the order the prompt lists them.
+// The order matters and is not incidental: the block tells the model "allowed from here:
+// …", and a dump that sorted them differently would let the showcase agree with a
+// transition table the model never saw.
+func (s StageSet) Allow(stage TaskStage) []TaskStage {
+	r, _ := s.rule(stage)
+	return append([]TaskStage(nil), r.Allow...)
 }

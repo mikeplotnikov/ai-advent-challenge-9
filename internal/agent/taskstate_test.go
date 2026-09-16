@@ -568,7 +568,10 @@ func TestACarriedResultCannotForgeABlockTag(t *testing.T) {
 	if len(carry) != 1 {
 		t.Fatalf("перенос: %v", carry)
 	}
-	for _, forbidden := range []string{taskStateTag, userMessageTag, markerNextStep, "\n"} {
+	// The bare tag names, not the tag-plus-newline constants: by the time a carried
+	// result is sanitised its line breaks are already gone, so checking for the constant
+	// with its "\n" would pass on a value that still reads as a block boundary.
+	for _, forbidden := range []string{taskStateTag, "[USER_MESSAGE]", markerNextStep, markerTransition, "\n"} {
 		if strings.Contains(carry[0].Value, forbidden) {
 			t.Fatalf("перенос содержит %q: %q", forbidden, carry[0].Value)
 		}

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/stats"
 )
 
@@ -606,9 +607,12 @@ type stageSetDump struct {
 	Expect      map[string]string   `json:"expect"`
 }
 
+// exampleDump is one real request's state block together with the exact context that
+// produced it, so the JS mirror can rebuild it rather than be handed the answer.
 type exampleDump struct {
-	Scenario string `json:"scenario"`
-	Block    string `json:"block"`
+	Scenario string            `json:"scenario"`
+	Context  agent.TaskContext `json:"context"`
+	Block    string            `json:"block"`
 }
 
 func writeDefinitions(w io.Writer) error {
