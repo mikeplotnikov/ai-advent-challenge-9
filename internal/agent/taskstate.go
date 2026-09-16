@@ -382,6 +382,13 @@ func validateTaskContext(c TaskContext, user, task string) error {
 	if err := validateEntries(c.Carry); err != nil {
 		return fmt.Errorf("перенос между стадиями: %w", err)
 	}
+	// Re-checked on every load, not only on write: a value that reached the file by any
+	// other route — an older build, a hand edit — would otherwise be injected forever.
+	for _, e := range c.Carry {
+		if forgesBlockBoundary(e.Value) {
+			return fmt.Errorf("перенос стадии %q подделывает границу блока", e.Key)
+		}
+	}
 	return nil
 }
 
@@ -531,8 +538,20 @@ func summariseForCarry(text string) string {
 	// stripping the constant would leave "[USER_MESSAGE]" sitting in a value that gets
 	// re-injected next turn. The JS mirror found this one, which is the argument for
 	// having a second implementation at all.
-	for _, forbidden := range append([]string{markerNextStep, markerTransition, markerEnd}, blockTags...) {
-		text = strings.ReplaceAll(text, forbidden, "")
+	// Stripping has to run to a fixed point, not once. A single left-to-right pass is
+	// not confluent: "[USER_[TASK_STATE]MESSAGE]" contains neither tag as a contiguous
+	// substring, but deleting the inner one splices the halves of the outer into a real
+	// "[USER_MESSAGE]" that nothing re-examines. Found by the second review wave, on the
+	// fix the first wave had just landed.
+	forbidden := append([]string{markerNextStep, markerTransition, markerEnd}, blockTags...)
+	for {
+		before := text
+		for _, f := range forbidden {
+			text = strings.ReplaceAll(text, f, "")
+		}
+		if text == before {
+			break
+		}
 	}
 	var b strings.Builder
 	for _, r := range text {
@@ -543,6 +562,13 @@ func summariseForCarry(text string) string {
 	out := strings.TrimSpace(b.String())
 	if runes := []rune(out); len(runes) > maxMemoryValueRunes {
 		out = strings.TrimSpace(string(runes[:maxMemoryValueRunes-1])) + "…"
+	}
+	// Last check, after every transformation including the truncation. The loop above
+	// should make this unreachable; it stays because "should" is not a guarantee, and
+	// because a carried result is optional — dropping it costs a line of context, while
+	// letting one through costs the property the whole day is built on.
+	if forgesBlockBoundary(out) {
+		return ""
 	}
 	return out
 }
