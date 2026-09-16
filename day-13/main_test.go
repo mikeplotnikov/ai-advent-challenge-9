@@ -57,6 +57,14 @@ func TestStepsMentionedReadsTheShapesAnswersActuallyUse(t *testing.T) {
 		// ordinal enumerating arguments is not a step reference.
 		{"Во-вторых, шаг нужно согласовать", nil},
 		{"Во-первых, это удобно. Во-вторых, быстро.", nil},
+		// The second review wave's trap: ordinary Russian words that merely share a
+		// stem with an ordinal, all of them at home in this task's own register.
+		{"это второстепенный шаг", nil},
+		{"шаг вторичен по важности", nil},
+		{"шаг первично обработан, доработаю позже", nil},
+		{"потратил четверть шага на анализ", nil},
+		{"шагнул второй раз", nil},
+		{"Шаг третий в работе", []int{3}},
 	} {
 		got := stepsMentioned(tc.answer)
 		want := map[int]bool{}

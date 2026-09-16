@@ -215,25 +215,34 @@ var (
 	// Ordinals in every case a Russian answer actually inflects them into: "второй
 	// шаг", "ко второму шагу", "над вторым шагом", "второго шага". The first version
 	// matched only the nominative and therefore scored "перехожу ко второму шагу" as
-	// not naming a step at all — found by the first review wave, on real phrasings.
+	// not naming a step at all.
 	//
-	// The whitespace between the two words is required and punctuation is not allowed
-	// through it: that is what keeps "во-вторых, шаг 1 сделан" from reading as a
-	// reference to step two.
+	// The endings are a CLOSED set, not "stem plus anything". The wildcard version made
+	// the same mistake `names_stage` had already been caught making: it read a stem
+	// instead of a word, so "второстепенный шаг" counted as step two, "шаг первично
+	// обработан" as step one, and "четверть шага" as step four — all ordinary words of
+	// this task's own register. Found by the second review wave.
 	ordinalStepRefs = []struct {
 		re *regexp.Regexp
 		n  int
 	}{
-		{ordinalStep("перв"), 1},
-		{ordinalStep("втор"), 2},
-		{ordinalStep("трет"), 3},
-		// «четвёртый» и «четвертый» — обе орфографии встречаются в ответах.
-		{ordinalStep("четв[её]рт"), 4},
+		{ordinalStep(`перв(?:ый|ого|ому|ым|ом|ая|ой|ую)`), 1},
+		{ordinalStep(`втор(?:ой|ого|ому|ым|ом|ая|ую)`), 2},
+		{ordinalStep(`трет(?:ий|ьего|ьему|ьим|ьем|ья|ью)`), 3},
+		{ordinalStep(`четв[её]рт(?:ый|ого|ому|ым|ом|ая|ой|ую)`), 4},
 	}
 )
 
-func ordinalStep(stem string) *regexp.Regexp {
-	return regexp.MustCompile(`(?i)(?:` + stem + `[а-яё]*\s+шаг[а-яё]*|шаг[а-яё]*\s+` + stem + `[а-яё]*)`)
+// stepWord is "шаг" in the cases it actually takes. Closed, for the same reason the
+// ordinal endings are: "шагнул" is not a step reference.
+const stepWord = `шаг(?:а|у|е|ом|и|ов|ам|ами)?`
+
+// ordinalStep matches an ordinal next to the word "шаг", in either order. The trailing
+// (?:$|\P{L}) on the reversed form is the word boundary Go's \b cannot provide against
+// Cyrillic: without it "шаг второйка" would read as a reference to step two.
+func ordinalStep(word string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:` + word + `\s+` + stepWord + `(?:$|\P{L})|` +
+		stepWord + `\s+` + word + `(?:$|\P{L}))`)
 }
 
 // stepsMentioned collects every step index an answer refers to. It is the core of
