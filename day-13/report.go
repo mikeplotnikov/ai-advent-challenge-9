@@ -19,6 +19,11 @@ import (
 
 const alpha = 0.05
 
+// reportSource is the path RESULTS.md is generated from, as it is written into the
+// file's own header. Kept next to the renderer so the regeneration command in the
+// header, the test that checks the file, and the file itself cannot drift apart.
+const reportSource = "day-13/state.jsonl"
+
 func render(rows []map[string]any, source string) (string, error) {
 	plan, complete, showcase, probes, err := split(rows)
 	if err != nil {
@@ -255,26 +260,38 @@ func writeResume(b *strings.Builder, probes []map[string]any) {
 // printing them after the verdict would be printing them too late.
 func writeControls(b *strings.Builder, passes, totals map[cellKey]int) {
 	b.WriteString("### Контроли\n\n")
-	posPass, posTotal := 0, 0
-	negPass, negTotal := 0, 0
-	for key, total := range totals {
-		if key.criterion == "names_stage" && key.arm == "state" {
-			posPass += passes[key]
-			posTotal += total
+	sum := func(criterion, arm string) (int, int) {
+		p, n := 0, 0
+		for key, total := range totals {
+			if key.criterion == criterion && key.arm == arm {
+				p += passes[key]
+				n += total
+			}
 		}
-		if key.criterion == "right_step" && key.arm == "none" {
-			negPass += passes[key]
-			negTotal += total
-		}
+		return p, n
 	}
-	fmt.Fprintf(b, "- **Положительный** — `names_stage` в руке `state`: %d/%d. "+
-		"Прибор обязан уметь срабатывать, иначе любой ноль ниже ничего не значит.\n", posPass, posTotal)
-	if posTotal > 0 && posPass == 0 {
+
+	stepPass, stepTotal := sum("right_step", "state")
+	fmt.Fprintf(b, "- **Положительный, живой** — `right_step` в руке `state`: %d/%d. "+
+		"Прибор семейства умеет срабатывать на живых ответах, значит нули ниже — это нули "+
+		"поведения, а не молчание детектора.\n", stepPass, stepTotal)
+	if stepTotal > 0 && stepPass == 0 {
 		b.WriteString("  **Контроль провален: прибор не сработал ни разу. Ниже нельзя читать ни одного нуля.**\n")
 	}
+
+	stagePass, stageTotal := sum("names_stage", "state")
+	fmt.Fprintf(b, "- **Положительный, на фикстурах** — `names_stage` в руке `state` дал всего %d/%d, "+
+		"и это число можно читать только потому, что отдельная проверка показывает: критерий "+
+		"срабатывает на каждой из четырёх стадий. `TestNamesStageFiresForEveryStageAndNotOnDomainWords` "+
+		"подаёт ему «Стадия planning, шаг 1/4», «Стадия execution», «Стадия validation», «Стадия done» "+
+		"— и он срабатывает на всех, а на доменных «валидацию токена, проверяю подпись» молчит. "+
+		"То есть модель действительно почти никогда не называет стадию, а не прибор её не видит.\n",
+		stagePass, stageTotal)
+
+	negPass, negTotal := sum("right_step", "none")
 	fmt.Fprintf(b, "- **Отрицательный** — `right_step` в руке `none`: %d/%d. "+
-		"Без истории и без состояния номер текущего шага угадать нечем; заметная доля здесь означала бы "+
-		"сломанный детектор, а не догадливую модель.\n\n", negPass, negTotal)
+		"Без истории и без состояния номер текущего шага угадать нечем; заметная доля здесь "+
+		"означала бы сломанный детектор, а не догадливую модель.\n\n", negPass, negTotal)
 }
 
 func writeDrive(b *strings.Builder, probes []map[string]any) {
@@ -306,13 +323,47 @@ func writeDrive(b *strings.Builder, probes []map[string]any) {
 	}
 	b.WriteString("\n")
 
+	// What the model actually asked for, when it asked for anything. A family whose
+	// headline number is a zero has to show what happened instead of it.
+	asked := map[string]int{}
+	for _, p := range rows {
+		if stage := str(p, "moveStageAsked"); stage != "" {
+			asked[stage]++
+		}
+	}
+	if len(asked) > 0 {
+		b.WriteString("Какие переходы модель просила: ")
+		var parts []string
+		for _, stage := range sortedKeys(asked) {
+			parts = append(parts, fmt.Sprintf("`%s` — %d", stage, asked[stage]))
+		}
+		b.WriteString(strings.Join(parts, ", ") + ".\n\n")
+	}
+
 	illegal := count(rows, func(p map[string]any) bool { return boolOf(p, "moveIllegal") })
 	held := count(rows, func(p map[string]any) bool {
 		return boolOf(p, "moveIllegal") && str(p, "stateAfter") == str(p, "stage")
 	})
-	fmt.Fprintf(b, "Запрещённых переходов модель попросила %d раз; таблица отклонила **%d из %d**, "+
-		"то есть все. Это не статистика, а проверка: стадия после хода сверена со стадией до него "+
-		"в каждой клетке, и отчёт не строится вовсе, если хоть одна разошлась.\n\n", illegal, held, illegal)
+	if illegal == 0 {
+		b.WriteString("Запрещённых переходов модель не попросила ни разу. **Этот ноль читается только " +
+			"потому, что прибор умеет возвращать не-ноль:** `TestTheModelAsksAndTheTableAnswers/" +
+			"незаконный переход отклоняется` подаёт агенту ответ с маркером `[[TRANSITION: done]]` " +
+			"со стадии `planning` и проверяет, что `moveIllegal` встаёт, а стадия не двигается. " +
+			"Без этой проверки ноль здесь был бы неотличим от неработающего детектора.\n\n")
+	} else {
+		fmt.Fprintf(b, "Запрещённых переходов модель попросила %d раз; таблица отклонила **%d из %d**, "+
+			"то есть все. Это не статистика, а проверка: стадия после хода сверена со стадией до него "+
+			"в каждой клетке, и отчёт не строится вовсе, если хоть одна разошлась.\n\n", illegal, held, illegal)
+	}
+
+	// Steps are closed on the model's word, and that is a weaker guarantee than the
+	// transition table gives. Saying so is part of reporting what the day built.
+	stepAsked := count(rows, func(p map[string]any) bool { return boolOf(p, "moveStepAsked") })
+	stepApplied := count(rows, func(p map[string]any) bool { return boolOf(p, "moveStepApplied") })
+	fmt.Fprintf(b, "Закрыть шаг модель просила %d раз, машина закрыла %d. Здесь таблицы нет: шаг "+
+		"закрывается **по слову модели**, и это заведомо более слабая гарантия, чем переход между "+
+		"стадиями. Код проверяет только границы плана — за последний шаг выйти нельзя.\n\n",
+		stepAsked, stepApplied)
 }
 
 func writeCarry(b *strings.Builder, probes []map[string]any) {

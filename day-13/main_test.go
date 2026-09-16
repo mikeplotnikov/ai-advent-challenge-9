@@ -304,8 +304,8 @@ func TestAFailedPositiveControlIsAnnounced(t *testing.T) {
 	for _, r := range rows {
 		if str(r, "kind") == "probe" && str(r, "arm") == "state" {
 			if scores, ok := r["scores"].(map[string]any); ok {
-				if _, has := scores["names_stage"]; has {
-					scores["names_stage"] = false
+				if _, has := scores["right_step"]; has {
+					scores["right_step"] = false
 				}
 			}
 		}
@@ -446,7 +446,10 @@ func TestReportIsWrittenNowhereByHand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, err := render(rows, "state.jsonl")
+	// The label has to be the one the committed file was generated with: it is printed
+	// into the header, so a different string here would report a hand edit that is not
+	// there and hide one that is.
+	text, err := render(rows, reportSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,4 +458,90 @@ func TestReportIsWrittenNowhereByHand(t *testing.T) {
 			"пересоберите: go run ./day-13 -report day-13/state.jsonl > day-13/RESULTS.md")
 	}
 	fmt.Fprintln(os.Stderr, "RESULTS.md совпадает с пересборкой из JSONL")
+}
+
+// A zero needs a positive control. `names_stage` came back 0/20 at the planning stage,
+// and that reading is only allowed if the criterion can fire there at all — so every
+// stage gets its own must-fire fixture, and every stage gets the domain sentence that
+// must not fire.
+func TestNamesStageFiresForEveryStageAndNotOnDomainWords(t *testing.T) {
+	crit, ok := criterionByName("names_stage")
+	if !ok {
+		t.Fatal("критерия names_stage нет")
+	}
+	for _, tc := range []struct {
+		stage  agent.TaskStage
+		fires  []string
+		silent []string
+	}{
+		{agent.StagePlanning,
+			[]string{"Стадия planning, шаг 1/4.", "Мы на этапе планирования.", "State: PLANNING."},
+			[]string{"Вот план: 1) JWT module 2) Token validation.", "Приступаю к шагу 1 — JWT module."}},
+		{agent.StageExecution,
+			[]string{"Стадия execution, шаг 2/4.", "Сейчас этап выполнения.", "State: EXECUTION."},
+			[]string{"Реализую выпуск токенов.", "Переходим к реализации JWT module."}},
+		{agent.StageValidation,
+			[]string{"Стадия validation.", "Мы на этапе проверки.", "State: VALIDATION, шаг 4/4."},
+			// The trap the first run walked into: this task's own second step is
+			// called "Token validation", so the domain says these words constantly.
+			[]string{"Продолжаю валидацию токена, проверяю подпись.",
+				"Проверка срока жизни и подписи access-токена.",
+				"Пишу тесты на валидацию."}},
+		{agent.StageDone,
+			[]string{"Стадия done — задача закрыта.", "Этап завершён.", "State: DONE."},
+			[]string{"Готово, токен выпускается.", "Шаг 4/4 закрыт, пишу revocation list."}},
+	} {
+		t.Run(string(tc.stage), func(t *testing.T) {
+			ctx := scoreCtx{Stage: tc.stage, Step: 1, Total: len(measurePlan)}
+			for _, f := range tc.fires {
+				if !crit.Test(f, ctx) {
+					t.Errorf("обязан сработать на %s, но промолчал: %q", tc.stage, f)
+				}
+			}
+			for _, f := range tc.silent {
+				if crit.Test(f, ctx) {
+					t.Errorf("обязан промолчать на %s, но сработал: %q", tc.stage, f)
+				}
+			}
+		})
+	}
+}
+
+// Re-scoring the recorded answers must be a pure function of the criteria: the same
+// JSONL, today's instruments, and no model call. Without it, fixing an instrument would
+// mean paying for the run again — or, worse, leaving the wrong number published.
+func TestRescoringIsAPureFunctionOfTheRecordedAnswers(t *testing.T) {
+	rows, err := readRows("state.jsonl")
+	if os.IsNotExist(err) {
+		t.Skip("прогона ещё не было")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	once := rescore(rows)
+	twice := rescore(once)
+	a, _ := json.Marshal(once)
+	b, _ := json.Marshal(twice)
+	if string(a) != string(b) {
+		t.Fatal("пересчёт не идемпотентен")
+	}
+	// Every cell that has an answer is re-scored, and the count matches what the
+	// probes promised. A guard that only checks "at least one" is one a cleanup can
+	// walk straight past — day 12 learned that the hard way.
+	promised, got := 0, 0
+	for _, r := range once {
+		if str(r, "kind") != "probe" || str(r, "outcome") != outcomeOK {
+			continue
+		}
+		p, ok := probeByName(str(r, "probe"))
+		if !ok {
+			t.Fatalf("в выгрузке проба %q, которой нет в предрегистрации", str(r, "probe"))
+		}
+		promised += len(p.Criteria)
+		scores, _ := r["scores"].(map[string]any)
+		got += len(scores)
+	}
+	if promised == 0 || promised != got {
+		t.Fatalf("оценок %d, пробы обещали %d", got, promised)
+	}
 }

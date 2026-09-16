@@ -172,7 +172,27 @@ func main() {
 	seed := flag.Int64("seed", 0, "seed перемешивания порядка; 0 — от времени, записывается в план")
 	pilot := flag.Bool("pilot", false, "пилот: по одной клетке на пробу, без демонстраций и без статистики")
 	dump := flag.Bool("dump", false, "выгрузить набор стадий, критерии и сборку запроса для сверки витрины и выйти")
+	rescoreIn := flag.String("rescore", "", "пересчитать вердикты в этом JSONL сегодняшними критериями (нужен -out)")
 	flag.Parse()
+
+	if *rescoreIn != "" {
+		if strings.TrimSpace(*out) == "" {
+			fail(errors.New("-rescore требует -out: исходная выгрузка не переписывается на месте"))
+		}
+		rows, err := readRows(*rescoreIn)
+		if err != nil {
+			fail(err)
+		}
+		scored := make([]any, 0, len(rows))
+		for _, r := range rescore(rows) {
+			scored = append(scored, r)
+		}
+		if err := writeRows(*out, scored, nil); err != nil {
+			fail(err)
+		}
+		fmt.Fprintf(os.Stderr, "пересчитано строк: %d → %s\n", len(scored), *out)
+		return
+	}
 
 	if *dump {
 		if err := writeDefinitions(os.Stdout); err != nil {
@@ -824,4 +844,58 @@ func readRows(path string) ([]map[string]any, error) {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "ошибка:", err)
 	os.Exit(1)
+}
+
+// probeByName finds a probe's pre-registration.
+func probeByName(name string) (probe, bool) {
+	for _, p := range allProbes() {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return probe{}, false
+}
+
+// rescore recomputes every text verdict from the answers already recorded, using today's
+// criteria. It exists so that fixing an instrument never means paying for the run again,
+// and never means leaving a number that the instrument no longer supports.
+//
+// It touches only `scores`: the answers, the usage and the machine's own decisions stay
+// exactly as the run wrote them. Verdicts read from the machine (`asked_*`) are taken
+// from the recorded move fields rather than recomputed from text.
+func rescore(rows []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		copied := map[string]any{}
+		for k, v := range row {
+			copied[k] = v
+		}
+		if str(copied, "kind") == "probe" && str(copied, "outcome") == outcomeOK {
+			if p, ok := probeByName(str(copied, "probe")); ok {
+				if sc, ok := scenarioByName(str(copied, "scenario")); ok {
+					answer := str(copied, "answer")
+					move := agent.TaskMove{
+						StepAsked:    boolOf(copied, "moveStepAsked"),
+						StepApplied:  boolOf(copied, "moveStepApplied"),
+						StageAsked:   agent.TaskStage(str(copied, "moveStageAsked")),
+						StageApplied: boolOf(copied, "moveStageApplied"),
+						Illegal:      boolOf(copied, "moveIllegal"),
+					}
+					scores := map[string]any{}
+					for _, name := range p.Criteria {
+						if isMoveCriterion(name) {
+							scores[name] = scoreMove(name, move)
+							continue
+						}
+						if crit, ok := criterionByName(name); ok {
+							scores[name] = crit.Test(answer, sc.ctx())
+						}
+					}
+					copied["scores"] = scores
+				}
+			}
+		}
+		out = append(out, copied)
+	}
+	return out
 }

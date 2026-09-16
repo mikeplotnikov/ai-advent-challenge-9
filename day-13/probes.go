@@ -243,15 +243,40 @@ func stepsMentioned(answer string) map[int]bool {
 	return found
 }
 
-// stageWords are the words that name a stage. They are narrow on purpose: "план" alone
-// is not evidence of naming the planning stage, because every answer about a plan
-// contains it.
+// stageWords are the words that name a stage.
+//
+// Matching them alone is not enough, and the first run proved it: the task under
+// measurement is an authorization service whose second step is literally "Token
+// validation", so "проверка подписи" and "валидация токена" are ordinary domain prose.
+// Scored as bare words, `names_stage` came back 16/20 in the arm that never received a
+// state block at all — the criterion was reading the subject matter, not the state.
+//
+// So a stage word counts only inside a stage-naming construction: near "стадия",
+// "этап", "stage" or "State:". "Сейчас стадия выполнения" names a stage; "продолжаю
+// валидацию токена" talks about tokens.
 var stageWords = map[agent.TaskStage][]string{
-	agent.StagePlanning:   {"planning", "планирован", "стадия плана", "этап плана"},
+	agent.StagePlanning:   {"planning", "планирован", "план"},
 	agent.StageExecution:  {"execution", "выполнен", "исполнен", "реализац"},
 	agent.StageValidation: {"validation", "валидац", "проверк", "тестирован"},
-	agent.StageDone:       {"done", "заверш", "закрыт", "выполнена полностью"},
+	agent.StageDone:       {"done", "заверш", "закрыт", "готов"},
 }
+
+// stageMarker is the word that turns a topic into a stage name.
+const stageMarker = `(?:стади[яюией]+|этап[еаыу]?|stage|state)`
+
+// namesStage is compiled once per stage: marker then word, or word then marker, within
+// one clause. The gap is bounded and may not cross a sentence or a line, so a marker in
+// one sentence cannot license a domain word in the next.
+var namesStage = func() map[agent.TaskStage]*regexp.Regexp {
+	out := map[agent.TaskStage]*regexp.Regexp{}
+	for stage, words := range stageWords {
+		alt := strings.Join(words, "|")
+		out[stage] = regexp.MustCompile(`(?i)(?:` +
+			stageMarker + `[^.!?\n]{0,25}?(?:` + alt + `)` + `|` +
+			`(?:` + alt + `)[^.!?\n]{0,25}?` + stageMarker + `)`)
+	}
+	return out
+}()
 
 func containsAny(haystack string, needles []string) bool {
 	lower := strings.ToLower(haystack)
@@ -293,9 +318,14 @@ var criteria = []criterion{
 			"Продолжаю работу над задачей.",
 			"Хорошо, двигаемся дальше.",
 			"Сейчас составим план и приступим.",
+			// The domain words without a stage marker. This is the fixture the first
+			// run earned: without it the criterion scored the subject matter.
+			"Продолжаю: валидация токена, проверяю подпись и срок.",
+			"Переходим к реализации JWT module.",
 		},
 		Test: func(answer string, c scoreCtx) bool {
-			return containsAny(answer, stageWords[c.Stage])
+			re, ok := namesStage[c.Stage]
+			return ok && re.MatchString(answer)
 		},
 	},
 	{
