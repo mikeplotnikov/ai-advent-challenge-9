@@ -901,3 +901,11 @@ func (a *Agent) configuredStageSet() StageSet {
 	}
 	return set
 }
+
+// Expect is what the machine waits for while a task sits in a stage — the "ожидаемое
+// действие" of the task text. It is exported so the showcase can be checked against the
+// same words the prompt uses, rather than against a copy of them.
+func (s StageSet) Expect(stage TaskStage) string {
+	r, _ := s.rule(stage)
+	return r.Expect
+}

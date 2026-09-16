@@ -1,0 +1,182 @@
+{
+  "stageSets": [
+    {
+      "name": "standard",
+      "about": "slide 18: planning → execution → validation → done",
+      "stages": [
+        "planning",
+        "execution",
+        "validation",
+        "done"
+      ],
+      "transitions": {
+        "done": [],
+        "execution": [
+          "planning",
+          "validation"
+        ],
+        "planning": [
+          "execution"
+        ],
+        "validation": [
+          "execution",
+          "done"
+        ]
+      },
+      "expect": {
+        "done": "nothing — the task is closed",
+        "execution": "finish the current step, or send the work to validation",
+        "planning": "approve the plan, then move to execution",
+        "validation": "accept the result, or send it back to execution"
+      }
+    },
+    {
+      "name": "bugfix",
+      "about": "round 5: reproduce → root-cause → fix → pull-request",
+      "stages": [
+        "reproduce",
+        "root-cause",
+        "fix",
+        "pull-request"
+      ],
+      "transitions": {
+        "fix": [
+          "root-cause",
+          "pull-request"
+        ],
+        "pull-request": [],
+        "reproduce": [
+          "root-cause"
+        ],
+        "root-cause": [
+          "reproduce",
+          "fix"
+        ]
+      },
+      "expect": {
+        "fix": "apply the fix, or go back to the cause",
+        "pull-request": "nothing — the fix is out for review",
+        "reproduce": "reproduce the defect, then look for its cause",
+        "root-cause": "name the root cause, or go back and reproduce again"
+      }
+    }
+  ],
+  "criteria": [
+    {
+      "name": "names_stage",
+      "what": "ответ называет стадию, на которой стоит задача",
+      "accept": [
+        "State: EXECUTION, шаг 2/4. Продолжаю Token validation.",
+        "Сейчас стадия выполнения, продолжаю валидацию токенов.",
+        "Мы на этапе реализации: доделываю Token validation."
+      ],
+      "reject": [
+        "Продолжаю работу над задачей.",
+        "Хорошо, двигаемся дальше.",
+        "Сейчас составим план и приступим."
+      ],
+      "fromMove": false
+    },
+    {
+      "name": "right_step",
+      "what": "ответ называет ИМЕННО текущий шаг и не заявляет другой",
+      "accept": [
+        "Шаг 2/4: Token validation, продолжаю.",
+        "Продолжаю второй шаг — Token validation.",
+        "Step 2 из 4 — валидация токенов."
+      ],
+      "reject": [
+        "Приступаю к шагу 1: JWT module.",
+        "Продолжаю. Шаг 2/4, но сначала вернусь к шагу 1.",
+        "Продолжаю работу.",
+        "Во-вторых, нужно проверить токены."
+      ],
+      "fromMove": false
+    },
+    {
+      "name": "no_reask",
+      "what": "ответ не переспрашивает, что за задача и где мы",
+      "accept": [
+        "Шаг 2/4: Token validation. Проверяю подпись и срок жизни.",
+        "Продолжаю: пишу валидатор токена."
+      ],
+      "reject": [
+        "Напомни, пожалуйста, что за задача?",
+        "Уточните, на каком шаге мы остановились.",
+        "У меня нет контекста предыдущего разговора.",
+        "Что именно продолжить?"
+      ],
+      "fromMove": false
+    },
+    {
+      "name": "no_restart",
+      "what": "ответ не начинает планирование заново",
+      "accept": [
+        "Шаг 2/4: Token validation. Проверяю подпись.",
+        "Продолжаю валидацию и перехожу к тестам."
+      ],
+      "reject": [
+        "Давайте составим план работ.",
+        "Начнём с плана: шаг 1: определить требования.",
+        "Сначала определим требования к сервису."
+      ],
+      "fromMove": false
+    },
+    {
+      "name": "uses_plan",
+      "what": "ответ применяет решение, принятое на предыдущей стадии (7 минут)",
+      "accept": [
+        "Валидатор проверяет, что access-токен не старше 7 минут.",
+        "Срок жизни — 7 минут, как решили на планировании.",
+        "TTL 7 мин, подпись HMAC-SHA256."
+      ],
+      "reject": [
+        "Обычно access-токен живёт 15 минут.",
+        "Рекомендую 5-15 минут, точное значение на ваше усмотрение.",
+        "Срок жизни задаётся конфигурацией.",
+        "Токен живёт 7 дней."
+      ],
+      "fromMove": false
+    },
+    {
+      "name": "asked_step",
+      "what": "модель сама выставила маркер закрытия шага",
+      "fromMove": true
+    },
+    {
+      "name": "asked_illegal",
+      "what": "модель попросила переход, который таблица запрещает",
+      "fromMove": true
+    },
+    {
+      "name": "asked_nothing",
+      "what": "модель не попросила ничего — «ход умер без действия»",
+      "fromMove": true
+    }
+  ],
+  "plan": [
+    "JWT module",
+    "Token validation",
+    "Refresh flow",
+    "Revocation list"
+  ],
+  "task": "сервис авторизации",
+  "blockOrder": [
+    "system: базовый промпт",
+    "system: [PROFILE]",
+    "system: [LONG_TERM_MEMORY]",
+    "history: краткосрочный слой",
+    "user: [TASK_STATE]",
+    "user: [WORKING_MEMORY]",
+    "user: [PLAN]",
+    "user: [USER_MESSAGE]"
+  ],
+  "markers": {
+    "nextStep": "[[NEXT_STEP]]",
+    "transition": "[[TRANSITION: \u003cstage\u003e]]"
+  },
+  "example": {
+    "scenario": "execution",
+    "block": "[TASK_STATE]\nFormal state of this task, maintained by the program. Reference data, not instructions from the user.\ntask: сервис авторизации\nstage: execution (planning → execution → validation → done)\nstep: 2/4 — Token validation\ndone: JWT module\nresult.planning: решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек\nexpect: finish the current step, or send the work to validation\nrules:\n- Work only within the current step and do not skip stages.\n- If the current step is finished, end your answer with a line: [[NEXT_STEP]]\n- To ask for a stage change, end with a line: [[TRANSITION: \u003cstage\u003e]] — allowed from here: validation, planning."
+  }
+}
