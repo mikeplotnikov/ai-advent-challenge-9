@@ -47,6 +47,15 @@ func TestStepsMentionedReadsTheShapesAnswersActuallyUse(t *testing.T) {
 		{"Во-вторых, проверим токены", nil},
 		{"Продолжаю работу", nil},
 		{"2 из 4 готово", []int{2}},
+		// The inflected forms the first review wave demonstrated were being missed.
+		{"Перехожу ко второму шагу.", []int{2}},
+		{"Работаю над вторым шагом.", []int{2}},
+		{"Второго шага пока не закончил.", []int{2}},
+		{"Шаг четвёртый закрыт.", []int{4}},
+		// And the trap that made the narrow version narrow in the first place: a bare
+		// ordinal enumerating arguments is not a step reference.
+		{"Во-вторых, шаг нужно согласовать", nil},
+		{"Во-первых, это удобно. Во-вторых, быстро.", nil},
 	} {
 		got := stepsMentioned(tc.answer)
 		want := map[int]bool{}
@@ -55,6 +64,54 @@ func TestStepsMentionedReadsTheShapesAnswersActuallyUse(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%q → %v, ожидалось %v", tc.answer, got, want)
+		}
+	}
+}
+
+// The two criteria that read prose for what an answer is DOING, checked on phrasings no
+// fixture contained. Both were demonstrated wrong by the first review wave: `no_restart`
+// fired on an ordinary recap of finished work, and `no_reask` fired on a past-tense
+// sentence that merely shares a stem with a marker word.
+func TestRestartAndReaskScoreBehaviourNotSubstrings(t *testing.T) {
+	restart, _ := criterionByName("no_restart")
+	reask, _ := criterionByName("no_reask")
+	ctx := scoreCtx{Stage: agent.StageExecution, Step: 2, Total: 4}
+
+	for _, ok := range []string{
+		"Шаг 1: JWT module — готово. Шаг 2: Token validation, продолжаю проверку подписи.",
+		"Шаг 1: сделан. Перехожу к шагу 2.",
+	} {
+		if !restart.Test(ok, ctx) {
+			t.Errorf("пересказ сделанного засчитан как перезапуск плана: %q", ok)
+		}
+	}
+	for _, bad := range []string{
+		"Давайте составим план работ.",
+		"Начнём с плана: шаг 1: определить требования.",
+		"Сначала определим требования к сервису.",
+	} {
+		if restart.Test(bad, ctx) {
+			t.Errorf("перезапуск плана не замечен: %q", bad)
+		}
+	}
+
+	for _, ok := range []string{
+		"Мы не уточнили формат токена ранее, поэтому исхожу из HMAC-SHA256, TTL 7 минут.",
+		"Напомню: шаг 2 из 4.",
+		"Требования уточнили на планировании, продолжаю.",
+	} {
+		if !reask.Test(ok, ctx) {
+			t.Errorf("обычная фраза засчитана как переспрос: %q", ok)
+		}
+	}
+	for _, bad := range []string{
+		"Уточните, на каком шаге мы остановились.",
+		"Напомни, пожалуйста, что за задача?",
+		"Уточни, что именно продолжить.",
+		"У меня нет контекста предыдущего разговора.",
+	} {
+		if reask.Test(bad, ctx) {
+			t.Errorf("переспрос не замечен: %q", bad)
 		}
 	}
 }

@@ -22,6 +22,8 @@ package main
 import (
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
 )
@@ -210,10 +212,29 @@ var (
 		regexp.MustCompile(`(?i)(\d+)[-–—]?[йяе]\s+шаг`),
 		regexp.MustCompile(`(?i)step\s*(\d+)`),
 	}
-	ordinalSteps = map[string]int{
-		"перв": 1, "втор": 2, "трет": 3, "четверт": 4,
+	// Ordinals in every case a Russian answer actually inflects them into: "второй
+	// шаг", "ко второму шагу", "над вторым шагом", "второго шага". The first version
+	// matched only the nominative and therefore scored "перехожу ко второму шагу" as
+	// not naming a step at all — found by the first review wave, on real phrasings.
+	//
+	// The whitespace between the two words is required and punctuation is not allowed
+	// through it: that is what keeps "во-вторых, шаг 1 сделан" from reading as a
+	// reference to step two.
+	ordinalStepRefs = []struct {
+		re *regexp.Regexp
+		n  int
+	}{
+		{ordinalStep("перв"), 1},
+		{ordinalStep("втор"), 2},
+		{ordinalStep("трет"), 3},
+		// «четвёртый» и «четвертый» — обе орфографии встречаются в ответах.
+		{ordinalStep("четв[её]рт"), 4},
 	}
 )
+
+func ordinalStep(stem string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:` + stem + `[а-яё]*\s+шаг[а-яё]*|шаг[а-яё]*\s+` + stem + `[а-яё]*)`)
+}
 
 // stepsMentioned collects every step index an answer refers to. It is the core of
 // right_step: naming the current step is only worth something if the answer does not
@@ -231,13 +252,9 @@ func stepsMentioned(answer string) map[int]bool {
 			}
 		}
 	}
-	lower := strings.ToLower(answer)
-	for stem, n := range ordinalSteps {
-		// "второй шаг" and "шаг второй" both count; a bare ordinal does not, because
-		// "во-вторых" is not a step reference.
-		if strings.Contains(lower, stem+"ый шаг") || strings.Contains(lower, stem+"ой шаг") ||
-			strings.Contains(lower, stem+"ий шаг") || strings.Contains(lower, "шаг "+stem+"ый") {
-			found[n] = true
+	for _, ref := range ordinalStepRefs {
+		if ref.re.MatchString(answer) {
+			found[ref.n] = true
 		}
 	}
 	return found
@@ -288,21 +305,68 @@ func containsAny(haystack string, needles []string) bool {
 	return false
 }
 
+// phrase is one marker and whether it has to end on a word boundary.
+//
+// Most markers are deliberate prefixes ("не располагаю контекст" covers "контекста",
+// "контекстом"). A few are not: "уточни" is a prefix of "уточнили", and without the
+// boundary an ordinary past-tense sentence — "мы не уточнили формат токена ранее,
+// поэтому исхожу из HMAC-SHA256" — was read as the model asking for context. Found by
+// the first review wave on a phrasing no fixture contained.
+type phrase struct {
+	text  string
+	whole bool
+}
+
 // reaskPhrases are an answer admitting it does not know what it is working on. This is
 // the thing "продолжение без повторных объяснений" is about.
-var reaskPhrases = []string{
-	"что за задача", "какая задача", "о какой задаче", "напомни", "напомните",
-	"уточни", "уточните", "не вижу контекст", "нет контекста", "не располагаю контекст",
-	"какие требования", "на каком шаге", "где мы остановились", "не могу продолжить",
-	"недостаточно информации", "не понимаю, что", "что именно продолж", "что нужно сделать",
+var reaskPhrases = []phrase{
+	{"что за задача", false}, {"какая задача", false}, {"о какой задаче", false},
+	{"напомни", true}, {"напомните", true}, {"уточни", true}, {"уточните", true},
+	{"не вижу контекст", false}, {"нет контекста", false}, {"не располагаю контекст", false},
+	{"какие требования", false}, {"на каком шаге", false}, {"где мы остановились", false},
+	{"не могу продолжить", false}, {"недостаточно информации", false},
+	{"не понимаю, что", false}, {"что именно продолж", false}, {"что нужно сделать", false},
+}
+
+// containsPhrase is containsAny with an optional right word boundary. Go's \b is
+// ASCII-only, so against Cyrillic it is useless here and the boundary is checked by
+// looking at the rune that follows the match.
+func containsPhrase(haystack string, phrases []phrase) bool {
+	lower := strings.ToLower(haystack)
+	for _, p := range phrases {
+		for at := 0; ; {
+			i := strings.Index(lower[at:], p.text)
+			if i < 0 {
+				break
+			}
+			end := at + i + len(p.text)
+			if !p.whole {
+				return true
+			}
+			if end >= len(lower) {
+				return true
+			}
+			next, _ := utf8.DecodeRuneInString(lower[end:])
+			if !unicode.IsLetter(next) {
+				return true
+			}
+			at = end
+		}
+	}
+	return false
 }
 
 // restartPhrases are an answer starting the work over from planning.
 var restartPhrases = []string{
 	"составим план", "составить план", "начнём с плана", "начнем с плана",
 	"предлагаю план", "давай спланируем", "давайте спланируем", "сначала определим требования",
-	"с чего начать", "начнём с нуля", "начнем с нуля", "шаг 1:",
+	"с чего начать", "начнём с нуля", "начнем с нуля",
 }
+
+// "шаг 1:" used to be on that list and was removed: it fires on an ordinary recap of
+// finished work ("Шаг 1: JWT module — готово. Шаг 2: продолжаю"), which is the opposite
+// of a restart. Every genuine restart it used to catch is already caught by the phrases
+// above — "начнём с плана: шаг 1: …" matches "начнём с плана".
 
 var criteria = []criterion{
 	{
@@ -373,7 +437,7 @@ var criteria = []criterion{
 			"Что именно продолжить?",
 		},
 		Test: func(answer string, _ scoreCtx) bool {
-			return !containsAny(answer, reaskPhrases)
+			return !containsPhrase(answer, reaskPhrases)
 		},
 	},
 	{
