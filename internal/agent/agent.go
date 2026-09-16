@@ -115,6 +115,16 @@ type Config struct {
 	// память", "А профиль это нюансы конкретного пользователя" (chat #2898-2899).
 	Profile *ProfileConfig
 
+	// Task is day 13: the task's state machine — stage, step and expected action —
+	// kept in its own file beside the task's working memory. Nil keeps days 6-12
+	// exactly as they were, down to the bytes of the request.
+	//
+	// It requires Memory, because a task's state needs a task, and the task is day
+	// 11's. It is separate from the working layer for the reason the profile is
+	// separate from the layers: working memory is what the user saved, state is where
+	// the machine is, and a file that mixed the two would let one overwrite the other.
+	Task *TaskConfig
+
 	// Validate is the output policy: it inspects the model's text and returns an
 	// error when the answer is unusable. Nil means "any non-empty answer is fine".
 	// Day 2 learned that response_format guarantees valid JSON and not your schema;
@@ -152,6 +162,11 @@ type Reply struct {
 	// answer. It is also included in the conversation Totals, never hidden as free.
 	FactUsage     Usage
 	FactAttempted bool
+
+	// Move is day 13: what the model asked of the task's state machine on this turn
+	// and what the transition table answered. Zero when the state is off or when the
+	// model asked for nothing.
+	Move TaskMove
 
 	// Profile is which profile answered this turn. Empty when personalization is off.
 	// It is reported rather than assumed because the router may choose a different one
@@ -238,6 +253,10 @@ type Agent struct {
 	checkpoints        map[string][]llm.Message
 	memory             *memoryState
 	profile            *profileState
+	// task is day 13's state machine for the active task. It follows memory.task:
+	// pointing them at different tasks would let the state of one describe the work
+	// of another.
+	task *taskStateState
 	// turnPlan is the plan-answer pipeline's scaffolding for the current turn. It is
 	// deliberately not persisted anywhere: it belongs to one question, and storing it
 	// would make the agent's own planning look like something the user said.
@@ -309,6 +328,9 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if err := validateProfileConfig(cfg.Profile, cfg.Memory); err != nil {
 		return nil, err
 	}
+	if err := validateTaskConfig(cfg.Task, cfg.Memory); err != nil {
+		return nil, err
+	}
 	a := &Agent{cfg: cfg, client: client}
 	a.resetStrategyState()
 	// The day-11 layer file loses its profile section before anything reads it, so
@@ -329,6 +351,13 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if cfg.Profile != nil {
 		a.profile = newProfileState(*cfg.Profile)
 		if err := a.profile.reload(); err != nil {
+			return nil, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
+	if cfg.Task != nil {
+		a.task = newTaskStateState(*cfg.Task)
+		a.syncTaskState()
+		if err := a.task.reload(a.taskUser()); err != nil {
 			return nil, fmt.Errorf("%s: %w", a.Name(), err)
 		}
 	}
@@ -460,6 +489,18 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
 		}
 	}
+	// Day 13: the state is re-read every turn for the same reason the layers and the
+	// profile are, and a message arriving outside any task may open one.
+	if a.task != nil {
+		if err := a.autoStartTask(); err != nil {
+			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+		a.syncTaskState()
+		if err := a.task.reload(a.taskUser()); err != nil {
+			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
+
 	// The plan belongs to this question only; nothing may carry it into the next one.
 	defer func() { a.turnPlan = "" }()
 
@@ -547,6 +588,17 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		a.record(usage, true)
 		return a.persistFailedReply(base, ErrEmptyAnswer, compressionErr)
 	}
+	// Day 13: the control markers come out of the answer before anything else sees it.
+	// Stripping here means the history never holds a marker, so yesterday's answer can
+	// never drive today's machine, and the person reads the answer without the
+	// machinery. An answer that is nothing but a marker moves nothing: the state may
+	// only advance together with work the user can actually read.
+	clean, stepAsked, stageAsked := parseControlMarkers(text)
+	if clean == "" {
+		a.record(usage, true)
+		return a.persistFailedReply(base, ErrEmptyAnswer, compressionErr)
+	}
+	text = clean
 	if a.cfg.Validate != nil {
 		if err := a.cfg.Validate(text); err != nil {
 			a.record(usage, true)
@@ -554,6 +606,10 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		}
 	}
 	a.record(usage, false)
+
+	// The machine answers the model only after the answer is known to be usable: a
+	// rejected answer must not move the state it was rejected from.
+	move := a.applyTaskMove(text, stepAsked, stageAsked)
 
 	// The trim decided by the ceiling takes effect only now, together with the turn
 	// that needed it: history dropped for a call that then failed would be history
@@ -574,6 +630,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	reply.Turn = a.turns
 	reply.Dropped = dropped
 	reply.Reasoned = answer.Reasoned()
+	reply.Move = move
 
 	// Compression runs only after a complete, usable exchange has joined the
 	// conversation. If its own model call fails, the raw messages remain intact and

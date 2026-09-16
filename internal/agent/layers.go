@@ -530,7 +530,8 @@ func (a *Agent) StartTask(name string) error {
 		s.restoreTask(previous)
 		return fmt.Errorf("%s: %w: %w", a.Name(), ErrNotSaved, err)
 	}
-	return nil
+	a.syncTaskState()
+	return a.initTaskState()
 }
 
 // taskState is the active task as it stood before a task operation, restored exactly
@@ -573,7 +574,8 @@ func (a *Agent) UseTask(name string) error {
 		s.restoreTask(previous)
 		return err
 	}
-	return nil
+	a.syncTaskState()
+	return a.reloadTaskState()
 }
 
 // FinishTask deletes the active task's working memory. Nothing moves to long-term
@@ -592,7 +594,16 @@ func (a *Agent) FinishTask() error {
 	if err := s.taskFile.remove(); err != nil {
 		return err
 	}
+	// The state file goes with the working memory: a finished task that left its
+	// stage behind would come back as "execution, шаг 2/4" the next time the same
+	// name is used, describing work that no longer exists.
+	if a.task != nil && a.task.task != "" {
+		if err := a.task.file.remove(); err != nil {
+			return err
+		}
+	}
 	s.setTask("")
+	a.syncTaskState()
 	return nil
 }
 
@@ -685,7 +696,7 @@ func (a *Agent) workingContext() string {
 // With nothing to add it is empty — no tag, no separator — so a request without
 // working memory and without a plan is byte-for-byte the request days 6-11 sent.
 func (a *Agent) turnPrefix() string {
-	blocks := a.workingBlock() + a.planContext()
+	blocks := a.taskStateBlock() + a.workingBlock() + a.planContext()
 	if blocks == "" {
 		return ""
 	}

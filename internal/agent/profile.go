@@ -116,6 +116,14 @@ type Profile struct {
 	User     string          `json:"user"`
 	Name     string          `json:"name"`
 	Pipeline ProfilePipeline `json:"pipeline"`
+	// Stages names the day-13 StageSet this user's tasks run on. Empty means the
+	// application's default. It lives here rather than in a flag because the host put
+	// it here: "дальше профиль регулирует стадии и агентов" (chat #3097), and, in the
+	// round videos, "мы должны ещё уметь настраивать, какие именно стадии мы хотим
+	// вызывать" — the mechanism is day 13, the choice of stages is the profile.
+	//
+	// The field is optional, so a day-12 profile file parses unchanged.
+	Stages string `json:"stages,omitempty"`
 	// The three blocks reuse MemoryEntry and its limits: one line per entry, so a
 	// value can never forge a neighbouring entry or a block tag.
 	Style       []MemoryEntry `json:"style"`
@@ -168,6 +176,7 @@ type ProfileState struct {
 	Path        string
 	RouterPath  string
 	Pipeline    ProfilePipeline
+	Stages      string
 	Inject      []ProfileBlock
 	Route       bool
 	Style       []MemoryEntry
@@ -355,6 +364,11 @@ func validateProfile(p Profile, user, name string) error {
 				"а файл у них один; выберите другое имя или работайте с %q", p.Name, name, p.Name)
 		}
 		return fmt.Errorf("файл принадлежит профилю %q, а не %q", p.Name, name)
+	}
+	if p.Stages != "" {
+		if _, err := LookupStageSet(p.Stages); err != nil {
+			return err
+		}
 	}
 	if _, err := ParseProfilePipeline(string(p.Pipeline)); err != nil {
 		return err
@@ -566,6 +580,20 @@ func (a *Agent) DropPreference(block ProfileBlock, key string) error {
 }
 
 // SetPipeline changes how this profile wants answers produced.
+// SetStageSet points this profile's tasks at a stage set. It changes nothing about
+// tasks already open: a task keeps the automaton it was started on, so switching sets
+// mid-task cannot renumber work that is already under way.
+func (a *Agent) SetStageSet(name string) error {
+	set, err := LookupStageSet(name)
+	if err != nil {
+		return err
+	}
+	return a.changeProfile(func(p *Profile) error {
+		p.Stages = set.Name
+		return nil
+	})
+}
+
 func (a *Agent) SetPipeline(pipeline ProfilePipeline) error {
 	pipeline, err := ParseProfilePipeline(string(pipeline))
 	if err != nil {
@@ -742,6 +770,7 @@ func (a *Agent) ProfileState() ProfileState {
 	state.Path = s.file.path
 	state.RouterPath = s.routerFile.path
 	state.Pipeline = s.pipeline()
+	state.Stages = s.profile.Stages
 	state.Route = s.cfg.Route
 	for _, block := range AllProfileBlocks {
 		if s.inject[block] {
