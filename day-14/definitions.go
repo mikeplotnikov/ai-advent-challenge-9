@@ -22,6 +22,14 @@ type definitions struct {
 	BlockOrder []string `json:"blockOrder"`
 	// Rubric is the four parts of slide 27's refusal, in the slide's order.
 	Rubric []string `json:"rubric"`
+	// Block is the [INVARIANTS] block as it actually travels, and Refusal is the
+	// program's four-part refusal. Both are compared byte for byte by the showcase
+	// parity test: they are what the model and the person respectively see, and a
+	// mirror that differed by a word would demonstrate a different agent.
+	Block   string `json:"block"`
+	Refusal string `json:"refusal"`
+	// RefusalMarker is the line the model is told to end a refusal with.
+	RefusalMarker string `json:"refusalMarker"`
 	// Vocabularies are what each kind of check can see at all. The showcase mirrors
 	// the matcher, and a mirror built against a different word list agrees with Go
 	// right up until the one answer where it does not.
@@ -64,6 +72,10 @@ func verdictCases() []struct {
 		{"within the rules", "Берём Kotlin и Ktor, больше ничего не нужно."},
 		{"over the dependency ceiling", "Нужны Ktor, PostgreSQL, Redis, Kafka и Keycloak."},
 		{"cyrillic and declined", "Перешли с котлина на питон."},
+		// The Cyrillic STEM, which is a different mechanism from a declined full word:
+		// "джаву" does not start with "джава". A showcase mirror that kept the full
+		// word and dropped the stem passed parity until this case existed.
+		{"cyrillic stem", "Джаву мы уже взяли, менять не будем."},
 	}
 }
 
@@ -88,7 +100,14 @@ func buildDefinitions(invPath string) (definitions, error) {
 			"user: [PLAN]",
 			"user: [USER_MESSAGE]",
 		},
-		Rubric: rubricCriteria(),
+		Rubric:        rubricCriteria(),
+		Block:         agent.InvariantsBlock(rules),
+		RefusalMarker: agent.RefusalMarkerExample,
+		Refusal: agent.RefusalText([]agent.Violation{
+			{Name: "stack", About: rules[0].About, Detail: "вне разрешённого набора: Java, Spring", Enforce: agent.EnforceMachine},
+			{Name: "budget", About: "Бизнес-правило: бюджет нулевой, платные сторонние сервисы предлагать нельзя.",
+				Detail: "предлагает платный сервис", Enforce: agent.EnforceJudge},
+		}),
 		Vocabularies: map[string][]string{
 			string(agent.KindStackOnly): agent.VocabularyTerms(agent.KindStackOnly),
 			string(agent.KindMaxDeps):   agent.VocabularyTerms(agent.KindMaxDeps),

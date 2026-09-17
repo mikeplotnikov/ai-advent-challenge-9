@@ -520,7 +520,7 @@ const (
 	markerRefused = "[[REFUSED:"
 	// RefusalMarkerExample is what the model is shown. Exported so the showcase can
 	// mirror the instruction without keeping its own copy of the string.
-	RefusalMarkerExample = markerRefused + " <invariant> " + markerEnd
+	RefusalMarkerExample = markerRefused + " <invariant>" + markerEnd
 )
 
 // ParseRefusalMarker splits a declared refusal from the answer it was declared in. It

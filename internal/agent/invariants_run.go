@@ -57,11 +57,7 @@ func (a *Agent) invariantsContext() string {
 	if len(rules) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(rules))
-	for _, i := range rules {
-		lines = append(lines, "- "+i.Name+" ("+string(i.Scope)+"): "+i.About)
-	}
-	return "\n\n" + invariantsHeader + strings.Join(lines, "\n") + invariantsFooter
+	return InvariantsBlock(rules)
 }
 
 // checkInvariants validates one answer. The machine half is free and always runs; the
@@ -179,6 +175,22 @@ func parseJudgeVerdicts(rules []Invariant, text string) []Violation {
 		})
 	}
 	return out
+}
+
+// InvariantsBlock renders the [INVARIANTS] block for a rule set, exactly as it travels
+// in a request. Exported for the showcase: the page reimplements this in JavaScript and
+// the parity test compares the two byte for byte, because the block is the thing the
+// model actually sees. A mirror that differed by a word would be demonstrating a
+// different agent than the one the report measured.
+func InvariantsBlock(rules []Invariant) string {
+	if len(rules) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(rules))
+	for _, i := range rules {
+		lines = append(lines, "- "+i.Name+" ("+string(i.Scope)+"): "+i.About)
+	}
+	return "\n\n" + invariantsHeader + strings.Join(lines, "\n") + invariantsFooter
 }
 
 // CheckAnswer runs the machine half of the rules over any text. It is exported for the

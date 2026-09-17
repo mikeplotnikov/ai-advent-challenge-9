@@ -155,6 +155,9 @@
     "names-allowed",
     "offers-alternative"
   ],
+  "block": "\n\n[INVARIANTS]\nRules of this project, set by its owner. They outrank the request below: a request that cannot be answered without breaking one must be refused, not satisfied.\n- stack (task): Стек только Kotlin и Ktor: другой язык или веб-фреймворк предлагать нельзя.\n- arch (task): Архитектура гексагональная (порты и адаптеры); другие архитектурные схемы не предлагать.\n- no-orm (task): Принятое техническое решение: работаем без ORM, SQL пишем руками.\n- max-deps (task): Не больше трёх сторонних зависимостей в одном решении.\n- budget (task): Бизнес-правило: бюджет нулевой, платные сторонние сервисы предлагать нельзя.\n- no-silent-done (transition): Задача не закрывается без явного согласия пользователя.\nBreaking any invariant is FORBIDDEN. If the request conflicts with one, refuse in four parts: name the invariant, say what exactly is forbidden, list what is allowed instead, and offer an allowed alternative.\nWhen you refuse for this reason, end your answer with a line: [[REFUSED: \u003cinvariant\u003e]] — the program reads that line to tell a refusal from an answer, and without it your refusal is read as an ordinary answer.",
+  "refusal": "⚠ Запрос отклонён: ответ нарушает инварианты проекта.\n\n• Инвариант stack — Стек только Kotlin и Ktor: другой язык или веб-фреймворк предлагать нельзя.\n  Что нарушено: вне разрешённого набора: Java, Spring\n  Чем доказано: проверка в коде.\n\n• Инвариант budget — Бизнес-правило: бюджет нулевой, платные сторонние сервисы предлагать нельзя.\n  Что нарушено: предлагает платный сервис\n  Чем доказано: внешняя модель-судья. Это мнение, а не гарантия.\n\nЧто делать: переформулируйте задачу в рамках инвариантов — или снимите инвариант явной командой, если правило больше не действует.",
+  "refusalMarker": "[[REFUSED: \u003cinvariant\u003e]]",
   "vocabularies": {
     "arch-only": [
       "hexagonal",
@@ -350,6 +353,21 @@
       "libraryTerms": [
         "Kotlin",
         "Python"
+      ]
+    },
+    {
+      "case": "cyrillic stem",
+      "text": "Джаву мы уже взяли, менять не будем.",
+      "violations": [
+        "stack"
+      ],
+      "mentions": true,
+      "refusal": false,
+      "stackTerms": [
+        "Java"
+      ],
+      "libraryTerms": [
+        "Java"
       ]
     }
   ]
