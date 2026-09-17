@@ -669,6 +669,9 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	if a.invariants != nil {
 		out, invErr := a.enforceInvariants(ctx, messages, input, text)
 		if invErr != nil {
+			// The answer call was already recorded as successful above; only a second
+			// call made inside enforcement can still need charging, and addUsage
+			// ignores a zero usage, so nothing phantom is added when there was none.
 			a.record(out.retryUsage, true)
 			return a.persistFailedReply(base, invErr, compressionErr)
 		}

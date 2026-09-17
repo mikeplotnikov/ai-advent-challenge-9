@@ -1154,3 +1154,142 @@ func TestTheRefusalMarkerNeverReachesThePersonEvenWithCheckingOff(t *testing.T) 
 		})
 	}
 }
+
+// An answer that is nothing but the declaration answers nothing. It must not be
+// delivered — the marker may never reach the person or the history — and it must not be
+// checked, because there is no answer to check.
+//
+// A second review wave reproduced the leak this guards: with checking off the bare
+// marker came back as the reply text and was stored in the conversation verbatim, which
+// is the same defect class the declaration design was introduced to close, in the very
+// marker it introduced.
+func TestAnAnswerThatIsOnlyTheMarkerIsAnEmptyAnswer(t *testing.T) {
+	for _, tune := range []struct {
+		name string
+		fn   func(*InvariantConfig)
+	}{
+		{"checking on", nil},
+		{"checking off", func(c *InvariantConfig) { c.Check = false }},
+	} {
+		t.Run(tune.name, func(t *testing.T) {
+			dir := t.TempDir()
+			c := &invCaller{replies: []string{"[[REFUSED: stack]]"}}
+			a := invAgent(t, c, dir, tune.fn)
+			mustAdd(t, a, stackOnlyKotlin())
+
+			reply, err := a.Ask(context.Background(), "давай на Java")
+			if !errors.Is(err, ErrEmptyAnswer) {
+				t.Fatalf("ожидался ErrEmptyAnswer, получено %v (текст %q)", err, reply.Text)
+			}
+			if strings.Contains(reply.Text, markerRefused) {
+				t.Fatalf("маркер доставлен пользователю: %q", reply.Text)
+			}
+			for _, m := range a.stack {
+				if strings.Contains(m.Content, markerRefused) {
+					t.Fatalf("маркер попал в историю: %q", m.Content)
+				}
+			}
+		})
+	}
+}
+
+// The headline fix of the first review wave, and — per this project's own history —
+// exactly the place a second wave looks: the fix shipped without a test, and reverting
+// it left the whole suite green.
+//
+// A retried answer is the one the person receives, so its day-13 markers must be
+// stripped from it and must be the ones that move the machine. The first answer was
+// rejected; its intent goes with it.
+func TestTheRetriedAnswerIsTheOneThatMovesTheMachine(t *testing.T) {
+	dir := t.TempDir()
+	c := &invCaller{replies: []string{
+		// Rejected: proposes the forbidden stack, and asks for a transition on its way.
+		"Берём Java со Spring Boot.\n[[TRANSITION: execution]]",
+		// Accepted: within the rules, and closes the current step.
+		"Берём Kotlin и Ktor.\n[[NEXT_STEP]]",
+	}}
+	a := invAgent(t, c, dir, func(cfg *InvariantConfig) { cfg.Retry = true })
+	mustAdd(t, a, stackOnlyKotlin())
+	planOf(t, a, "первый", "второй")
+
+	reply, err := a.Ask(context.Background(), "чем писать сервис")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Invariants.Refused || !reply.Invariants.Retried {
+		t.Fatalf("ожидался успешный повтор: %+v", reply.Invariants)
+	}
+	// 1. The marker is gone from what the person reads and from what history keeps.
+	if containsControlMarker(reply.Text) {
+		t.Fatalf("маркер доставлен пользователю:\n%s", reply.Text)
+	}
+	for _, m := range a.stack {
+		if containsControlMarker(m.Content) {
+			t.Fatalf("маркер попал в историю: %q", m.Content)
+		}
+	}
+	// 2. The machine moved on the SECOND answer's intent — the step it closed.
+	if !reply.Move.StepApplied {
+		t.Fatalf("шаг второго ответа не закрыт: %+v", reply.Move)
+	}
+	if v := a.TaskState(); v.Step != 2 {
+		t.Fatalf("шаг %d, ожидался 2", v.Step)
+	}
+	// 3. And NOT on the first answer's: the rejected transition never happened.
+	if reply.Move.StageApplied || reply.Move.StageAsked != "" {
+		t.Fatalf("переход отброшенного ответа выполнен: %+v", reply.Move)
+	}
+	if got := a.TaskState().State; got != StagePlanning {
+		t.Fatalf("стадия %q — машину двинул отброшенный ответ", got)
+	}
+}
+
+// The mirror case: when the program refuses, nothing of the model's text is delivered,
+// so neither answer's markers may move anything.
+func TestARefusalDiscardsTheMarkersOfBothAttempts(t *testing.T) {
+	dir := t.TempDir()
+	c := &invCaller{replies: []string{
+		"Берём Java.\n[[NEXT_STEP]]",
+		"Всё равно Java.\n[[NEXT_STEP]]",
+	}}
+	a := invAgent(t, c, dir, func(cfg *InvariantConfig) { cfg.Retry = true })
+	mustAdd(t, a, stackOnlyKotlin())
+	planOf(t, a, "первый", "второй")
+
+	reply, err := a.Ask(context.Background(), "чем писать сервис")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !reply.Invariants.Refused {
+		t.Fatal("ожидался отказ")
+	}
+	if reply.Move.StepApplied {
+		t.Fatal("отказ закрыл шаг")
+	}
+	if v := a.TaskState(); v.Step != 1 {
+		t.Fatalf("шаг сдвинулся до %d при отказе", v.Step)
+	}
+}
+
+// The verdict words are matched case-insensitively, and that is a claim about the judge
+// model's formatting discipline, not about ours. Without these cases a case-sensitive
+// comparison passed the whole suite.
+func TestAJudgeVerdictIsReadWhateverItsCasing(t *testing.T) {
+	rules := []Invariant{
+		{Name: "budget", About: "бюджет", Scope: ScopeTask, Kind: KindJudge, Ask: "?"},
+		{Name: "tone", About: "тон", Scope: ScopeGlobal, Kind: KindJudge, Ask: "?"},
+	}
+	lower := parseJudgeVerdicts(rules, "budget: violation — платный сервис\ntone: ok")
+	if len(lower) != 1 || lower[0].Name != "budget" {
+		t.Fatalf("вердикт в нижнем регистре не разобран: %+v", lower)
+	}
+	if lower[0].Detail != "платный сервис" {
+		t.Fatalf("деталь вердикта в нижнем регистре: %q", lower[0].Detail)
+	}
+	// A verdict with nothing after the word still parses rather than slicing past the
+	// end of the string.
+	bare := parseJudgeVerdicts(rules, "budget: VIOLATION")
+	if len(bare) != 1 || bare[0].Detail == "" {
+		t.Fatalf("голый VIOLATION разобран как %+v", bare)
+	}
+}

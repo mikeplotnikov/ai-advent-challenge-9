@@ -841,12 +841,16 @@ func wordBoundary(s string, start, end int, cyrillicAlias bool) bool {
 }
 
 // cyrillicByteAt reports whether the UTF-8 sequence starting at i is a Cyrillic letter.
-// The block is U+0400-U+04FF, encoded as 0xD0/0xD1 followed by a continuation byte.
+// The block U+0400-U+04FF is encoded with lead bytes 0xD0-0xD3; an earlier version
+// checked only 0xD0/0xD1 while its comment claimed the whole block, which covers
+// U+0400-U+047F and leaves out U+0480-U+04FF. No alias in either vocabulary uses that
+// upper range today, so nothing was actually missed — but a comment that overclaims is
+// how the next reader is misled, so the code was widened to match it.
 func cyrillicByteAt(s string, i int) bool {
 	if i < 0 || i+1 >= len(s) {
 		return false
 	}
-	return (s[i] == 0xD0 || s[i] == 0xD1) && s[i+1] >= 0x80 && s[i+1] <= 0xBF
+	return s[i] >= 0xD0 && s[i] <= 0xD3 && s[i+1] >= 0x80 && s[i+1] <= 0xBF
 }
 
 // isCyrillic reports whether an alias is written in Cyrillic at all.

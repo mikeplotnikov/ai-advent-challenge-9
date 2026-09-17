@@ -330,13 +330,22 @@ func (a *Agent) enforceInvariants(ctx context.Context, messages []llm.Message, q
 	// this design leaked it in exactly that arm, and the leak was visible only in the
 	// journal, which is why the journal exists.
 	clean, declared, rule := ParseRefusalMarker(answer)
-	if clean != "" {
-		out.text = clean
-		out.report.Declared = declared
-		out.report.DeclaredRule = rule
+	if clean == "" {
+		// An answer that is nothing but the marker refuses nothing and answers nothing.
+		// It cannot be delivered, because the marker must never reach the person, and
+		// it cannot be checked, because there is no answer to check. So it is what it
+		// is: an empty answer.
+		//
+		// The comment this replaces said the caller's empty-answer handling would see
+		// it. It would not: that check runs before enforcement, on the day-13 markers
+		// only. A second review wave reproduced the leak — marker delivered verbatim
+		// and stored in history — which is the same defect class this design was
+		// introduced to close, in the very marker it introduced.
+		return out, ErrEmptyAnswer
 	}
-	// An answer that is nothing but a marker refuses nothing and answers nothing; it is
-	// left exactly as it came so the caller's empty-answer handling sees it.
+	out.text = clean
+	out.report.Declared = declared
+	out.report.DeclaredRule = rule
 
 	if !a.invariants.cfg.Check {
 		return out, nil

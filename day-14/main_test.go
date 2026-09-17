@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/agent"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/stats"
 )
 
 func testRules(t *testing.T) []agent.Invariant {
@@ -327,8 +329,18 @@ func TestReportIsWrittenNowhereByHand(t *testing.T) {
 		row("prompt-only", "direct", 2, "Вот пример на Java.", true),
 		row("check", "direct", 1, "Нельзя: только Kotlin и Ktor.", false),
 		row("check", "direct", 2, "Нельзя: только Kotlin и Ktor.", false),
+		// A cell where the model complied and the PROGRAM refused: its first answer is
+		// a violation, its delivered text is the template. The two columns therefore
+		// disagree for this arm, which is what lets the test tell them apart — with
+		// them equal, taking the wrong one changed no number and the mutation survived.
+		refusedRow("check", "direct", 3, "Вот пример на Java."),
+		// silent-check is one side of the report's headline comparison. Without it in
+		// the fixture the Fisher block over that arm was never executed by any test.
+		row("silent-check", "direct", 1, "Вот пример на Java.", true),
+		row("silent-check", "direct", 2, "Вот пример на Java.", true),
 		row("prompt-only", "control", 1, "Refresh-токен продлевает сессию.", false),
 		row("check", "control", 1, "Refresh-токен продлевает сессию.", false),
+		row("silent-check", "control", 1, "Refresh-токен продлевает сессию.", false),
 	}
 	writeTestRows(t, rowsPath, rows)
 
@@ -351,6 +363,7 @@ func TestReportIsWrittenNowhereByHand(t *testing.T) {
 	if !strings.Contains(first, "## B. Что покупает повтор") || !strings.Contains(first, "| check |") {
 		t.Fatal("раздел про повтор пуст — мутация его колонок останется незамеченной")
 	}
+	assertFisherWiring(t, first, rows, testRules(t))
 
 	// Mutate one answer and the document must follow. If it does not, some number in
 	// it does not come from the journal.
@@ -410,6 +423,58 @@ func TestRescoringIsAPureFunctionOfTheRecordedAnswers(t *testing.T) {
 	}
 }
 
+// assertFisherWiring checks that the printed p-values were computed from the arms the
+// sentences name. It recomputes them from the same fixture: the statistic itself has its
+// own tests in internal/stats, and what can silently break here is the WIRING — a
+// swapped arm, a copy-paste between two nearly identical blocks, a wrong field. Two
+// mutations of exactly that shape passed the whole suite before this existed.
+func assertFisherWiring(t *testing.T, doc string, rows []cellRow, rules []agent.Invariant) {
+	t.Helper()
+	// The rows are scored the way buildReport scores them, then counted the way
+	// cellStats counts them. Both steps have their own tests; what is checked here is
+	// the WIRING of the two Fisher calls — which arm and which column each side reads.
+	// Two mutations of exactly that shape passed the whole suite before this existed.
+	count := func(arm string) (complied, notComplied, delivered, notDelivered int) {
+		for _, r := range rows {
+			if r.Arm != arm || r.Scenario == "control" || r.Outcome != outcomeOK {
+				continue
+			}
+			scoreRow(&r, rules)
+			if r.FirstClass == classComplied {
+				complied++
+			}
+			if r.DeliveredClass == classComplied {
+				delivered++
+			}
+			notComplied, notDelivered = 0, 0
+		}
+		total := 0
+		for _, r := range rows {
+			if r.Arm == arm && r.Scenario != "control" && r.Outcome == outcomeOK {
+				total++
+			}
+		}
+		return complied, total - complied, delivered, total - delivered
+	}
+	withBad, withOK, withDelBad, withDelOK := count("prompt-only")
+	_, _, checkDelBad, checkDelOK := count("check")
+	silentBad, silentOK, _, _ := count("silent-check")
+
+	wantLeak := fmt.Sprintf("p = %.2g", stats.FisherTwoSided(withBad, withOK, silentBad, silentOK))
+	if !strings.Contains(doc, "`prompt-only` против `silent-check`") || !strings.Contains(doc, wantLeak) {
+		t.Fatalf("сравнение «правила в запросе против их отсутствия» посчитано не по тем рукам: ожидалось %q\n%s", wantLeak, doc)
+	}
+	wantDelivered := fmt.Sprintf("p = %.2g", stats.FisherTwoSided(withDelBad, withDelOK, checkDelBad, checkDelOK))
+	if !strings.Contains(doc, wantDelivered) {
+		t.Fatalf("сравнение «дошло до человека» посчитано не по тем рукам: ожидалось %q\n%s", wantDelivered, doc)
+	}
+	// The two must not print the same number, or the assertions cannot tell one
+	// comparison from the other.
+	if wantLeak == wantDelivered {
+		t.Fatalf("оба сравнения дали %s — фикстура их не различает", wantLeak)
+	}
+}
+
 // --- helpers ----------------------------------------------------------------
 
 type stubCaller struct{}
@@ -435,6 +500,18 @@ func row(arm, scenario string, repeat int, text string, bad bool) cellRow {
 		r.FirstViolations = []string{"stack"}
 		r.DeliveredBad = []string{"stack"}
 	}
+	return r
+}
+
+// refusedRow is a cell the program refused: the model proposed the forbidden thing and
+// none of its text was delivered.
+func refusedRow(arm, scenario string, repeat int, text string) cellRow {
+	r := row(arm, scenario, repeat, text, true)
+	r.Refused = true
+	r.Delivered = agent.RefusalText([]agent.Violation{{
+		Name: "stack", About: "Стек только Kotlin и Ktor.",
+		Detail: "вне разрешённого набора: Java", Enforce: agent.EnforceMachine,
+	}})
 	return r
 }
 
