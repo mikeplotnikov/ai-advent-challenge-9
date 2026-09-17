@@ -125,6 +125,18 @@ type Config struct {
 	// the machine is, and a file that mixed the two would let one overwrite the other.
 	Task *TaskConfig
 
+	// Invariants is day 14: the rules the agent may not break — stack, architecture,
+	// decisions already taken, business rules and bans on the state machine's own
+	// moves. Nil keeps days 6-13 exactly as they were, down to the bytes of the
+	// request.
+	//
+	// It is separate from Profile because the two are enforced differently and that
+	// difference is the day: a profile constraint is a preference of the role and
+	// lives only in the prompt, an invariant is a law of the task and is checked by
+	// the program after the answer. Slide 29's antipattern 03 is the whole reason
+	// the second half exists.
+	Invariants *InvariantConfig
+
 	// Validate is the output policy: it inspects the model's text and returns an
 	// error when the answer is unusable. Nil means "any non-empty answer is fine".
 	// Day 2 learned that response_format guarantees valid JSON and not your schema;
@@ -184,6 +196,16 @@ type Reply struct {
 	// Memory is which layers travelled in this request and what they weighed by the
 	// local estimate. Zero when layers are off.
 	Memory MemorySent
+
+	// Invariants is day 14: what the rules said about this answer. Zero when they
+	// are off. When Refused is set, Text is the program's refusal and not the
+	// model's answer — the caller must be able to tell those apart, because one of
+	// them is the measurement.
+	Invariants InvariantReport
+	// RetryUsage is the second attempt the violation bought, priced on its own. Like
+	// PlanUsage and the judge's spend it is kept apart from the answer's: the day's
+	// question is what enforcement costs, and a merged total cannot answer it.
+	RetryUsage Usage
 }
 
 // MemorySent is the per-request view of day 11's layers: the answer to "what did the
@@ -257,6 +279,14 @@ type Agent struct {
 	// pointing them at different tasks would let the state of one describe the work
 	// of another.
 	task *taskStateState
+	// invariants is day 14's rule set. It follows memory.task for the same reason
+	// task does: a rule scoped to one task must not judge the answers of another.
+	invariants *invariantState
+	// judgeSpend is what the outside opinion cost, kept apart from the answer's own
+	// spend. The host's warning is about this number specifically — "может быть
+	// адски дорого и нивелировать весь эффект от ИИ" (#3156) — and a total that
+	// mixed it with the answer could not be used to check him.
+	judgeSpend Totals
 	// turnPlan is the plan-answer pipeline's scaffolding for the current turn. It is
 	// deliberately not persisted anywhere: it belongs to one question, and storing it
 	// would make the agent's own planning look like something the user said.
@@ -331,6 +361,9 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	if err := validateTaskConfig(cfg.Task, cfg.Memory); err != nil {
 		return nil, err
 	}
+	if err := validateInvariantConfig(cfg.Invariants, cfg.Memory); err != nil {
+		return nil, err
+	}
 	a := &Agent{cfg: cfg, client: client}
 	a.resetStrategyState()
 	// The day-11 layer file loses its profile section before anything reads it, so
@@ -356,8 +389,15 @@ func New(client Caller, cfg Config) (*Agent, error) {
 	}
 	if cfg.Task != nil {
 		a.task = newTaskStateState(*cfg.Task)
-		a.syncTaskState()
+		a.syncActiveTask()
 		if err := a.task.reload(a.taskUser()); err != nil {
+			return nil, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
+	if cfg.Invariants != nil {
+		a.invariants = newInvariantState(*cfg.Invariants)
+		a.syncInvariantTask()
+		if err := a.invariants.reload(); err != nil {
 			return nil, fmt.Errorf("%s: %w", a.Name(), err)
 		}
 	}
@@ -451,6 +491,10 @@ func (a *Agent) Reset() error {
 	a.summary = ""
 	a.compressedMessages = 0
 	a.summarySpend = Totals{}
+	// The judge's spend belongs to the conversation that paid for it, exactly like the
+	// summary's: carrying it into the next one would report what enforcement cost
+	// yesterday as what it costs today, and that number is the day's whole question.
+	a.judgeSpend = Totals{}
 	a.resetStrategyState()
 	a.turns = 0
 	a.restored = Restored{}
@@ -495,8 +539,18 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		if err := a.autoStartTask(); err != nil {
 			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
 		}
-		a.syncTaskState()
+		a.syncActiveTask()
 		if err := a.task.reload(a.taskUser()); err != nil {
+			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
+		}
+	}
+	// Day 14: the rules are re-read every turn for the reason everything else here is
+	// — a rule added from another terminal between two questions must bind the next
+	// answer, not the one after it. It runs after the task is settled, because a
+	// task-scoped rule follows whichever task is now open.
+	if a.invariants != nil {
+		a.syncInvariantTask()
+		if err := a.invariants.reload(); err != nil {
 			return Reply{}, fmt.Errorf("%s: %w", a.Name(), err)
 		}
 	}
@@ -606,6 +660,28 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 		}
 	}
 	a.record(usage, false)
+
+	// Day 14: the answer is judged against the invariants before it becomes anything
+	// — before it can move the task, join the history or reach the person. That is
+	// slide 26's Validate step, and it sits ahead of all three for one reason: an
+	// answer that broke a rule must leave no trace that a later turn could read as
+	// precedent.
+	if a.invariants != nil {
+		final, report, retryUsage, invErr := a.enforceInvariants(ctx, messages, input, text)
+		if invErr != nil {
+			a.record(retryUsage, true)
+			return a.persistFailedReply(base, invErr, compressionErr)
+		}
+		base.Invariants = report
+		base.RetryUsage = retryUsage
+		if report.Refused {
+			// A refused answer moves nothing. The markers it carried are discarded
+			// with it: a model that asks to close a step in the same breath as it
+			// breaks a rule does not get the step.
+			stepAsked, stageAsked = false, ""
+		}
+		text = final
+	}
 
 	// The machine answers the model only after the answer is known to be usable: a
 	// rejected answer must not move the state it was rejected from.

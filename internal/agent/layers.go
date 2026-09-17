@@ -534,7 +534,7 @@ func (a *Agent) StartTask(name string) error {
 		s.restoreTask(previous)
 		return fmt.Errorf("%s: %w: %w", a.Name(), ErrNotSaved, err)
 	}
-	a.syncTaskState()
+	a.syncActiveTask()
 	return a.initTaskState()
 }
 
@@ -578,7 +578,7 @@ func (a *Agent) UseTask(name string) error {
 		s.restoreTask(previous)
 		return err
 	}
-	a.syncTaskState()
+	a.syncActiveTask()
 	return a.reloadTaskState()
 }
 
@@ -606,8 +606,16 @@ func (a *Agent) FinishTask() error {
 			return err
 		}
 	}
+	// Day 14: the task's own laws die with it. Leaving the file behind would hand a
+	// later task of the same name the invariants of a task that no longer exists —
+	// and it would do it silently, because nothing else mentions that file.
+	if a.invariants != nil && a.invariants.task != "" {
+		if err := a.invariants.taskFile.remove(); err != nil {
+			return err
+		}
+	}
 	s.setTask("")
-	a.syncTaskState()
+	a.syncActiveTask()
 	return nil
 }
 

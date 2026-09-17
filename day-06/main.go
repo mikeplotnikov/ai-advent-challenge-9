@@ -89,6 +89,11 @@ func main() {
 		taskAuto  = flag.Bool("task-auto", false, "заводить задачу с первого же сообщения, если активной нет (с -task-state)")
 		autoName  = flag.String("task-auto-name", "task", "имя задачи, которую заводит -task-auto")
 
+		// День 14 — инварианты: правила, которые нарушать нельзя.
+		invariants = flag.Bool("invariants", false, "инварианты дня 14: правила проекта, которые агент не имеет права нарушать (с -layers)")
+		invMode    = flag.String("inv", "inject,check", "что включено в инвариантах, через запятую: inject — правила уходят в запрос, check — ответ проверяется кодом, retry — один повтор при нарушении, judge — внешняя модель-судья (с -invariants)")
+		invLoad    = flag.String("inv-load", "", "файл с набором инвариантов, загрузить при старте (с -invariants)")
+
 		ctxProbe  = flag.Int("context-probe", 0, "замер: столько ходов подряд, с записью роста контекста и доли кэша")
 		probeSalt = flag.String("probe-salt", "", "метка в начале системного промпта замера: делает префикс уникальным, чтобы померить холодный кэш ещё раз")
 		probeOut  = flag.String("probe-rows", "day-07/context-probe-split.jsonl", "куда дописывать строки замера контекста")
@@ -114,6 +119,7 @@ func main() {
 	var memory *agent.MemoryConfig
 	var profile *agent.ProfileConfig
 	var task13 *agent.TaskConfig
+	var inv14 *agent.InvariantConfig
 	if *layers {
 		switch {
 		case *noMemory:
@@ -143,9 +149,23 @@ func main() {
 				}
 			}
 		}
+		if *invariants {
+			cfg, err := parseInvariantMode(*invMode)
+			if err != nil {
+				fail(err)
+			}
+			cfg.Dir, cfg.User = *memoryDir, *user
+			inv14 = cfg
+		} else {
+			for _, name := range []string{"inv", "inv-load"} {
+				if flagWasSet(name) {
+					fail(fmt.Errorf("-%s действует только вместе с -invariants", name))
+				}
+			}
+		}
 	} else {
 		for _, name := range []string{"user", "memory-dir", "task", "inject", "profile", "profile-route",
-			"task-state", "stages", "task-auto", "task-auto-name"} {
+			"task-state", "stages", "task-auto", "task-auto-name", "invariants", "inv", "inv-load"} {
 			if flagWasSet(name) {
 				fail(fmt.Errorf("-%s действует только вместе с -layers", name))
 			}
@@ -232,6 +252,7 @@ func main() {
 	cfg.Memory = memory
 	cfg.Profile = profile
 	cfg.Task = task13
+	cfg.Invariants = inv14
 
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
@@ -265,6 +286,14 @@ func main() {
 		fail(err)
 	}
 	announceMemory(a, store)
+
+	// Day 14: a set handed in on the command line is loaded before the first question,
+	// because a rule that arrives after an answer did not govern that answer.
+	if *invLoad != "" {
+		if err := loadInvariantFile(a, *invLoad); err != nil {
+			fail(err)
+		}
+	}
 
 	if *ctxProbe > 0 {
 		if err := runContextProbe(a, *ctxProbe, *probeOut); err != nil {
@@ -534,6 +563,12 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 		}
 		line := strings.TrimSpace(in.Text())
 		if handled, err := handleProfileCommand(a, in, line); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "ошибка:", err)
+			}
+			continue
+		}
+		if handled, err := handleInvariantCommand(a, line); handled {
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "ошибка:", err)
 			}

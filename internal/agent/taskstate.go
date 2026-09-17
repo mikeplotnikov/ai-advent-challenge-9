@@ -452,6 +452,7 @@ func containsControlMarker(s string) bool {
 // already filtering, and a per-block list would have left exactly the gap it did.
 var blockTags = []string{
 	"[USER_MESSAGE]", taskStateTag, "[WORKING_MEMORY]", "[LONG_TERM_MEMORY]", "[PROFILE]", "[PLAN]",
+	invariantsTag, retryTag,
 }
 
 // forgesBlockBoundary reports whether model-written text would impersonate a section of
@@ -480,6 +481,11 @@ type TaskMove struct {
 	// Illegal is a stage change the transition table refused. It is the measurement of
 	// antipattern 02: the model asked to skip, the code said no.
 	Illegal bool
+	// Blocked is a stage change the table allowed and an invariant of day 14 refused —
+	// typically "не закрывать задачу без согласия пользователя" (chat #3152). Kept
+	// apart from Illegal because they measure different things: an edge that does not
+	// exist, against an edge the project will not let the model take alone.
+	Blocked bool
 	// Note is one line for the interface, in Russian like the rest of the interface.
 	Note string
 }
@@ -759,13 +765,19 @@ func (a *Agent) TaskGo(target TaskStage, carry string) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.transition(s, target, carry)
+	_, err = a.transition(s, target, carry, false)
 	return err
 }
 
 // transition is shared by the user's command and the model's request so that both are
 // judged by one table. It returns the stage left behind.
-func (a *Agent) transition(s *taskStateState, target TaskStage, carry string) (TaskStage, error) {
+//
+// byModel says who asked, and only day 14 cares: a transition invariant with actor
+// "model" is the host's "запрет ... переходов без согласия пользователя" (#3152), and
+// the user's own command IS that consent. Nothing else in this package branches on the
+// caller, so the table stays the single judge of what the machine permits — the
+// invariant only narrows it further.
+func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, byModel bool) (TaskStage, error) {
 	target = TaskStage(strings.ToLower(strings.TrimSpace(string(target))))
 	from := s.ctx.State
 	if _, ok := s.set.rule(target); !ok {
@@ -780,6 +792,14 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string) (T
 		}
 		return from, fmt.Errorf("%s: %w: %s → %s; из %s разрешено: %s",
 			a.Name(), ErrTransition, from, target, from, allowed)
+	}
+	// Day 14 narrows the table: a move the automaton permits may still be forbidden by
+	// an invariant of this task. The order matters — the table answers first, so an
+	// illegal move is still reported as illegal and not as an invariant violation.
+	if a.invariants != nil {
+		if v, bad := transitionViolation(a.invariants.transitionRules(), from, target, byModel); bad {
+			return from, fmt.Errorf("%s: %w: %s (%s)", a.Name(), ErrInvariantViolated, v.Detail, v.Name)
+		}
 	}
 	next := s.ctx.clone()
 	if summary := summariseForCarry(carry); summary != "" {
@@ -885,11 +905,18 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 		}
 	}
 	if stage != "" {
-		from, err := a.transition(s, stage, text)
+		from, err := a.transition(s, stage, text, true)
 		switch {
 		case err == nil:
 			move.StageApplied = true
 			notes = append(notes, fmt.Sprintf("переход %s → %s выполнен", from, stage))
+		case errors.Is(err, ErrInvariantViolated):
+			// The table allowed it and an invariant did not. It is reported apart
+			// from an illegal move because the two are different findings: one says
+			// the automaton has no such edge, the other says the project forbids
+			// taking it without the user.
+			move.Blocked = true
+			notes = append(notes, "переход запрещён инвариантом: "+err.Error())
 		case errors.Is(err, ErrTransition), errors.Is(err, ErrUnknownStage):
 			// The model asked for a move the table does not allow. This is the number
 			// antipattern 02 is about, and the refusal is deterministic.
@@ -901,6 +928,16 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 	}
 	move.Note = strings.Join(notes, "; ")
 	return move
+}
+
+// syncActiveTask points everything that is scoped to a task at the task the memory
+// layer considers active: day 13's state machine and day 14's invariants. It is the
+// only caller of either sync, and that is on purpose — when day 14 added a second
+// task-scoped thing, five call sites updating one of them and not the other was the
+// obvious way to end up judging one task's answers by another task's laws.
+func (a *Agent) syncActiveTask() {
+	a.syncTaskState()
+	a.syncInvariantTask()
 }
 
 // syncTaskState points the state machine at whatever task the memory layer considers

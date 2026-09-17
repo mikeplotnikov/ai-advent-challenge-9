@@ -870,7 +870,7 @@ func TestAFailedWriteLeavesTheAgentOnTheStageTheDiskHolds(t *testing.T) {
 
 	// a's own transition is legal per the transition table (planning -> execution, the
 	// stale view it read at reload time); only the concurrent write makes it stale.
-	_, err := a.transition(s, StageExecution, "a's own result")
+	_, err := a.transition(s, StageExecution, "a's own result", false)
 	if err == nil {
 		t.Fatalf("expected a write-conflict error, transition succeeded silently")
 	}

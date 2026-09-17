@@ -61,7 +61,12 @@ func (a *Agent) ContextState() ContextState {
 // them because it changes less often than a summary and more often than a profile, and
 // the provider caches whatever prefix stays put.
 func (a *Agent) contextSystemPrompt() string {
-	extra := a.profileContext() + a.longTermContext() + a.summaryContext() + a.factsContext()
+	// Day 14 puts the invariants ahead of everything else the request carries. The
+	// order is stability-first, and it is measured rather than guessed: day 12 found
+	// that a block which changes every turn costs 64% more money when it sits at the
+	// front. Invariants change less often than a profile, a layer or a summary, so
+	// they are the cheapest thing to put first — and slide 26 draws them first too.
+	extra := a.invariantsContext() + a.profileContext() + a.longTermContext() + a.summaryContext() + a.factsContext()
 	if a.cfg.SystemPrompt == "" {
 		return strings.TrimSpace(extra)
 	}
