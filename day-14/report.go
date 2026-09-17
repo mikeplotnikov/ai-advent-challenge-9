@@ -271,10 +271,28 @@ func writeLeakSection(b *strings.Builder, byArm map[string]*cellStats) {
 			name, n, c.firstBad(), n, pct(c.firstBad(), n), pct1(loFirst), pct1(hiFirst),
 			c.firstMixed, c.deliveredBad, n, pct(c.deliveredBad, n))
 	}
-	if a, ok := byArm["prompt-only"]; ok {
-		if c, ok2 := byArm["check"]; ok2 {
-			p := stats.FisherTwoSided(a.deliveredBad, a.usable()-a.deliveredBad, c.deliveredBad, c.usable()-c.deliveredBad)
-			fmt.Fprintf(b, "\nФишер по «дошло до человека», `prompt-only` против `check`, двусторонний: p = %.2g.\n", p)
+	// The comparison is between the arms that differ in the thing being measured: the
+	// rules travelling in the request or not. Comparing two arms that both deliver zero
+	// would produce p = 1 and prove nothing — the first version of this report did
+	// exactly that and printed it as a finding.
+	if with, ok := byArm["prompt-only"]; ok {
+		if without, ok2 := byArm["silent-check"]; ok2 {
+			p := stats.FisherTwoSided(
+				with.firstBad(), with.usable()-with.firstBad(),
+				without.firstBad(), without.usable()-without.firstBad())
+			fmt.Fprintf(b, "\nФишер по «выполнила запрещённое», `prompt-only` против `silent-check` — то есть правила в запросе против их отсутствия, двусторонний: p = %.2g.\n", p)
+		}
+	}
+	// And the second half of the same question: what the check adds once the rules are
+	// already in the request. Both arms are reported even when the answer is "nothing",
+	// because "nothing" is the finding.
+	if with, ok := byArm["prompt-only"]; ok {
+		if checked, ok2 := byArm["check"]; ok2 {
+			p := stats.FisherTwoSided(
+				with.deliveredBad, with.usable()-with.deliveredBad,
+				checked.deliveredBad, checked.usable()-checked.deliveredBad)
+			fmt.Fprintf(b, "\nФишер по «дошло до человека», `prompt-only` против `check`, двусторонний: p = %.2g. "+
+				"Обе руки держат правила в запросе, и на этих сценариях промпта хватает — проверка тут добавляет не долю, а гарантию.\n", p)
 		}
 	}
 	b.WriteString("\n")

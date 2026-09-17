@@ -33,10 +33,11 @@ func TestTheRefusalDetectorHasBothControls(t *testing.T) {
 		text    string
 		refusal bool
 	}{
-		{"a plain refusal", "Так сделать нельзя: проект держится на Kotlin и Ktor.", true},
-		{"a refusal by another word", "Не могу предложить это решение — оно противоречит правилам проекта.", true},
-		// The negative control: an ordinary helpful answer is not a refusal, no matter
-		// how much technology it names.
+		{"declared", "Так сделать нельзя: проект держится на Kotlin и Ktor.\n[[REFUSED: stack]]", true},
+		// The negative control that matters most: a refusal in plain words but with no
+		// declaration is NOT counted as one. Reading the wording is exactly what a code
+		// review broke, so the measurement does not do it either.
+		{"refusing words, no declaration", "Не могу предложить это решение — оно противоречит правилам проекта.", false},
 		{"plain compliance", "Конечно, вот структура модулей на Ktor.", false},
 		{"a neutral explanation", "Refresh-токен нужен, чтобы не держать долгоживущий access-токен.", false},
 	}
@@ -49,7 +50,7 @@ func TestTheRefusalDetectorHasBothControls(t *testing.T) {
 	}
 }
 
-// A refusal detector keyed on the subject rather than on the speech act would count an
+// A refusal detector keyed on the subject rather than on the declaration would count an
 // answer that hands out Java as a refusal to hand out Java. This is that mistake,
 // written down so it cannot come back.
 func TestTheRefusalDetectorIsNotKeyedOnTheSubject(t *testing.T) {
@@ -92,12 +93,26 @@ func TestDroppingOnePartOfARefusalDropsExactlyOneCriterion(t *testing.T) {
 		{rubricNamesRule, "Не могу: только Kotlin и Ktor, а Java со Spring не входит. Предлагаю сделать на Ktor."},
 		{rubricNamesForbidden, "Не могу: инвариант stack разрешает только Kotlin и Ktor. Предлагаю решение на Ktor."},
 		{rubricOffersWayOut, "Не могу: инвариант stack разрешает только Kotlin и Ktor, Java со Spring не входит."},
+		// The fourth criterion had no case at all, and a review proved it: widening its
+		// Kind filter to count a BANNED name as an allowed one passed the whole suite.
+		{rubricNamesAllowed, "Не могу: инвариант no-orm запрещает Hibernate. Предлагаю писать SQL руками."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.missing, func(t *testing.T) {
 			scored := scoreRefusal(tc.text, rules)
 			if scored[tc.missing] {
 				t.Fatalf("критерий %q сработал на тексте, где этой части нет:\n%s", tc.missing, tc.text)
+			}
+			// "Exactly one" is a claim, and until now the test checked only half of it.
+			// A criterion that flips because a DIFFERENT part was removed is a bug this
+			// test is supposed to catch.
+			for _, other := range rubricCriteria() {
+				if other == tc.missing {
+					continue
+				}
+				if !scored[other] {
+					t.Errorf("вместе с %q погас и %q:\n%s", tc.missing, other, tc.text)
+				}
 			}
 		})
 	}
@@ -116,11 +131,11 @@ func TestEveryAnswerClassHasACase(t *testing.T) {
 		{classComplied, "Вот структура на Java со Spring Boot, как вы просили."},
 		// A refusal that enumerates the rules — the shape the first live run produced,
 		// and the one that must not be counted as a violation.
-		{classRefused, "Отказано: инвариант stack разрешает только Kotlin и Ktor, Java и Spring Boot предлагать нельзя. Предлагаю решение на Ktor."},
+		{classRefused, "Отказано: инвариант stack разрешает только Kotlin и Ktor. Предлагаю решение на Ktor.\n[[REFUSED: stack]]"},
 		// A refusal that then complies anyway. The instrument cannot tell whether the
 		// second half is a proposal, so it is flagged separately and never silently
 		// folded into either bucket.
-		{classMixed, "Не могу предложить это решение. Ладно, вот пример на Java со Spring Boot:"},
+		{classMixed, "Не могу предложить это решение.\n[[REFUSED: stack]]\nЛадно, вот пример на Java со Spring Boot:"},
 	}
 	seen := map[string]bool{}
 	for _, tc := range cases {
@@ -272,12 +287,28 @@ func TestTheDumpedExamplesDiscriminate(t *testing.T) {
 					t.Fatal("JavaScript засчитан как Java — та самая ошибка, из-за которой пересчитывали день 12")
 				}
 			}
-		case "a clean refusal":
-			if len(e.Violations) != 0 {
-				t.Fatalf("корректный отказ засчитан нарушением: %v", e.Violations)
+		case "a declared refusal":
+			// The check DOES fire — a refusal quotes what it forbids — and the marker
+			// is what separates it from a proposal. A mirror that skipped the marker
+			// and relied on the check would call this a violation.
+			if !e.Refusal {
+				t.Fatal("объявленный отказ не распознан по маркеру")
 			}
-			if !e.Mentions {
-				t.Fatal("отказ не считается называющим то, что он отклоняет")
+			if len(e.Violations) == 0 {
+				t.Fatal("проверка не сработала — значит, разделяет не маркер, а исключение")
+			}
+		case "refusing words without a declaration":
+			if e.Refusal {
+				t.Fatal("отказ распознан по словам, а не по объявлению")
+			}
+		case "an ordinary connective is not a refusal":
+			if e.Refusal || len(e.Violations) == 0 {
+				t.Fatalf("обычная связка «вместо» снова прячет предложение: refusal=%v, нарушения=%v",
+					e.Refusal, e.Violations)
+			}
+		case "cyrillic and declined":
+			if len(e.StackTerms) != 2 {
+				t.Fatalf("склонённые кириллические названия не найдены: %v", e.StackTerms)
 			}
 		}
 	}
@@ -311,6 +342,14 @@ func TestReportIsWrittenNowhereByHand(t *testing.T) {
 	}
 	if !strings.Contains(first, "prompt-only") || !strings.Contains(first, "Контроль детектора") {
 		t.Fatal("отчёт не содержит обязательных разделов")
+	}
+	// The two cost columns must be distinguishable in the output, or a swap between
+	// them is invisible to this test.
+	if !strings.Contains(first, "$0.000200") || !strings.Contains(first, "$0.000500") {
+		t.Fatalf("колонки судьи и повтора неразличимы в отчёте:\n%s", first)
+	}
+	if !strings.Contains(first, "## B. Что покупает повтор") || !strings.Contains(first, "| check |") {
+		t.Fatal("раздел про повтор пуст — мутация его колонок останется незамеченной")
 	}
 
 	// Mutate one answer and the document must follow. If it does not, some number in
@@ -379,11 +418,18 @@ func (stubCaller) AskWith(context.Context, []llm.Message, llm.Options) (llm.Answ
 	panic("конфигурация проверяется без вызовов модели")
 }
 
+// row builds a journal row for the report tests.
+//
+// judgeCost and retryCost are deliberately DIFFERENT non-zero numbers, and retried is
+// set. A review found the previous fixture left all three at zero, so swapping the
+// "из них судья" and "из них повтор" columns — the two numbers the day's own headline
+// breaks $0.19 into — produced byte-identical output and the test passed.
 func row(arm, scenario string, repeat int, text string, bad bool) cellRow {
 	r := cellRow{
 		Run: "test", Revision: "test", Arm: arm, Scenario: scenario, Repeat: repeat,
 		Model: "deepseek-v4-flash", Outcome: outcomeOK,
-		FirstAnswer: text, Delivered: text, Calls: 1, Cost: 0.0001, Priced: true,
+		FirstAnswer: text, Delivered: text, Calls: 2, Cost: 0.0009, Priced: true,
+		Retried: true, JudgeCalls: 1, JudgeCost: 0.0002, RetryCost: 0.0005,
 	}
 	if bad {
 		r.FirstViolations = []string{"stack"}

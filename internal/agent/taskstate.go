@@ -437,7 +437,8 @@ const (
 // and a marker that survives a round trip would let yesterday's text drive today's
 // machine.
 func containsControlMarker(s string) bool {
-	return strings.Contains(s, markerNextStep) || strings.Contains(s, markerTransition)
+	return strings.Contains(s, markerNextStep) || strings.Contains(s, markerTransition) ||
+		strings.Contains(s, markerRefused)
 }
 
 // blockTags is every tag that marks a section of an assembled request, by its BARE name.
@@ -452,7 +453,7 @@ func containsControlMarker(s string) bool {
 // already filtering, and a per-block list would have left exactly the gap it did.
 var blockTags = []string{
 	"[USER_MESSAGE]", taskStateTag, "[WORKING_MEMORY]", "[LONG_TERM_MEMORY]", "[PROFILE]", "[PLAN]",
-	invariantsTag, retryTag,
+	invariantsTag, retryTag, markerRefused,
 }
 
 // forgesBlockBoundary reports whether model-written text would impersonate a section of

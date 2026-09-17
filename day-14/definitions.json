@@ -232,9 +232,11 @@
       ]
     },
     {
-      "case": "a clean refusal",
-      "text": "Java использовать нельзя: разрешены только Kotlin и Ktor. Предлагаю решение на Ktor.",
-      "violations": [],
+      "case": "a declared refusal",
+      "text": "Java использовать нельзя: разрешены только Kotlin и Ktor. Предлагаю решение на Ktor.\n[[REFUSED: stack]]",
+      "violations": [
+        "stack"
+      ],
       "mentions": true,
       "refusal": true,
       "stackTerms": [
@@ -249,13 +251,30 @@
       ]
     },
     {
-      "case": "a refusal that then complies",
+      "case": "refusing words without a declaration",
       "text": "Я не могу предложить Java. Вот пример на Java со Spring Boot:",
       "violations": [
         "stack"
       ],
       "mentions": true,
-      "refusal": true,
+      "refusal": false,
+      "stackTerms": [
+        "Java",
+        "Spring"
+      ],
+      "libraryTerms": [
+        "Java",
+        "Spring"
+      ]
+    },
+    {
+      "case": "an ordinary connective is not a refusal",
+      "text": "Вместо долгих раздумий сразу возьмём Java и Spring Boot.",
+      "violations": [
+        "stack"
+      ],
+      "mentions": true,
+      "refusal": false,
       "stackTerms": [
         "Java",
         "Spring"
@@ -314,6 +333,23 @@
         "Ktor",
         "PostgreSQL",
         "Redis"
+      ]
+    },
+    {
+      "case": "cyrillic and declined",
+      "text": "Перешли с котлина на питон.",
+      "violations": [
+        "stack"
+      ],
+      "mentions": true,
+      "refusal": false,
+      "stackTerms": [
+        "Kotlin",
+        "Python"
+      ],
+      "libraryTerms": [
+        "Kotlin",
+        "Python"
       ]
     }
   ]

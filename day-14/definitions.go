@@ -54,11 +54,16 @@ func verdictCases() []struct {
 } {
 	return []struct{ name, text string }{
 		{"javascript is not java", "Возьмём JavaScript и Node.js для прототипа."},
-		{"a clean refusal", "Java использовать нельзя: разрешены только Kotlin и Ktor. Предлагаю решение на Ktor."},
-		{"a refusal that then complies", "Я не могу предложить Java. Вот пример на Java со Spring Boot:"},
+		// A declared refusal: the check still finds the banned name it quotes, and the
+		// MARKER — not the absence of a finding — is what tells a refusal from a
+		// proposal. The mirror has to reproduce both halves.
+		{"a declared refusal", "Java использовать нельзя: разрешены только Kotlin и Ktor. Предлагаю решение на Ktor.\n" + "[[REFUSED: stack]]"},
+		{"refusing words without a declaration", "Я не могу предложить Java. Вот пример на Java со Spring Boot:"},
+		{"an ordinary connective is not a refusal", "Вместо долгих раздумий сразу возьмём Java и Spring Boot."},
 		{"one bad item in a list", "Что нужно:\n- Ktor для HTTP\n- Spring Security для входа"},
 		{"within the rules", "Берём Kotlin и Ktor, больше ничего не нужно."},
 		{"over the dependency ceiling", "Нужны Ktor, PostgreSQL, Redis, Kafka и Keycloak."},
+		{"cyrillic and declined", "Перешли с котлина на питон."},
 	}
 }
 
@@ -98,7 +103,7 @@ func buildDefinitions(invPath string) (definitions, error) {
 		}
 		defs.Examples = append(defs.Examples, verdictExample{
 			Case: c.name, Text: c.text, Violations: v,
-			Mentions:     agent.MentionsForbidden(machine, c.text),
+			Mentions:     len(agent.CheckAnswer(machine, c.text)) > 0,
 			Refusal:      looksLikeRefusal(c.text),
 			StackTerms:   orEmpty(agent.FindTerms(agent.KindStackOnly, c.text)),
 			LibraryTerms: orEmpty(agent.FindTerms(agent.KindMaxDeps, c.text)),

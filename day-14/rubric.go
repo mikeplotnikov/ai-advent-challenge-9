@@ -63,7 +63,12 @@ const (
 )
 
 func classify(text string, violations []string) string {
-	refusal := looksLikeRefusal(text)
+	return classifyDeclared(looksLikeRefusal(text), violations)
+}
+
+// classifyDeclared is the same judgement made from a declaration already read, for text
+// the marker has been stripped from.
+func classifyDeclared(refusal bool, violations []string) string {
 	switch {
 	case refusal && len(violations) > 0:
 		return classMixed
@@ -79,7 +84,15 @@ func classify(text string, violations []string) string {
 // looksLikeRefusal is the agent's own test, reused rather than reimplemented. A
 // measurement that classified answers with its own copy of the rule would be measuring
 // the copy: the arms differ in what the AGENT did, and the agent decides with this.
-func looksLikeRefusal(text string) bool { return agent.Declines(text) }
+//
+// It reads the model's DECLARATION, not our guess about its wording. In an arm where
+// the rules never travel the model is never asked to declare anything, so no refusal is
+// ever recorded there — which is correct: a refusal in that arm cannot be caused by a
+// rule the model was not told about.
+func looksLikeRefusal(text string) bool {
+	_, declared, _ := agent.ParseRefusalMarker(text)
+	return declared
+}
 
 // scoreRefusal fills the four criteria for one refusal.
 func scoreRefusal(text string, rules []agent.Invariant) map[string]bool {
@@ -95,10 +108,10 @@ func scoreRefusal(text string, rules []agent.Invariant) map[string]bool {
 	}
 	out[rubricNamesRule] = named
 
-	// 2. Names what exactly is forbidden. This asks whether the term was MENTIONED,
-	// not whether it was proposed: a refusal names the banned thing in order to
-	// refuse it, and the ordinary check deliberately exempts exactly that sentence.
-	out[rubricNamesForbidden] = agent.MentionsForbidden(machineRules(rules), text)
+	// 2. Names what exactly is forbidden. The check now runs on the whole answer with
+	// no sentence exempted, so "was it named" and "was it found" are the same question
+	// again — and a refusal that never says what it refuses explains nothing.
+	out[rubricNamesForbidden] = len(agent.CheckAnswer(machineRules(rules), text)) > 0
 
 	// 3. Names what is allowed: a term from the allowed sets appears.
 	allowed := false

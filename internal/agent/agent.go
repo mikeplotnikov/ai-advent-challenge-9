@@ -667,20 +667,20 @@ func (a *Agent) Ask(ctx context.Context, input string) (Reply, error) {
 	// answer that broke a rule must leave no trace that a later turn could read as
 	// precedent.
 	if a.invariants != nil {
-		final, report, retryUsage, invErr := a.enforceInvariants(ctx, messages, input, text)
+		out, invErr := a.enforceInvariants(ctx, messages, input, text)
 		if invErr != nil {
-			a.record(retryUsage, true)
+			a.record(out.retryUsage, true)
 			return a.persistFailedReply(base, invErr, compressionErr)
 		}
-		base.Invariants = report
-		base.RetryUsage = retryUsage
-		if report.Refused {
-			// A refused answer moves nothing. The markers it carried are discarded
-			// with it: a model that asks to close a step in the same breath as it
-			// breaks a rule does not get the step.
-			stepAsked, stageAsked = false, ""
+		base.Invariants = out.report
+		base.RetryUsage = out.retryUsage
+		// The markers that drive the machine must be the ones of the text the person
+		// actually receives. A refusal carries none; a retried answer carries its own,
+		// and the first answer's were discarded with the answer.
+		if out.moved {
+			stepAsked, stageAsked = out.step, out.stage
 		}
-		text = final
+		text = out.text
 	}
 
 	// The machine answers the model only after the answer is known to be usable: a

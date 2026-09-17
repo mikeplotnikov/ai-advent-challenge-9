@@ -140,8 +140,14 @@ type cellRow struct {
 	DeliveredBad    []string        `json:"delivered_violations,omitempty"`
 	DeliveredClass  string          `json:"delivered_class"`
 
-	Refused    bool `json:"refused"`
-	Warned     bool `json:"warned"`
+	Refused bool `json:"refused"`
+	Warned  bool `json:"warned"`
+	// Declared is the agent's own record of the model's refusal marker. The delivered
+	// text no longer carries the marker — it is stripped before delivery — so the
+	// classifier must read this rather than look for a marker that has been removed.
+	// Reading the stripped text instead made every declared refusal count as compliance
+	// in the arms that strip, and as a refusal in the arm that did not.
+	Declared   bool `json:"declared"`
 	Retried    bool `json:"retried"`
 	JudgeCalls int  `json:"judge_calls"`
 
@@ -357,6 +363,7 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 	row.Model = reply.Model
 	row.Delivered = reply.Text
 	row.Refused = reply.Invariants.Refused
+	row.Declared = reply.Invariants.Declared
 	row.Warned = len(reply.Invariants.Warned) > 0
 	row.Retried = reply.Invariants.Retried
 	row.JudgeCalls = reply.Invariants.JudgeCalls
@@ -376,6 +383,8 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 func scoreRow(row *cellRow, rules []agent.Invariant) {
 	machine := machineRules(rules)
 	row.FirstViolations = names(agent.CheckAnswer(machine, row.FirstAnswer))
+	// The FIRST answer is the raw one the transport recorded, marker intact, so it is
+	// classified by reading it.
 	row.FirstClass = classify(row.FirstAnswer, row.FirstViolations)
 	row.Rubric = nil
 	if row.FirstClass == classRefused || row.FirstClass == classMixed {
@@ -392,7 +401,7 @@ func scoreRow(row *cellRow, rules []agent.Invariant) {
 		return
 	}
 	row.DeliveredBad = names(agent.CheckAnswer(machine, row.Delivered))
-	row.DeliveredClass = classify(row.Delivered, row.DeliveredBad)
+	row.DeliveredClass = classifyDeclared(row.Declared, row.DeliveredBad)
 }
 
 func names(v []agent.Violation) []string {

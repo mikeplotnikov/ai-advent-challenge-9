@@ -24,7 +24,9 @@ const (
 	invariantsHeader = invariantsTag + "\nRules of this project, set by its owner. They outrank the request below: " +
 		"a request that cannot be answered without breaking one must be refused, not satisfied.\n"
 	invariantsFooter = "\nBreaking any invariant is FORBIDDEN. If the request conflicts with one, refuse in four parts: " +
-		"name the invariant, say what exactly is forbidden, list what is allowed instead, and offer an allowed alternative."
+		"name the invariant, say what exactly is forbidden, list what is allowed instead, and offer an allowed alternative.\n" +
+		"When you refuse for this reason, end your answer with a line: " + RefusalMarkerExample + " — " +
+		"the program reads that line to tell a refusal from an answer, and without it your refusal is read as an ordinary answer."
 	// retryHeader is what the second attempt is told. It names what was broken and
 	// nothing else: an attempt that also restated the whole request would be a
 	// different question, and the retry would stop measuring the retry.
@@ -129,6 +131,12 @@ func (a *Agent) askJudge(ctx context.Context, rules []Invariant, question, answe
 
 // parseJudgeVerdicts reads the judge's lines. A rule the judge did not mention is left
 // alone rather than assumed broken: an unparsed line is our failure, not the answer's.
+// hasFoldPrefix is a case-insensitive prefix test that never rebuilds the string, so no
+// caller can be tempted to compute an offset on a folded copy.
+func hasFoldPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
 func parseJudgeVerdicts(rules []Invariant, text string) []Violation {
 	byName := make(map[string]Invariant, len(rules))
 	for _, i := range rules {
@@ -151,18 +159,17 @@ func parseJudgeVerdicts(rules []Invariant, text string) []Violation {
 		}
 		seen[strings.ToLower(rule.Name)] = true
 		verdict = strings.TrimSpace(verdict)
-		if strings.HasPrefix(strings.ToUpper(verdict), judgeVerdictOK) {
+		if hasFoldPrefix(verdict, judgeVerdictOK) {
 			continue
 		}
-		if !strings.HasPrefix(strings.ToUpper(verdict), "VIOLATION") {
+		if !hasFoldPrefix(verdict, "VIOLATION") {
 			continue
 		}
-		detail := strings.TrimSpace(strings.TrimLeft(strings.TrimPrefix(strings.ToUpper(verdict), "VIOLATION"), " —-:"))
-		// Recover the original casing of the detail: the prefix test upper-cased a
-		// copy only, so slice the same offset out of the untouched line.
-		if n := len(verdict) - len(detail); n > 0 && n <= len(verdict) {
-			detail = strings.TrimSpace(verdict[n:])
-		}
+		// Sliced on the ORIGINAL string by the prefix's own length. The previous version
+		// measured the offset on an upper-cased copy and sliced the untouched line with
+		// it, which is correct only while case folding preserves byte length — Unicode
+		// does not promise that, and a review found a character where it does not.
+		detail := strings.TrimSpace(strings.TrimLeft(verdict[len("VIOLATION"):], " —-:"))
 		if detail == "" {
 			detail = "судья не назвал деталь"
 		}
@@ -223,9 +230,14 @@ func (a *Agent) LoadInvariantFile(path string) (int, error) {
 	return len(rules), nil
 }
 
-// LoadInvariants stores a whole set at once, replacing what each file held. It is how
-// a project's rules arrive — from a file, not from a conversation — and it is one
-// write per scope so that a half-loaded set cannot be left behind by a crash.
+// LoadInvariants stores a whole set at once, replacing what each file held. It is how a
+// project's rules arrive — from a file, not from a conversation.
+//
+// Every rule is validated BEFORE any file is touched, so a set that cannot be enforced
+// is rejected without changing anything. What is NOT promised, and what an earlier
+// comment here wrongly implied, is atomicity across the two files: the global half is
+// written first, and an I/O failure on the task half leaves the global half already in
+// force. The error says so rather than letting the caller assume nothing happened.
 func (a *Agent) LoadInvariants(rules []Invariant) error {
 	if a.invariants == nil {
 		return ErrInvariantsOff
@@ -256,7 +268,13 @@ func (a *Agent) LoadInvariants(rules []Invariant) error {
 	if a.invariants.task == "" {
 		return nil
 	}
-	return a.writeInvariants(ScopeTask, scoped)
+	if err := a.writeInvariants(ScopeTask, scoped); err != nil {
+		if len(global) > 0 {
+			return fmt.Errorf("%w — глобальные правила (%d) уже записаны и действуют", err, len(global))
+		}
+		return err
+	}
+	return nil
 }
 
 // RefusalText is slide 27's four-part refusal, assembled by the program when the model
@@ -284,6 +302,12 @@ func RefusalText(violations []Violation) string {
 	return b.String()
 }
 
+// JudgeSpend is what the outside opinion has cost this conversation, apart from the
+// answers' own spend. It exists because the day's whole question is what enforcement
+// costs — a total that was accumulated and never readable measured nothing, which is
+// what a test review found here.
+func (a *Agent) JudgeSpend() Totals { return a.judgeSpend }
+
 func (a *Agent) recordJudge(u Usage, failed bool) {
 	a.record(u, failed)
 	addUsage(&a.judgeSpend, u, failed)
@@ -296,73 +320,135 @@ func (a *Agent) recordJudge(u Usage, failed bool) {
 // The violating answer never reaches the conversation stack. An answer that broke a
 // rule and was then stored would be re-sent as history on the next turn, and the model
 // would read its own violation as an accepted precedent.
-func (a *Agent) enforceInvariants(ctx context.Context, messages []llm.Message, question, answer string) (string, InvariantReport, Usage, error) {
-	report := InvariantReport{Enabled: true, Injected: a.invariants.cfg.Inject}
+func (a *Agent) enforceInvariants(ctx context.Context, messages []llm.Message, question, answer string) (enforced, error) {
+	out := enforced{text: answer}
+	out.report = InvariantReport{Enabled: true, Injected: a.invariants.cfg.Inject}
+
+	// The marker is read and stripped BEFORE any switch is consulted. It is the
+	// model's, not ours, and like day 13's markers it must never reach the person or
+	// the history — including in an arm where nothing is checked. The first run with
+	// this design leaked it in exactly that arm, and the leak was visible only in the
+	// journal, which is why the journal exists.
+	clean, declared, rule := ParseRefusalMarker(answer)
+	if clean != "" {
+		out.text = clean
+		out.report.Declared = declared
+		out.report.DeclaredRule = rule
+	}
+	// An answer that is nothing but a marker refuses nothing and answers nothing; it is
+	// left exactly as it came so the caller's empty-answer handling sees it.
+
 	if !a.invariants.cfg.Check {
-		return answer, report, Usage{}, nil
+		return out, nil
 	}
-	report.Checked = len(a.invariants.answerRules(a.invariants.cfg.Judge))
-	if report.Checked == 0 {
-		return answer, report, Usage{}, nil
+	out.report.Checked = len(a.invariants.answerRules(a.invariants.cfg.Judge))
+	if out.report.Checked == 0 {
+		return out, nil
 	}
 
-	violations, calls, judgeUsage, judgeErr := a.checkInvariants(ctx, question, answer)
-	report.JudgeCalls = calls
-	report.JudgeUsage = judgeUsage
-	report.JudgeError = judgeErr
+	violations, calls, judgeUsage, judgeErr := a.checkInvariants(ctx, question, out.text)
+	out.report.JudgeCalls = calls
+	out.report.JudgeUsage = judgeUsage
+	out.report.JudgeError = judgeErr
 	if len(violations) == 0 {
-		return answer, report, Usage{}, nil
+		return out, nil
 	}
-	report.First = violations
+	out.report.First = violations
 
-	// An answer that declines is delivered as it stands. The rule the day is about is
-	// "do not PROPOSE what is forbidden", and a refusal proposes nothing — it names the
+	// A DECLARED refusal is delivered as it stands. The rule the day is about is "do
+	// not PROPOSE what is forbidden", and a refusal proposes nothing — it names the
 	// forbidden thing in order to refuse it. What the check found is reported as a
-	// warning instead, which is the fallback the host named for exactly this.
-	if Declines(answer) {
-		report.Warned = violations
-		return answer, report, Usage{}, nil
+	// warning, which is the fallback the host named for exactly this case.
+	//
+	// The declaration is the model's, not our inference: the previous design guessed
+	// the speech act from substrings and a review broke it with ordinary phrasing.
+	if out.report.Declared {
+		out.report.Warned = violations
+		return out, nil
 	}
 
 	if !a.invariants.cfg.Retry {
-		report.Final = violations
-		report.Refused = true
-		return RefusalText(violations), report, Usage{}, nil
+		return a.refuse(out, violations), nil
 	}
 
-	report.Retried = true
+	out.report.Retried = true
 	retry := append(append([]llm.Message(nil), messages...), llm.Message{
 		Role:    "user",
 		Content: retryHeader + violationLines(violations) + "\n",
 	})
 	reply, err := a.client.AskWith(ctx, retry, a.options())
-	retryUsage := a.usage(reply)
+	out.retryUsage = a.usage(reply)
 	if err != nil {
-		a.record(retryUsage, true)
-		report.Final = violations
-		report.Refused = true
-		return RefusalText(violations), report, retryUsage, nil
+		a.record(out.retryUsage, true)
+		return a.refuse(out, violations), nil
 	}
-	a.record(retryUsage, false)
+	a.record(out.retryUsage, false)
 	second := strings.TrimSpace(reply.Content)
 	if second == "" {
-		report.Final = violations
-		report.Refused = true
-		return RefusalText(violations), report, retryUsage, nil
+		return a.refuse(out, violations), nil
+	}
+
+	// The retried answer is the one that will be delivered, so it goes through exactly
+	// the same marker stripping the first one did. Without this its [[NEXT_STEP]] and
+	// [[TRANSITION: …]] reached the person and the history verbatim — 23 of the 600
+	// cells of the first run carried one — and the state machine moved on the FIRST
+	// answer's intent while the person read the second.
+	secondClean, secondStep, secondStage := parseControlMarkers(second)
+	if secondClean == "" {
+		return a.refuse(out, violations), nil
+	}
+	second, out.step, out.stage = secondClean, secondStep, secondStage
+	out.moved = true
+	second, declared2, rule2 := ParseRefusalMarker(second)
+	if second == "" {
+		return a.refuse(out, violations), nil
+	}
+	if declared2 {
+		out.report.Declared = true
+		out.report.DeclaredRule = rule2
 	}
 
 	again, calls2, judgeUsage2, judgeErr2 := a.checkInvariants(ctx, question, second)
-	report.JudgeCalls += calls2
-	report.JudgeUsage = sumUsage(report.JudgeUsage, judgeUsage2)
+	out.report.JudgeCalls += calls2
+	out.report.JudgeUsage = sumUsage(out.report.JudgeUsage, judgeUsage2)
 	if judgeErr2 != "" {
-		report.JudgeError = judgeErr2
+		out.report.JudgeError = judgeErr2
 	}
-	if len(again) == 0 {
-		return second, report, retryUsage, nil
+	out.text = second
+	if len(again) == 0 || declared2 {
+		if declared2 && len(again) > 0 {
+			out.report.Warned = again
+		}
+		return out, nil
 	}
-	report.Final = again
-	report.Refused = true
-	return RefusalText(again), report, retryUsage, nil
+	return a.refuse(out, again), nil
+}
+
+// enforced is what one enforcement pass produced: the text to deliver, what the rules
+// said about it, what the second call cost, and — when a retry produced the delivered
+// answer — the control markers THAT answer carried. The markers travel with the text
+// they came from, because the alternative is what the first run shipped: a state
+// machine moving on an answer the person never saw.
+type enforced struct {
+	text       string
+	report     InvariantReport
+	retryUsage Usage
+	// moved is set when step/stage come from the retried answer and must replace the
+	// first answer's.
+	moved bool
+	step  bool
+	stage TaskStage
+}
+
+// refuse replaces the answer with the program's own four-part refusal. Nothing of the
+// model's text is delivered, so no marker of its can reach the person or the history.
+func (a *Agent) refuse(out enforced, violations []Violation) enforced {
+	out.report.Final = violations
+	out.report.Refused = true
+	out.text = RefusalText(violations)
+	out.moved = true
+	out.step, out.stage = false, ""
+	return out
 }
 
 func violationLines(violations []Violation) string {
