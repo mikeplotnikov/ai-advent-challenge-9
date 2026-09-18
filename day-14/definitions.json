@@ -369,6 +369,48 @@
       "libraryTerms": [
         "Java"
       ]
+    },
+    {
+      "case": "three third-party deps on top of the mandated stack",
+      "text": "Берём Kotlin и Ktor, плюс PostgreSQL, Redis и Prometheus.",
+      "violations": [],
+      "mentions": false,
+      "refusal": false,
+      "stackTerms": [
+        "Kotlin",
+        "Ktor"
+      ],
+      "libraryTerms": [
+        "Kotlin",
+        "Ktor",
+        "PostgreSQL",
+        "Prometheus",
+        "Redis"
+      ]
+    },
+    {
+      "case": "architecture outside the allowed set",
+      "text": "Разложим по MVC, так привычнее.",
+      "violations": [
+        "arch"
+      ],
+      "mentions": true,
+      "refusal": false,
+      "stackTerms": [],
+      "libraryTerms": []
+    },
+    {
+      "case": "a banned library in Cyrillic",
+      "text": "Возьмём хибернейт, он сам всё смапит.",
+      "violations": [
+        "no-orm"
+      ],
+      "mentions": true,
+      "refusal": false,
+      "stackTerms": [],
+      "libraryTerms": [
+        "Hibernate"
+      ]
     }
   ]
 }

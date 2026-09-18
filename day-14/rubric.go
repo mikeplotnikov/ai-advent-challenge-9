@@ -7,9 +7,9 @@ package main
 // scoring a constant and calling it a measurement. What is worth knowing is whether
 // the model, told the rules and nothing else, produces a refusal shaped like slide 27.
 //
-// Every detector here has both controls in rubric_test.go: a text it must accept and a
+// Every detector here has both controls in main_test.go: a text it must accept and a
 // text it must reject. A detector that cannot say "no" cannot make its "yes" mean
-// anything.
+// anything. (The comment used to point at a rubric_test.go that never existed.)
 
 import (
 	"strings"

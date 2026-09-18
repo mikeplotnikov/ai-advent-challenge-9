@@ -241,6 +241,12 @@ func ValidateInvariant(i Invariant) error {
 	if strings.ContainsAny(i.Name, "\n\r") {
 		return fmt.Errorf("%w: имя записано больше чем одной строкой", ErrInvalidInvariant)
 	}
+	// A colon is the separator of the refusal marker ([[REFUSED: name]]) and of the
+	// judge's verdict lines. A name containing one is ambiguous in both, and a review
+	// found the verdict for such a rule was lost with no error anywhere.
+	if strings.Contains(i.Name, ":") {
+		return fmt.Errorf("%w: %s — двоеточие разделяет имя в маркере отказа и в вердикте судьи", ErrInvalidInvariant, name)
+	}
 	if strings.ContainsAny(i.About, "\n\r") {
 		return fmt.Errorf("%w: %s описан больше чем одной строкой", ErrInvalidInvariant, name)
 	}
@@ -486,12 +492,13 @@ func (r InvariantReport) Passed() bool { return len(r.Final) == 0 }
 // checkAnswer runs every machine rule over one answer. The judge is a separate step
 // because it costs money and may fail; this half never does either.
 func checkMachine(rules []Invariant, answer string) []Violation {
+	mandated := mandatedTerms(rules)
 	var out []Violation
 	for _, i := range rules {
 		if i.Enforce() != EnforceMachine {
 			continue
 		}
-		if detail, bad := machineViolation(i, answer); bad {
+		if detail, bad := machineViolation(i, answer, mandated); bad {
 			out = append(out, Violation{
 				Name: i.Name, About: i.About, Detail: detail,
 				Scope: i.Scope, Kind: i.Kind, Enforce: EnforceMachine,
@@ -549,12 +556,64 @@ func ParseRefusalMarker(text string) (clean string, refused bool, rule string) {
 			}
 			continue
 		}
-		kept = append(kept, line)
+		// The marker is OUR control syntax, not the model's content, so it is redacted
+		// wherever it sits — while only a marker on its own line is HONOURED as a
+		// declaration. Before this, "Нельзя. [[REFUSED: stack]] Возьмём Kotlin." kept
+		// the marker and shipped it to the person and into the history, which is the
+		// leak wave 2 closed for the own-line case and missed for this one.
+		if fenced {
+			// Inside a fence the marker is an example the model is showing. Redacting it
+			// would mangle a code sample, and day 13 makes the same exemption.
+			kept = append(kept, line)
+			continue
+		}
+		kept = append(kept, redactInlineRefusalMarkers(line))
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n")), refused, rule
 }
 
-func machineViolation(i Invariant, answer string) (string, bool) {
+func redactInlineRefusalMarkers(line string) string {
+	for {
+		start := strings.Index(line, markerRefused)
+		if start < 0 {
+			return line
+		}
+		end := strings.Index(line[start:], markerEnd)
+		if end < 0 {
+			return line[:start] + strings.TrimSpace(line[start+len(markerRefused):])
+		}
+		line = strings.TrimRight(line[:start], " ") + " " + strings.TrimLeft(line[start+end+len(markerEnd):], " ")
+		line = strings.TrimSpace(line)
+	}
+}
+
+// mandatedTerms is everything the rules in force explicitly ALLOW: the stack a
+// StackOnly names, the architecture an ArchOnly names. A dependency ceiling must not
+// count them.
+//
+// Found by an external review, and the number is the point: "не больше трёх сторонних
+// зависимостей" fired in 414 of 600 first answers, and 298 of those named Kotlin or
+// Ktor — the very stack another invariant REQUIRES. The ceiling was therefore not three
+// but "three minus the mandatory ones", so an answer that merely obeyed the stack rule
+// had already spent two of its three slots. A rule that punishes obedience to another
+// rule is not a stricter rule, it is a broken one.
+func mandatedTerms(rules []Invariant) map[string]bool {
+	out := map[string]bool{}
+	for _, i := range rules {
+		if i.Kind != KindStackOnly && i.Kind != KindArchOnly {
+			continue
+		}
+		vocab := vocabularyFor(i.Kind)
+		for _, v := range i.Values {
+			if c := canonical(v, vocab); c != "" {
+				out[c] = true
+			}
+		}
+	}
+	return out
+}
+
+func machineViolation(i Invariant, answer string, mandated map[string]bool) (string, bool) {
 	switch i.Kind {
 	case KindStackOnly, KindArchOnly:
 		vocab := vocabularyFor(i.Kind)
@@ -576,8 +635,16 @@ func machineViolation(i Invariant, answer string) (string, bool) {
 		return "вне разрешённого набора: " + strings.Join(found, ", "), true
 
 	case KindNoBanned:
+		// A banned name the vocabulary already knows is matched by the vocabulary's own
+		// aliases, so "хибернейт" is caught exactly as "джаву" is. Before this, no-banned
+		// had no aliases at all and the Cyrillic spelling of a banned library walked
+		// straight through while stack-only caught its own — an asymmetry a review found.
 		banned := make([]techTerm, 0, len(i.Values))
 		for _, v := range i.Values {
+			if known, ok := vocabularyTerm(v, libraryVocabulary); ok {
+				banned = append(banned, known)
+				continue
+			}
 			banned = append(banned, techTerm{Canon: v, Aliases: []string{strings.ToLower(v)}})
 		}
 		found := findTerms(answer, banned)
@@ -587,7 +654,14 @@ func machineViolation(i Invariant, answer string) (string, bool) {
 		return "запрещённое присутствует: " + strings.Join(found, ", "), true
 
 	case KindMaxDeps:
-		found := findTerms(answer, libraryVocabulary)
+		// Only THIRD-PARTY dependencies, which is what the rule says. A term another
+		// invariant in force mandates is not a choice this answer made.
+		var found []string
+		for _, term := range findTerms(answer, libraryVocabulary) {
+			if !mandated[term] {
+				found = append(found, term)
+			}
+		}
 		if len(found) <= i.Limit {
 			return "", false
 		}
@@ -676,7 +750,7 @@ var stackVocabulary = []techTerm{
 // libraryVocabulary is everything a dependency ceiling counts: the stack terms plus
 // the libraries and services around them.
 var libraryVocabulary = append(append([]techTerm(nil), stackVocabulary...), []techTerm{
-	{"Hibernate", []string{"hibernate"}},
+	{"Hibernate", []string{"hibernate", "хибернейт"}},
 	{"JPA", []string{"jpa"}},
 	{"Exposed", []string{"exposed"}},
 	{"RxJava", []string{"rxjava"}},
@@ -735,6 +809,24 @@ func VocabularyTerms(kind InvariantKind) []string {
 // text names, judged by the vocabulary of one kind of check.
 func FindTerms(kind InvariantKind, text string) []string {
 	return findTerms(text, vocabularyFor(kind))
+}
+
+// vocabularyTerm finds the vocabulary entry a written name refers to, with all of its
+// aliases. It is what lets a no-banned rule catch every spelling the vocabulary knows
+// rather than only the one the rule happened to be written with.
+func vocabularyTerm(name string, vocab []techTerm) (techTerm, bool) {
+	want := strings.ToLower(strings.TrimSpace(name))
+	for _, t := range vocab {
+		if strings.ToLower(t.Canon) == want {
+			return t, true
+		}
+		for _, a := range t.Aliases {
+			if a == want {
+				return t, true
+			}
+		}
+	}
+	return techTerm{}, false
 }
 
 // canonical resolves a name written by a person to the vocabulary's own spelling.

@@ -76,6 +76,15 @@ func verdictCases() []struct {
 		// "джаву" does not start with "джава". A showcase mirror that kept the full
 		// word and dropped the stem passed parity until this case existed.
 		{"cyrillic stem", "Джаву мы уже взяли, менять не будем."},
+		// The ceiling counts THIRD-PARTY dependencies: exactly three of them on top of
+		// the mandated Kotlin+Ktor is the limit, not five. Without that exclusion this
+		// text violates, with it it does not — which is what makes the case worth
+		// dumping: the earlier example violated either way and told the mirror nothing.
+		{"three third-party deps on top of the mandated stack", "Берём Kotlin и Ktor, плюс PostgreSQL, Redis и Prometheus."},
+		// The two branches no example covered: an architecture outside the allowed set,
+		// and a banned library in its Cyrillic spelling.
+		{"architecture outside the allowed set", "Разложим по MVC, так привычнее."},
+		{"a banned library in Cyrillic", "Возьмём хибернейт, он сам всё смапит."},
 	}
 }
 

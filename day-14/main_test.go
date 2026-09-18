@@ -549,3 +549,116 @@ func boolKey(bs ...bool) string {
 	}
 	return b.String()
 }
+
+// --- guarantees days 11-13 have and this day was missing ---------------------
+
+// The COMMITTED report has to be what the committed journal builds. Until now only a
+// temporary fixture was checked, so a hand edit of the published RESULTS.md — or a
+// detector fix landed without rebuilding it — passed CI while the file and the data
+// disagreed. Days 11, 12 and 13 all have this test; the day that publishes the numbers
+// did not.
+func TestTheCommittedReportIsWhatTheCommittedJournalBuilds(t *testing.T) {
+	published, err := os.ReadFile(filepath.Join(".", "RESULTS.md"))
+	if os.IsNotExist(err) {
+		t.Skip("прогона ещё не было")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readRows(filepath.Join(".", "cells.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := testRules(t)
+	var b strings.Builder
+	writeReport(&b, rescoreRows(rows, rules), rules)
+	if b.String() != string(published) {
+		t.Fatal("day-14/RESULTS.md разошёлся с тем, что строится из cells.jsonl — значит, его правили руками " +
+			"или чинили критерий без пересборки; пересоберите: go run ./day-14 -report day-14/cells.jsonl")
+	}
+}
+
+// And the verdicts stored in the journal have to be the verdicts today's criteria
+// produce. A detector fix that silently changed what the published numbers mean would
+// otherwise sit undetected until someone re-ran the report by hand. Day 12 has the same
+// guard for the same reason.
+func TestTheCommittedRunRescoresWithoutMoving(t *testing.T) {
+	rows, err := readRows(filepath.Join(".", "cells.jsonl"))
+	if os.IsNotExist(err) {
+		t.Skip("живого прогона ещё нет")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := testRules(t)
+	scored, moved := 0, 0
+	for _, before := range rows {
+		if before.Outcome != outcomeOK {
+			continue
+		}
+		after := before
+		scoreRow(&after, rules)
+		scored++
+		if strings.Join(after.FirstViolations, ",") != strings.Join(before.FirstViolations, ",") ||
+			after.FirstClass != before.FirstClass ||
+			strings.Join(after.DeliveredBad, ",") != strings.Join(before.DeliveredBad, ",") ||
+			after.DeliveredClass != before.DeliveredClass {
+			moved++
+		}
+	}
+	// A guard that counted only what the rows happen to hold would be defeated by a
+	// regression that empties them, so the count of what was scored is asserted too.
+	if scored < len(rows)/2 {
+		t.Fatalf("пересчитано %d строк из %d — журнал пуст или не разобран", scored, len(rows))
+	}
+	if moved != 0 {
+		t.Fatalf("%d строк из %d меняют вердикт при сегодняшних критериях; "+
+			"пересоберите отчёт: go run ./day-14 -report day-14/cells.jsonl -rescore", moved, scored)
+	}
+}
+
+// The showcase keeps its own copy of the dump, in the other repository, and nothing
+// compared it to this one. A mirror checked against a stale copy agrees with a Go build
+// that no longer exists.
+func TestTheShowcaseCopyOfTheDumpIsCurrent(t *testing.T) {
+	const rel = "../../uchebnik-ai-advent/challeng/test/day14-definitions.json"
+	raw, err := os.ReadFile(rel)
+	if os.IsNotExist(err) {
+		t.Skip("репозиторий витрины рядом не лежит")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := os.ReadFile(filepath.Join(".", "definitions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(mine) {
+		t.Fatal("копия выгрузки в репозитории витрины устарела; обновите: " +
+			"cp day-14/definitions.json ../uchebnik-ai-advent/challeng/test/day14-definitions.json")
+	}
+}
+
+// Every branch of the check needs at least one worked example in the dump, or the JS
+// mirror is compared on a subset and agrees everywhere it was never asked.
+func TestEveryCheckBranchHasADumpedExample(t *testing.T) {
+	defs, err := buildDefinitions(filepath.Join(".", "invariants.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := map[string]bool{}
+	for _, e := range defs.Examples {
+		for _, name := range e.Violations {
+			fired[name] = true
+		}
+	}
+	for _, rule := range defs.Invariants {
+		if rule.Enforce() != agent.EnforceMachine || rule.Kind == agent.KindTransitionBan {
+			continue
+		}
+		if !fired[rule.Name] {
+			t.Errorf("ни один пример выгрузки не срабатывает на правиле %s (%s) — витрина по этой ветке не сверена",
+				rule.Name, rule.Kind)
+		}
+	}
+}

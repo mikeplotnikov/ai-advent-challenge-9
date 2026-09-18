@@ -27,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -459,6 +460,14 @@ func newClient(model string) (agent.Caller, error) {
 	return c, nil
 }
 
+// gitRevision is what the run was made from, and it is deliberately allowed to say
+// "not that commit".
+//
+// A run happens BEFORE the commit that contains it, so .git/HEAD names the PREVIOUS
+// commit — the header of the published report claimed `336c841` while the code that ran
+// became `070657e`. An external review caught it, and the fix is not to guess a future
+// SHA: it is to report the working tree honestly. A dirty tree gets a "+dirty" mark, and
+// the reader then knows the SHA names the parent of what ran, not what ran.
 func gitRevision() (string, error) {
 	raw, err := os.ReadFile(filepath.Join(".git", "HEAD"))
 	if err != nil {
@@ -475,7 +484,20 @@ func gitRevision() (string, error) {
 	if len(head) > 12 {
 		head = head[:12]
 	}
+	if dirty, err := treeIsDirty(); err == nil && dirty {
+		head += "+dirty"
+	}
 	return head, nil
+}
+
+// treeIsDirty asks git whether anything tracked differs from HEAD. It shells out on
+// purpose: reimplementing the index comparison here would be a second, worse git.
+func treeIsDirty() (bool, error) {
+	out, err := exec.Command("git", "status", "--porcelain", "--untracked-files=no").Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 const systemPrompt = "Ты ассистент, работающий через официальный API DeepSeek. " +
