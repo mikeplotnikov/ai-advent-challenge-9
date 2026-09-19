@@ -553,12 +553,12 @@ const (
 // itself with it.
 func ParseRefusalMarker(text string) (clean string, refused bool, rule string) {
 	lines := strings.Split(text, "\n")
-	fenced := false
+	var fence fenceTracker
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if isFence(trimmed) {
-			fenced = !fenced
+		delimiter, fenced := insideFence(&fence, trimmed)
+		if delimiter {
 			kept = append(kept, line)
 			continue
 		}

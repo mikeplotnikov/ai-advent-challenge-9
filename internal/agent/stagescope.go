@@ -85,14 +85,72 @@ func hasFencedBlock(answer string) bool {
 	return false
 }
 
+// insideFence is the shared reader used by both marker parsers.
+func insideFence(f *fenceTracker, trimmed string) (isDelimiter bool, inside bool) {
+	isDelimiter = f.step(trimmed)
+	return isDelimiter, f.inside()
+}
+
 // isFence is the ONE definition of a code fence in this package, and having one is the
 // point. The second review wave found the detector treating "~~~" as a fence while both
 // marker parsers treated it as ordinary text — so a marker shown as an example inside a
 // perfectly valid CommonMark block moved the state machine. Two spellings of the same
 // concept in two places is how that happens.
 func isFence(trimmed string) bool {
-	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+	_, _, ok := fenceOf(trimmed)
+	return ok
 }
+
+// fenceOf reads an opening or closing fence: its character and how long it is.
+//
+// CommonMark closes a fence only with the SAME character and at least as many of them.
+// The third review wave used that: "```" inside a "````" block is content, and "~~~" does
+// not close backticks at all — but a parser that only asked "is this a fence line?"
+// flipped its state anyway, walked out of the block and honoured the marker inside it.
+func fenceOf(trimmed string) (rune, int, bool) {
+	for _, char := range []rune{'`', '~'} {
+		n := 0
+		for _, r := range trimmed {
+			if r != char {
+				break
+			}
+			n++
+		}
+		if n >= 3 {
+			return char, n, true
+		}
+	}
+	return 0, 0, false
+}
+
+// fenceTracker follows the fenced/unfenced state of a text line by line, the way
+// CommonMark does. Both marker parsers and the detector share it, so "what counts as
+// inside a code block" has exactly one answer in this package.
+type fenceTracker struct {
+	char rune
+	size int
+	open bool
+}
+
+// step reports whether the line is a fence delimiter, and updates the state. A line that
+// is a delimiter is itself content for the caller's purposes: it is kept, never parsed.
+func (f *fenceTracker) step(trimmed string) bool {
+	char, size, ok := fenceOf(trimmed)
+	if !ok {
+		return false
+	}
+	if !f.open {
+		f.char, f.size, f.open = char, size, true
+		return true
+	}
+	// Closing requires the same character and at least the opening length.
+	if char == f.char && size >= f.size {
+		f.open = false
+	}
+	return true
+}
+
+func (f *fenceTracker) inside() bool { return f.open }
 
 // hasDiffHeader reports the shape of a patch. It is checked apart from the fence
 // because a diff is often pasted without one.

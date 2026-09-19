@@ -616,11 +616,11 @@ func (m TaskMove) Asked() bool { return m.StepAsked || m.StageAsked != "" }
 func parseControlMarkers(text string) (clean string, step bool, stage TaskStage) {
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
-	fenced := false
+	var fence fenceTracker
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if isFence(trimmed) {
-			fenced = !fenced
+		delimiter, fenced := insideFence(&fence, trimmed)
+		if delimiter {
 			kept = append(kept, line)
 			continue
 		}

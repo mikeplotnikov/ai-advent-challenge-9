@@ -739,3 +739,28 @@ func TestAMarkerInsideATildeFenceMovesNothing(t *testing.T) {
 		t.Fatalf("пример вырезан из ответа, хотя это просто текст: %q", reply.Text)
 	}
 }
+
+// The third review wave: a fence of four backticks is not closed by three, and a tilde
+// fence does not close a backtick one. A parser that only asked "is this line a fence?"
+// walked out of the block on the inner line and honoured the marker that followed.
+func TestALongerFenceIsNotClosedByAShorterOne(t *testing.T) {
+	answer := "Пример разметки:\n````text\n```\n[[NEXT_STEP]]\n[[TRANSITION: planning]]\n````\nКонец примера."
+	clean, step, stage := parseControlMarkers(answer)
+	if step || stage != "" {
+		t.Fatalf("маркер внутри ограды из четырёх кавычек прочитан как просьба: step=%v stage=%q", step, stage)
+	}
+	if !strings.Contains(clean, "[[NEXT_STEP]]") {
+		t.Fatalf("содержимое ограды вырезано: %q", clean)
+	}
+
+	mixed := "~~~text\n```\n[[NEXT_STEP]]\n~~~"
+	if _, step, _ := parseControlMarkers(mixed); step {
+		t.Fatal("ограда из кавычек закрыла ограду из тильд")
+	}
+
+	// And the same for day 14's refusal marker, which shares the reader.
+	refusal := "Смотри:\n````text\n```\n[[REFUSED: stack]]\n````"
+	if _, declared, _ := ParseRefusalMarker(refusal); declared {
+		t.Fatal("маркер отказа внутри длинной ограды засчитан как объявление")
+	}
+}

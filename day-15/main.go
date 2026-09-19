@@ -641,11 +641,13 @@ func pauseAndResume(dir string, a armSpec, live *agent.Agent) (bool, string) {
 	case len(was.Trail) != len(now.Trail):
 		return false, fmt.Sprintf("журнал переходов: %d записей вместо %d", len(now.Trail), len(was.Trail))
 	}
-	// Content, not only length: a trail of the right size with the wrong moves in it
-	// would pass a length check and would be a different history.
+	// The WHOLE entry, timestamp included: a trail of the right size with the wrong
+	// moves in it would pass a length check, and two entries differing only in when
+	// they happened are still a different history. The third review wave found the
+	// report saying "весь журнал" while the check skipped the time.
 	for i := range was.Trail {
 		a, b := was.Trail[i], now.Trail[i]
-		if a.From != b.From || a.To != b.To || a.Actor != b.Actor || a.Back != b.Back || a.Reason != b.Reason {
+		if a != b {
 			return false, fmt.Sprintf("запись %d журнала переходов разошлась: %s→%s против %s→%s",
 				i+1, a.From, a.To, b.From, b.To)
 		}
