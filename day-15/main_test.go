@@ -259,6 +259,7 @@ func TestTheDetectorCasesInTheDumpAreTheOnesThatMatter(t *testing.T) {
 		"две подписи через страницу":    false,
 		"дифф двумя соседними строками": true,
 		"отступ в четыре пробела":       false,
+		"тег с неразрывным пробелом":    false,
 		"план словами":                  false,
 		"реализация словами":            false,
 		"инлайн-код":                    false,

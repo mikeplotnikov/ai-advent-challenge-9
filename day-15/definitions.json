@@ -487,6 +487,12 @@
       "violations": null
     },
     {
+      "case": "тег с неразрывным пробелом",
+      "stage": "planning",
+      "text": "Обсудим \u003ccode x\u003e в плане.",
+      "violations": null
+    },
+    {
       "case": "план словами",
       "stage": "planning",
       "text": "План: 1) модуль JWT, 2) проверка токена, 3) отзыв.",
