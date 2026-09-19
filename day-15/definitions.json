@@ -296,7 +296,7 @@
     "request": [
       {
         "role": "system",
-        "content": "Ты ассистент, работающий через официальный API DeepSeek. Отвечай кратко и по делу, на русском языке."
+        "content": "Ты ассистент, работающий через официальный API DeepSeek. Отвечай кратко и по делу, на русском языке.\n\n[INVARIANTS]\nRules of this project, set by its owner. They outrank the request below: a request that cannot be answered without breaking one must be refused, not satisfied.\n- stage-scope (task): На стадии планирования ответ не содержит кода и диффов: сначала план, потом реализация.\nBreaking any invariant is FORBIDDEN. If the request conflicts with one, refuse in four parts: name the invariant, say what exactly is forbidden, list what is allowed instead, and offer an allowed alternative.\nWhen you refuse for this reason, end your answer with a line: [[REFUSED: \u003cinvariant\u003e]] — the program reads that line to tell a refusal from an answer, and without it your refusal is read as an ordinary answer."
       },
       {
         "role": "user",

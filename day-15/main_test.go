@@ -79,7 +79,7 @@ func TestEverySeedIsReachedInEveryArm(t *testing.T) {
 // checked here, deterministically, against the strict arm — before any money is spent
 // on finding out whether the model takes the bait.
 func TestEveryScenarioExpectsWhatTheStrictMachineActuallyDoes(t *testing.T) {
-	strict := arms()[len(arms())-1]
+	strict := strictArm()
 	for _, s := range scenarios() {
 		t.Run(s.Name, func(t *testing.T) {
 			if s.Want == wantNothing {
@@ -190,7 +190,7 @@ func TestTheDumpedBlockIsTheOneTheAgentSends(t *testing.T) {
 	}
 	rec := &recorderOnly{}
 	dir := t.TempDir()
-	ag, err := newCellAgent(rec, dir, arms()[len(arms())-1], rulesForTest(t), sc.Seed)
+	ag, err := newCellAgent(rec, dir, strictArm(), rulesForTest(t), sc.Seed)
 	if err != nil {
 		t.Fatal(err)
 	}

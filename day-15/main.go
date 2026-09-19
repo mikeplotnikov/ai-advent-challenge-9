@@ -101,6 +101,20 @@ func arms() []armSpec {
 	}
 }
 
+// strictArm is the arm the dump and the showcase are built from: everything on, rules
+// in the request. It is looked up BY NAME and not by position — the dump once took
+// arms()[len(arms())-1], and when the silent arm was appended the example request
+// quietly lost its [INVARIANTS] block. The mirror's parity test caught it, which is
+// the entire reason the dump records a real request instead of a described one.
+func strictArm() armSpec {
+	for _, a := range arms() {
+		if a.Name == "guards+scope" {
+			return a
+		}
+	}
+	panic("строгой руки нет в наборе")
+}
+
 // --- scenarios -----------------------------------------------------------------
 
 // seedSpec is the state a scenario starts from. It is reached by driving the machine

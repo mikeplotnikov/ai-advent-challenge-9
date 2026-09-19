@@ -217,7 +217,7 @@ func recordBlock(sc scenarioSpec, rules []agent.Invariant) (string, agent.TaskCo
 	defer os.RemoveAll(dir)
 
 	rec := &recorderOnly{}
-	a, err := newCellAgent(rec, dir, arms()[len(arms())-1], rules, sc.Seed)
+	a, err := newCellAgent(rec, dir, strictArm(), rules, sc.Seed)
 	if err != nil {
 		return "", ctx, nil, nil, err
 	}

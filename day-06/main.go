@@ -555,7 +555,7 @@ func converse(a *agent.Agent, quiet, tokens bool) error {
 		fmt.Fprintln(os.Stderr, "профиль: /profile · /profile init · /profile set style|constraints|context КЛЮЧ = ЗНАЧЕНИЕ · /profile use ИМЯ · /profile list · /profile pipeline direct|plan-answer · /profile route ПОДСТРОКА = ИМЯ")
 	}
 	if a.TaskState().Enabled {
-		fmt.Fprintln(os.Stderr, "состояние задачи: /state · /plan шаг; шаг; шаг · /step done · /go СТАДИЯ [= итог стадии] · /pause · /resume")
+		fmt.Fprintln(os.Stderr, "состояние задачи: /state · /plan шаг; шаг; шаг · /approve · /step done · /validate ok|fail [= заметка] · /go СТАДИЯ [= причина] · /trail · /pause · /resume")
 	}
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1<<20)
