@@ -358,7 +358,12 @@ func runAll(rowsPath, invPath, model string, repeats int, armOnly string, parall
 	if err != nil {
 		return err
 	}
-	revision, err := gitRevision()
+	// The journal itself is excluded from the dirtiness check: it is the file this run
+	// is writing, and its own output cannot be evidence that the CODE differs from the
+	// commit. Deleting the previous journal before a fresh run marked the tree dirty
+	// and stamped every row "+dirty", which is a reproducibility claim being weakened
+	// by bookkeeping rather than by a real difference.
+	revision, err := gitRevision(rowsPath)
 	if err != nil {
 		return err
 	}
@@ -736,7 +741,7 @@ func newClient(model string) (agent.Caller, error) {
 // gitRevision is what the run was made from, and it is deliberately allowed to say
 // "not that commit": a run happens before the commit that contains it, so a dirty tree
 // is marked rather than hidden.
-func gitRevision() (string, error) {
+func gitRevision(ignore string) (string, error) {
 	raw, err := os.ReadFile(filepath.Join(".git", "HEAD"))
 	if err != nil {
 		return "", err
@@ -752,14 +757,19 @@ func gitRevision() (string, error) {
 	if len(head) > 12 {
 		head = head[:12]
 	}
-	if dirty, err := treeIsDirty(); err == nil && dirty {
+	if dirty, err := treeIsDirty(ignore); err == nil && dirty {
 		head += "+dirty"
 	}
 	return head, nil
 }
 
-func treeIsDirty() (bool, error) {
-	out, err := exec.Command("git", "status", "--porcelain", "--untracked-files=no").Output()
+func treeIsDirty(ignore string) (bool, error) {
+	args := []string{"status", "--porcelain", "--untracked-files=no"}
+	if ignore != "" {
+		// Pathspec magic: everything except the journal this run is writing.
+		args = append(args, "--", ".", ":(exclude)"+ignore)
+	}
+	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return false, err
 	}
