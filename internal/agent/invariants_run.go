@@ -457,16 +457,26 @@ func (a *Agent) enforceInvariants(ctx context.Context, messages []llm.Message, q
 	}
 	out.report.First = violations
 
-	// A DECLARED refusal is delivered as it stands. The rule the day is about is "do
-	// not PROPOSE what is forbidden", and a refusal proposes nothing — it names the
-	// forbidden thing in order to refuse it. What the check found is reported as a
-	// warning, which is the fallback the host named for exactly this case.
+	// A DECLARED refusal is delivered as it stands — but only for the rules a refusal
+	// can dispose of. Day 14's rules are about what an answer PROPOSES, and a refusal
+	// proposes nothing: it names the forbidden thing in order to refuse it, so the
+	// finding becomes a warning and the answer is delivered. That is the fallback the
+	// host named for exactly this case.
+	//
+	// It does NOT extend to a rule whose violation is the PRESENCE of something. An
+	// answer reading "отказываюсь, вот реализация" has delivered the implementation,
+	// and an external review found this branch swallowing precisely that.
 	//
 	// The declaration is the model's, not our inference: the previous design guessed
 	// the speech act from substrings and a review broke it with ordinary phrasing.
 	if out.report.Declared {
-		out.report.Warned = violations
-		return out, nil
+		excused, standing := splitByRefusal(violations)
+		if len(standing) == 0 {
+			out.report.Warned = excused
+			return out, nil
+		}
+		out.report.Warned = excused
+		violations = standing
 	}
 
 	if !a.invariants.cfg.Retry {
@@ -517,11 +527,19 @@ func (a *Agent) enforceInvariants(ctx context.Context, messages []llm.Message, q
 		out.report.JudgeError = judgeErr2
 	}
 	out.text = second
-	if len(again) == 0 || declared2 {
-		if declared2 && len(again) > 0 {
-			out.report.Warned = again
-		}
+	if len(again) == 0 {
 		return out, nil
+	}
+	if declared2 {
+		// Same split as above: a declaration disposes of the proposal rules and of
+		// nothing else.
+		excused, standing := splitByRefusal(again)
+		if len(standing) == 0 {
+			out.report.Warned = excused
+			return out, nil
+		}
+		out.report.Warned = excused
+		again = standing
 	}
 	return a.refuse(out, again), nil
 }

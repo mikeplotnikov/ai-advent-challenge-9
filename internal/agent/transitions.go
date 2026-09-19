@@ -62,10 +62,21 @@ var (
 	ErrNotValidationStage = errors.New("на этой стадии нечего валидировать")
 	// ErrUnknownControl is a Control value no build knows.
 	ErrUnknownControl = errors.New("неизвестный режим контроля переходов")
+	// ErrStepNotHere is a step closed in a stage that does not own the plan's steps.
+	// It is the hole an external review walked through: the plan could be marched to
+	// its last step while still in planning, on a DRAFT plan, and the edge into
+	// validation — which asks only "is the machine on the last step?" — then stood
+	// open with no work done in execution at all.
+	ErrStepNotHere = errors.New("на этой стадии шаги плана не закрывают")
 )
 
 // requirement is one precondition of one edge: a named question about the state that
 // has to answer yes before the move is allowed.
+//
+// About says WHAT is missing and never HOW to supply it. The first version named CLI
+// commands — and the showcase, which mirrors these strings byte for byte, then advised
+// a web visitor to type /plan and /approve. Each interface adds its own hint; the rule
+// itself is interface-neutral.
 //
 // About is the rule in the words a person reads in the refusal; Detail is the evidence
 // — what the state actually is right now. They are separate for the same reason an
@@ -94,7 +105,7 @@ var (
 	// of zero steps.
 	reqApprovedPlan = requirement{
 		Name:  "approved-plan",
-		About: "план задачи должен быть утверждён: /plan пишет черновик, /approve утверждает",
+		About: "план задачи должен быть утверждён, а не просто записан",
 		Detail: func(c TaskContext) string {
 			if c.Total() == 0 {
 				return "плана нет ни одного шага"
@@ -110,7 +121,7 @@ var (
 	// shape and is left alone.
 	reqPlanExhausted = requirement{
 		Name:  "plan-exhausted",
-		About: "все шаги плана должны быть пройдены: /step done закрывает шаг",
+		About: "все шаги плана должны быть пройдены",
 		Detail: func(c TaskContext) string {
 			if c.Total() == 0 {
 				return "плана нет"
@@ -128,7 +139,7 @@ var (
 	// that route can be walked in one turn, and then the rule is decoration.
 	reqValidationVerdict = requirement{
 		Name:   "validation-verdict",
-		About:  "результат должен быть провалидирован: /validate ok или /validate fail",
+		About:  "результат должен быть провалидирован",
 		Detail: func(TaskContext) string { return "вердикт валидации не записан" },
 		Met:    func(c TaskContext) bool { return c.Validated },
 		Clear:  func(c *TaskContext) { c.Validated = false },
@@ -238,6 +249,28 @@ func enterStage(set StageSet, next *TaskContext, to TaskStage) {
 	}
 }
 
+// rollbackClears is the other half, and it is the half that was written by hand and was
+// therefore wrong on the second stage set. Going BACK undoes what the stages ahead had
+// established — every one of them, not just the target.
+//
+// The hand-written version cleared the verdict and nothing else. On the bugfix path that
+// made the README's own rule false: rolling back to `reproduce`, the only stage where
+// that set's plan may be rewritten, left the approval standing, because `reproduce`
+// establishes nothing itself. Derived from the table, both sets behave as the rule says.
+func rollbackClears(set StageSet, next *TaskContext, to TaskStage) {
+	target := set.index(to)
+	if target < 0 {
+		return
+	}
+	for _, rule := range set.Rules[target+1:] {
+		for _, req := range set.requirementsFrom(rule.Stage) {
+			if req.Clear != nil {
+				req.Clear(next)
+			}
+		}
+	}
+}
+
 // TrailEntry is one move that actually happened.
 //
 // Refusals are NOT here, and that is the day's own property rather than an omission: a
@@ -286,8 +319,22 @@ func appendTrail(trail []TrailEntry, e TrailEntry) []TrailEntry {
 // model's own answer, and although the trail is not injected into a request, it is
 // printed to a person and stored in the state file that validateTaskContext reads back
 // — so it goes through the same boundary check every stored, model-written string does.
+//
+// It filters by RUNE, with exactly the predicate the read path uses. An external review
+// found the previous version normalising only whitespace (strings.Fields) while
+// validateTrail → singleLine rejects every unicode.IsControl: one BEL in a reason and
+// the task never opened again, because the file it wrote could not be read back. Two
+// sanitisers for two model-written strings in one file had drifted apart — this one now
+// shares summariseForCarry's rune loop, and commit validates what it is about to write.
 func trailReason(s string) string {
-	s = strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	var b strings.Builder
+	for _, r := range s {
+		if singleLine(string(r)) {
+			b.WriteRune(r)
+		}
+	}
+	s = strings.Join(strings.Fields(b.String()), " ")
 	if runes := []rune(s); len(runes) > maxTrailReasonRunes {
 		s = strings.TrimSpace(string(runes[:maxTrailReasonRunes-1])) + "…"
 	}
@@ -444,6 +491,15 @@ func validateControl(mode string) error {
 	default:
 		return fmt.Errorf("%w: %q, допустимы %s", ErrUnknownControl, mode, strings.Join(ControlModes(), ", "))
 	}
+}
+
+// stageOwnsSteps reports whether this is the stage the plan's steps belong to. It is
+// derived from the table, exactly like enterStage derives what a stage clears: the
+// stage whose outgoing edge asks for an exhausted plan is the stage in which the plan
+// is worked through. No stage name is written here, so the bugfix set is covered by
+// declaring its edges and nothing else.
+func stageOwnsSteps(set StageSet, stage TaskStage) bool {
+	return stageEstablishes(set, stage, reqPlanExhausted.Name)
 }
 
 // controlMode is the mode in force, with the default filled in.

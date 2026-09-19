@@ -227,6 +227,22 @@ func stepLabel(v agent.TaskStateView) string {
 	return fmt.Sprintf("%d/%d", v.Step, v.Total)
 }
 
+// commandHint turns a requirement into the command that satisfies it. The requirement
+// itself says only what is missing: the same text is mirrored by the web showcase, and a
+// page that told its visitor to type /approve would be describing an interface they do
+// not have.
+func commandHint(requirement string) string {
+	switch requirement {
+	case "approved-plan":
+		return " — /plan пишет черновик, /approve утверждает"
+	case "plan-exhausted":
+		return " — /step done закрывает шаг"
+	case "validation-verdict":
+		return " — /validate ok или /validate fail"
+	}
+	return ""
+}
+
 func approvalLabel(v agent.TaskStateView) string {
 	switch {
 	case v.Total == 0:
@@ -277,7 +293,8 @@ func printTaskState(a *agent.Agent) {
 	// is exactly the thing a person then walks into.
 	fmt.Fprintf(os.Stderr, "план: %s · валидация: %s\n", approvalLabel(v), verdictLabel(v))
 	for _, b := range v.Blocked {
-		fmt.Fprintf(os.Stderr, "закрыт переход в %s — %s (сейчас: %s)\n", b.To, b.About, b.Detail)
+		fmt.Fprintf(os.Stderr, "закрыт переход в %s — %s (сейчас: %s)%s\n",
+			b.To, b.About, b.Detail, commandHint(b.Requirement))
 	}
 	if len(v.Allowed) > 0 {
 		// Запятая, а не стрелка: это список вариантов, а не последовательность.

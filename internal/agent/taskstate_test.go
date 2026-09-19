@@ -278,6 +278,8 @@ func TestStepsAdvanceAndStopAtTheEndOfThePlan(t *testing.T) {
 	if v := a.TaskState(); v.Step != 1 || v.Total != 2 || v.Current != "первый" {
 		t.Fatalf("после плана: шаг %d/%d, текущий %q", v.Step, v.Total, v.Current)
 	}
+	// Шаги закрывают там, где их делают: с дня 15 это стадия работы, а не планирование.
+	mustGo(t, a, StageExecution)
 	if err := a.StepDone(); err != nil {
 		t.Fatal(err)
 	}
@@ -553,6 +555,7 @@ func TestTheModelAsksAndTheTableAnswers(t *testing.T) {
 		c := &layerCaller{reply: "сделал первый\n" + markerNextStep}
 		a := stateAgent(t, c, dir, "сервис")
 		planOf(t, a, "первый", "второй")
+		mustGo(t, a, StageExecution)
 		reply, err := a.Ask(context.Background(), "делай")
 		if err != nil {
 			t.Fatal(err)

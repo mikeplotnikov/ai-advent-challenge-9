@@ -592,6 +592,10 @@ type TaskMove struct {
 	// Illegal is a stage change the transition table refused. It is the measurement of
 	// antipattern 02: the model asked to skip, the code said no.
 	Illegal bool
+	// Unknown is a stage that is not in this set at all. It was folded into Illegal
+	// until an external review pointed at the day's own thesis — "сложить значит
+	// потерять обе" — being contradicted by the driver that publishes the numbers.
+	Unknown bool
 	// Unready is day 15: the edge exists, and the state has not met its preconditions —
 	// "нельзя делать реализацию до утверждённого плана". Kept apart from Illegal
 	// because "рано" and "нельзя" are different answers about different defects, and a
@@ -816,6 +820,14 @@ func (s *taskStateState) commit(next TaskContext) error {
 	next.Version = TaskStateVersion
 	next.Stages = s.set.Name
 	next.Updated = time.Now().UTC()
+	// Validate what is about to be WRITTEN, with the same function the read path uses.
+	// Until an external review found otherwise, validation ran only on load — so a
+	// value that passed its own sanitiser and failed the loader produced a file the
+	// agent could never open again. A refused command costs a command; an unreadable
+	// state file costs the task.
+	if err := validateTaskContext(next, next.User, s.task); err != nil {
+		return fmt.Errorf("состояние задачи %s: %w", s.file.path, err)
+	}
 	if err := s.file.write(next); err != nil {
 		return err
 	}
@@ -889,7 +901,7 @@ func (a *Agent) StepDone() error {
 		return err
 	}
 	next := s.ctx.clone()
-	if err := closeStep(&next); err != nil {
+	if err := closeStep(s, &next); err != nil {
 		return fmt.Errorf("%s: %w", a.Name(), err)
 	}
 	return a.commitTaskState(s, next)
@@ -1009,7 +1021,10 @@ func (a *Agent) judgeTransition(s *taskStateState, base TaskContext, next *TaskC
 	// second.
 	back := s.set.IsRollback(from, target)
 	if back {
-		next.Validated = false
+		// Everything the stages ahead had established is undone — derived from the
+		// table, so the rule holds on every stage set rather than on the one whose
+		// names were written into an if.
+		rollbackClears(s.set, next, target)
 	}
 	// Every visit to a stage earns that stage's own conditions again, forward or back.
 	enterStage(s.set, next, target)
@@ -1116,7 +1131,7 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 
 	stepApplied := false
 	if step {
-		if err := closeStep(&next); err != nil {
+		if err := closeStep(s, &next); err != nil {
 			notes = append(notes, "шаг не закрыт: "+a.Name()+": "+err.Error())
 		} else {
 			stepApplied = true
@@ -1142,7 +1157,13 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 			// it asked for something premature, and the two are measured apart.
 			move.Unready = true
 			notes = append(notes, "переход пока закрыт: "+err.Error())
-		case errors.Is(err, ErrTransition), errors.Is(err, ErrUnknownStage):
+		case errors.Is(err, ErrUnknownStage):
+			// Not a move the table refused — a stage this set does not have. Counted
+			// apart, because "there is no such edge" and "there is no such stage" are
+			// different findings about the model.
+			move.Unknown = true
+			notes = append(notes, "стадии нет в наборе: "+err.Error())
+		case errors.Is(err, ErrTransition):
 			// The model asked for a move the table does not allow. This is the number
 			// antipattern 02 is about, and the refusal is deterministic.
 			move.Illegal = true
@@ -1178,15 +1199,36 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 
 // closeStep is StepDone's mutation, without the read and the write: applyTaskMove needs
 // to fold it into a decision that may still be refused.
-func closeStep(c *TaskContext) error {
+//
+// Since an external review it also checks WHERE the step is being closed. Closing steps
+// while standing in planning, on a plan that is still a draft, marched the machine to
+// the last step and opened the edge into validation — which asks only whether the plan
+// is exhausted. The published run contains ten such cells. The check lives under the
+// strict mode with the other preconditions, because it is one: the weaker arms exist to
+// measure exactly what happens without it, and day 13's driver pins ControlTable.
+func closeStep(s *taskStateState, c *TaskContext) error {
 	if c.Total() == 0 {
 		return ErrNoPlan
+	}
+	if s.controlMode() == ControlGuards && !stageOwnsSteps(s.set, c.State) {
+		return fmt.Errorf("%w: шаги закрывают на стадии %s", ErrStepNotHere, joinStages(stagesOwningSteps(s.set)))
 	}
 	if c.Step >= c.Total() {
 		return fmt.Errorf("%w: шаг %d из %d", ErrPlanExhausted, c.Step, c.Total())
 	}
 	c.Step++
 	return nil
+}
+
+// stagesOwningSteps is for the refusal's wording: it names where the steps do belong.
+func stagesOwningSteps(set StageSet) []TaskStage {
+	var out []TaskStage
+	for _, stage := range set.Stages() {
+		if stageOwnsSteps(set, stage) {
+			out = append(out, stage)
+		}
+	}
+	return out
 }
 
 // syncActiveTask points everything that is scoped to a task at the task the memory

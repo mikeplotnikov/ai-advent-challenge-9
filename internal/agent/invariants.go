@@ -110,6 +110,16 @@ type Invariant struct {
 	Ask string `json:"ask,omitempty"`
 }
 
+// ExcusedByRefusal reports whether a DECLARED refusal disposes of this rule's finding.
+//
+// Day 14's rules are about what an answer PROPOSES, and a refusal proposes nothing: it
+// names the forbidden thing in order to refuse it, so the finding is reported as a
+// warning and the answer is delivered. Day 15's stage-scope rule is not like that. Its
+// violation is the PRESENCE of the work — an answer reading "отказываюсь, вот
+// реализация" has still delivered the implementation, and the declaration excuses
+// nothing. An external review found the day-14 branch swallowing exactly that case.
+func (i Invariant) ExcusedByRefusal() bool { return i.Kind != KindStageScope }
+
 // Enforce is derived, never stored. A stored field could contradict the kind, and then
 // a rule would claim to be machine-checked while nothing checked it.
 func (i Invariant) Enforce() InvariantEnforce {
@@ -457,6 +467,19 @@ type Violation struct {
 	Scope   InvariantScope   `json:"scope"`
 	Kind    InvariantKind    `json:"kind"`
 	Enforce InvariantEnforce `json:"enforce"`
+}
+
+// splitByRefusal divides findings into the ones a declared refusal disposes of and the
+// ones it does not.
+func splitByRefusal(violations []Violation) (excused, standing []Violation) {
+	for _, v := range violations {
+		if (Invariant{Kind: v.Kind}).ExcusedByRefusal() {
+			excused = append(excused, v)
+			continue
+		}
+		standing = append(standing, v)
+	}
+	return excused, standing
 }
 
 // InvariantReport is what one answer's validation produced.

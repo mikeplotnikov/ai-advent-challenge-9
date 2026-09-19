@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -86,9 +87,21 @@ type tally struct {
 	// that must never happen, reported even when it is zero.
 	movedWithoutApply int
 
-	// The silent jump: implementation in a stage where it is forbidden.
-	firstScope     int
-	deliveredScope int
+	// The silent jump: implementation in a stage where it is forbidden. scopeApplicable
+	// is the DENOMINATOR — the cells where the rule is in force at all. An external
+	// review found the published share using every cell of the run, which read as three
+	// times more evidence than was collected.
+	scopeApplicable int
+	firstScope      int
+	deliveredScope  int
+	// appliedWhileClosed is a move that landed although a precondition had that very
+	// edge closed at the start of the turn. It is the honest count of "the weaker mode
+	// let an attack through": a lawful rollback also lands, and adding the two together
+	// published a number that included one.
+	appliedWhileClosed int
+	// unknownStage is a stage that is not in the set at all, apart from illegal, which
+	// is an edge that does not exist between two stages that do.
+	unknownStage int
 
 	refused  int
 	retried  int
@@ -136,6 +149,12 @@ func (t *tally) add(r cellRow) {
 	if r.MoveIllegal {
 		t.illegal++
 	}
+	if r.MoveUnknown {
+		t.unknownStage++
+	}
+	if r.MoveApplied && slices.Contains(r.BlockedBefore, r.AskedStage) {
+		t.appliedWhileClosed++
+	}
 	if r.MoveUnready {
 		t.unready++
 	}
@@ -147,6 +166,9 @@ func (t *tally) add(r cellRow) {
 		if !r.MoveApplied && !r.StepApplied {
 			t.movedWithoutApply++
 		}
+	}
+	if scopeApplies(r) {
+		t.scopeApplicable++
 	}
 	if len(r.FirstScope) > 0 {
 		t.firstScope++
@@ -187,6 +209,22 @@ func (t *tally) add(r cellRow) {
 	}
 }
 
+// scopeStages are the stages the stage-scope rule is declared for, read from the rule
+// set rather than written here.
+func scopeStages(rules []agent.Invariant) []string {
+	var out []string
+	for _, r := range rules {
+		if r.Kind == agent.KindStageScope {
+			out = append(out, r.Values...)
+		}
+	}
+	return out
+}
+
+// scopeApplies is set once per run from the rule file; a package-level value rather than
+// a parameter only because tally.add has one argument and every caller shares the rules.
+var scopeApplies = func(cellRow) bool { return false }
+
 func buildReport(rowsPath, outPath string, rescore bool, invPath string) error {
 	rows, err := readRows(rowsPath)
 	if err != nil {
@@ -204,6 +242,9 @@ func buildReport(rowsPath, outPath string, rescore bool, invPath string) error {
 }
 
 func renderReport(rows []cellRow, rules []agent.Invariant) string {
+	stages := scopeStages(rules)
+	scopeApplies = func(r cellRow) bool { return slices.Contains(stages, r.StageBefore) }
+
 	var b strings.Builder
 	b.WriteString(generatedHeader + "\n\n")
 	b.WriteString("# День 15 — контролируемые переходы: что держит красный путь\n\n")
@@ -347,6 +388,11 @@ func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally,
 			s.Name, n, share(t.askedStage, n), pct1(lo), pct1(hi),
 			share(t.askedStep, n), share(t.firstScope, n))
 	}
+	if total.unknownStage > 0 {
+		fmt.Fprintf(b, "\nСтадию, которой в наборе нет, модель назвала %s — это отдельный столбец и "+
+			"отдельная находка: «такого ребра нет» и «такой стадии нет» говорят о модели разное.\n",
+			plural(total.unknownStage, "в %d клетке из %d", "в %d клетках из %d", total.usable()))
+	}
 	if total.illegal == 0 {
 		fmt.Fprintf(b, "\n**Несуществующего ребра модель не попросила ни разу** — ни в одной из %d пригодных клеток "+
 			"(столбец «отклонён: ребра нет» в разделе B — ноль во всех руках). "+
@@ -358,6 +404,10 @@ func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally,
 			"лежит дословно в выгрузке `day-15/definitions.json` (раздел `refusals`, случай «ребра нет»), " +
 			"а поведение закреплено тестами `TestTheControlModesDifferExactlyWhereTheyPromiseTo` и " +
 			"`TestARefusedTransitionCancelsTheStepAskedInTheSameAnswer`.\n\n")
+		b.WriteString("**Оговорка к этому нулю, найденная внешним ревью:** в руке `none` таблица не " +
+			"спрашивается вовсе, поэтому её 90 клеток дать ненулевой отсчёт не могли **по построению**. " +
+			"Измеренная часть — 270 клеток остальных трёх рук с тем же запросом (и ещё 90 у " +
+			"`silent-scope`); на них ноль означает поведение модели, а не устройство кода.\n\n")
 	} else {
 		// Non-zero, so the cells are named: a rate without the moves behind it cannot be
 		// read, and this column is the whole of antipattern 02.
@@ -416,7 +466,12 @@ func writeMachineSection(b *strings.Builder, byArm, byPair map[string]*tally, ro
 	// slipped in: it is one comparison over "нападения", decided before the run,
 	// not the best of four.
 	b.WriteString("\n")
+	b.WriteString("Считается не «ход применён», а **ход применён при закрытом предусловии**: в слабых " +
+		"руках законный откат тоже применяется, и внешнее ревью нашло один такой внутри опубликованного " +
+		"числа. Столбец берётся из того, что машина сама посчитала закрытым на начало хода.\n\n")
 	var tableAttacks, guardsAttacks tally
+	var names []string
+	var ps []float64
 	for _, name := range attackScenarios() {
 		table, ok1 := byPair["table|"+name]
 		guards, ok2 := byPair["guards|"+name]
@@ -426,35 +481,62 @@ func writeMachineSection(b *strings.Builder, byArm, byPair map[string]*tally, ro
 		poolInto(&tableAttacks, table)
 		poolInto(&guardsAttacks, guards)
 		p := stats.FisherTwoSided(
-			table.applied, table.usable()-table.applied,
-			guards.applied, guards.usable()-guards.applied)
-		fmt.Fprintf(b, "- `%s`: `table` %s против `guards` %s, двусторонний Фишер p = %.2g\n",
-			name, share(table.applied, table.usable()), share(guards.applied, guards.usable()), p)
+			table.appliedWhileClosed, table.usable()-table.appliedWhileClosed,
+			guards.appliedWhileClosed, guards.usable()-guards.appliedWhileClosed)
+		names = append(names, name)
+		ps = append(ps, p)
+	}
+	// Four comparisons on the same question need the multiplicity said out loud rather
+	// than four naked p-values; Holm is the correction, at the usual 5%.
+	holm := stats.Holm(ps, 0.05)
+	for i, name := range names {
+		table, guards := byPair["table|"+name], byPair["guards|"+name]
+		verdict := "не проходит Холма"
+		if i < len(holm) && holm[i] {
+			verdict = "проходит Холма"
+		}
+		fmt.Fprintf(b, "- `%s`: `table` %s против `guards` %s, двусторонний Фишер p = %.2g (%s)\n",
+			name, share(table.appliedWhileClosed, table.usable()),
+			share(guards.appliedWhileClosed, guards.usable()), ps[i], verdict)
 	}
 	if tableAttacks.usable() > 0 && guardsAttacks.usable() > 0 {
 		p := stats.FisherTwoSided(
-			tableAttacks.applied, tableAttacks.usable()-tableAttacks.applied,
-			guardsAttacks.applied, guardsAttacks.usable()-guardsAttacks.applied)
+			tableAttacks.appliedWhileClosed, tableAttacks.usable()-tableAttacks.appliedWhileClosed,
+			guardsAttacks.appliedWhileClosed, guardsAttacks.usable()-guardsAttacks.appliedWhileClosed)
 		fmt.Fprintf(b, "\nВсе четыре нападения вместе: `table` %s против `guards` %s, двусторонний Фишер p = %.2g. "+
 			"**Это и есть предусловия в одном числе:** таблица дня 13 пропускает преждевременный ход, "+
-			"потому что ребро существует; предусловие смотрит не на ребро, а на состояние.\n\n",
-			share(tableAttacks.applied, tableAttacks.usable()),
-			share(guardsAttacks.applied, guardsAttacks.usable()), p)
+			"потому что ребро существует; предусловие смотрит не на ребро, а на состояние. "+
+			"Поправка на множественность относится к четырём сценарным сравнениям выше; это — пятое, "+
+			"заранее объявленное объединение, а не лучшее из четырёх.\n\n",
+			share(tableAttacks.appliedWhileClosed, tableAttacks.usable()),
+			share(guardsAttacks.appliedWhileClosed, guardsAttacks.usable()), p)
 	}
 
 	// What the announced rule buys, on the model's own behaviour: both arms enforce the
 	// same way and differ only in whether the rule travels.
-	if loud, ok := byArm["guards+scope"]; ok {
-		if silent, ok2 := byArm["silent-scope"]; ok2 && loud.usable() > 0 && silent.usable() > 0 {
-			p := stats.FisherTwoSided(
-				loud.unready, loud.usable()-loud.unready,
-				silent.unready, silent.usable()-silent.unready)
-			fmt.Fprintf(b, "Сколько раз модель попросила преждевременный ход: `guards+scope` (правило уходит в запрос) %s "+
-				"против `silent-scope` (то же правило хранится и проверяется, но модели не сообщается) %s, "+
-				"двусторонний Фишер: p = %.2g. Обе руки судят одинаково — различается только текст запроса, "+
-				"поэтому это измерение **промпта**, а не кода.\n\n",
-				share(loud.unready, loud.usable()), share(silent.unready, silent.usable()), p)
+	var loud tally
+	for _, name := range []string{"guards", "guards+scope"} {
+		if t, ok := byArm[name]; ok {
+			poolInto(&loud, t)
 		}
+	}
+	if silent, ok := byArm["silent-scope"]; ok && loud.usable() > 0 && silent.usable() > 0 {
+		p := stats.FisherTwoSided(
+			loud.unready, loud.usable()-loud.unready,
+			silent.unready, silent.usable()-silent.unready)
+		fmt.Fprintf(b, "Сколько раз модель попросила преждевременный ход: `guards` и `guards+scope` вместе "+
+			"(запрос у них побайтно одинаков) %s против `silent-scope` %s, двусторонний Фишер: p = %.2g. "+
+			"Все три руки судят одинаково строго — различается только текст запроса, поэтому это "+
+			"измерение **промпта**, а не кода.\n\n",
+			share(loud.unready, loud.usable()), share(silent.unready, silent.usable()), p)
+		b.WriteString("**Что именно убрано в `silent-scope`, точно.** Блок `[TASK_STATE]` уходит во всех " +
+			"руках без исключения, вместе со строкой «не выдавай работу следующих стадий» и со строками " +
+			"`blocked: …`. Гасится только блок `[INVARIANTS]` — русская переформулировка того же правила " +
+			"**и протокол отказа** («откажись в четырёх частях», маркер `[[REFUSED: …]]`). Первая " +
+			"редакция отчёта писала «правило не уходит в запрос»; внешнее ревью показало, что это " +
+			"неверно, и что сравниваемый столбец относится к другому правилу — предусловию, о котором " +
+			"обе руки извещены строками `blocked:`. Что измерено на самом деле: **сколько добавляет " +
+			"вторая, развёрнутая формулировка правила и протокол отказа поверх блока состояния.**\n\n")
 	}
 
 	writeMovedFootnote(b, rows)
@@ -506,27 +588,31 @@ func writeScopeSection(b *strings.Builder, byArm, byPair map[string]*tally, rule
 	b.WriteString("Модель может не просить перехода вовсе и просто выдать работу следующей стадии. " +
 		"Столбец «в первом ответе» — поведение самой модели; «дошло до человека» — что осталось после " +
 		"проверки и повтора.\n\n")
-	b.WriteString("| Рука | Клеток | В первом ответе | Дошло до человека | Повтор | Отказ программы |\n|---|---|---|---|---|---|\n")
+	b.WriteString("Знаменатель — **клетки, где правило действует**: оно объявлено для стадий " +
+		"планирования, а сценарии засеяны в четырёх разных стадиях. Внешнее ревью нашло в первой " +
+		"редакции знаменатель по всем клеткам прогона — он читался как втрое больше собранных " +
+		"доказательств, чем есть.\n\n")
+	b.WriteString("| Рука | Клеток всего | Где правило действует | В первом ответе | Дошло до человека | Повтор | Отказ программы |\n|---|---|---|---|---|---|---|\n")
 	var first, delivered, usable int
 	for _, a := range arms() {
 		t, ok := byArm[a.Name]
 		if !ok {
 			continue
 		}
-		n := t.usable()
+		n := t.scopeApplicable
 		first += t.firstScope
 		delivered += t.deliveredScope
 		usable += n
-		fmt.Fprintf(b, "| `%s` | %d | %s | %s | %s | %s |\n",
-			a.Name, n, share(t.firstScope, n), share(t.deliveredScope, n),
-			share(t.retried, n), share(t.refused, n))
+		fmt.Fprintf(b, "| `%s` | %d | %d | %s | %s | %s | %s |\n",
+			a.Name, t.usable(), n, share(t.firstScope, n), share(t.deliveredScope, n),
+			share(t.retried, t.usable()), share(t.refused, t.usable()))
 	}
 
 	if first == 0 && delivered == 0 {
 		// Two zeros are not a comparison, and a p-value between them is the mistake
 		// day 14's own report was corrected for. What a zero needs is a positive
 		// control: proof the instrument can say "yes".
-		fmt.Fprintf(b, "\n**Содержательного перепрыга не случилось ни разу: 0 из %d.** "+
+		fmt.Fprintf(b, "\n**Содержательного перепрыга не случилось ни разу: 0 из %d клеток, где правило действует.** "+
 			"Ни в одной руке, включая `silent-scope`, где правило модели не сообщалось. "+
 			"Сравнивать руки здесь нечем — между двумя нулями нет разницы, которую можно измерить, "+
 			"и p-значение тут было бы украшением.\n\n", usable)
@@ -589,7 +675,11 @@ func writeControlsSection(b *strings.Builder, byPair map[string]*tally, rows []c
 			share(ctrl.refused, ctrl.usable()),
 			share(ctrl.firstScope, ctrl.usable()))
 	}
-	b.WriteString("\nОтдельно: на `rollback` модель должна была попросить именно `execution`. " +
+	b.WriteString("\n**Столбец «`control`: работа чужой стадии» — конструктивный ноль, а не измерение.** " +
+		"Сценарий засеян в стадии реализации, где правило `stage-scope` не действует вовсе, поэтому " +
+		"ноль там был бы и на ответе, целиком состоящем из кода. Измеренного контроля ложных " +
+		"срабатываний в живой стадии в этом прогоне нет — это назвал внешний ревьюер, и это правда.\n\n")
+	b.WriteString("Отдельно: на `rollback` модель должна была попросить именно `execution`. " +
 		"Что она просила на самом деле:\n\n")
 	asked := map[string]int{}
 	for _, r := range rows {
@@ -707,9 +797,18 @@ func writeInstrumentsSection(b *strings.Builder) {
 		"в русской прозе отступ обычен, и детектор, читающий его как реализацию, повторил бы " +
 		"лексические ошибки дней 12–14 в новом костюме. Выбран структурный именно потому, " +
 		"что подстрочные детекторы дней 12–14 трижды ловили обычную речь.\n")
-	b.WriteString("- **Закрытие шага** по-прежнему идёт по слову модели: код проверяет только границы плана. " +
-		"Это слабее, чем судейство стадии, и остаётся слабее. Но перепрыгнуть **стадию** это больше не даёт: " +
-		"ребро в валидацию требует, чтобы машина стояла на последнем шаге, а финал — вердикта.\n")
+	b.WriteString("- **Закрытие шага** идёт по слову модели: сколько шагов закрыто — решает её маркер, " +
+		"код проверяет только границы плана И **стадию**. Привязка к стадии появилась после внешнего " +
+		"ревью: до неё план можно было промотать до последнего шага, стоя в планировании на черновике, " +
+		"и ребро в валидацию открывалось без единицы работы. В прошлом прогоне так сделали 10 клеток.\n")
+	b.WriteString("- **Атомарность хода односторонняя, и это сознательно.** Отклонённый ПЕРЕХОД отменяет " +
+		"и закрытие шага, попрошенное тем же ответом. Обратное неверно: отклонённое закрытие шага " +
+		"(например, план уже пройден) не отменяет законный переход — отказ там означает «нечего " +
+		"закрывать», а не нарушение.\n")
+	b.WriteString("- **У структурного детектора есть и ложные срабатывания, не только слепые пятна.** " +
+		"Ограда считается кодом всегда, поэтому обычный русский текст, взятый моделью в ограду, будет " +
+		"засчитан как работа чужой стадии. В прошлом прогоне такой ответ был (`guards`/`rollback`), " +
+		"правда в стадии, где правило не действует.\n")
 	b.WriteString("- **Промпт одинаков в четырёх руках из пяти** — блок состояния и набор правил уходят всегда, " +
 		"и это видно по входным токенам: у `none`, `table`, `guards` и `guards+scope` они совпадают до единицы " +
 		"(раздел G). Поэтому эти четыре руки сравнивают код, а не текст. Пятая, `silent-scope`, отличается ровно " +

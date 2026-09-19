@@ -22,6 +22,7 @@ package agent
 // it.
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -64,10 +65,14 @@ func implementationMarkers(answer string) []string {
 // Russian prose an indented continuation line is ordinary, and a detector that read one
 // as an implementation would repeat the lexical mistakes of days 12-14 in a new costume.
 // That blind spot is named in the report instead.
-func hasHTMLCode(answer string) bool {
-	lower := strings.ToLower(answer)
-	return strings.Contains(lower, "<pre") || strings.Contains(lower, "<code")
-}
+func hasHTMLCode(answer string) bool { return htmlCodeTag.MatchString(answer) }
+
+// htmlCodeTag matches an opening <pre> or <code> TAG, not the letters. The first
+// version was a substring test inside a detector advertised as structural, and an
+// external review named what it would catch: Map<Code, Token>, <prefix>. A tag is
+// followed by a delimiter — '>' or whitespace before an attribute — and generics are
+// not.
+var htmlCodeTag = regexp.MustCompile(`(?i)<(pre|code)(\s|>|/>)`)
 
 // hasFencedBlock reports a fenced code block. An OPENING fence is enough: an answer cut
 // off by the token ceiling mid-block is still an answer that started writing code, and

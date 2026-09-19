@@ -26,6 +26,12 @@ package main
 // for, what it writes — can be pooled across arms, and it means the weaker arms carry
 // a rule in the prompt that nothing enforces, which is the thing slide 29 calls a
 // request rather than a law.
+//
+// What the fifth arm removes is narrower than its first description said, and an
+// external review is why this is written out: [TASK_STATE] travels in EVERY arm,
+// including its "do not produce the work of a later stage" line and its blocked: lines.
+// silent-scope drops only the [INVARIANTS] block — the second, fuller statement of the
+// same rule, and the refusal protocol that goes with it.
 
 import (
 	"context"
@@ -97,7 +103,7 @@ func arms() []armSpec {
 		// exercised. Here the rule is stored and enforced but never announced, which
 		// is day 14's silent arm: it measures what the code catches when the prompt
 		// did not prevent it.
-		{"silent-scope", "правило НЕ уходит в запрос: работает только проверка и повтор", agent.ControlGuards, false, true, true},
+		{"silent-scope", "блок [INVARIANTS] не уходит: нет развёрнутого правила и протокола отказа", agent.ControlGuards, false, true, true},
 	}
 }
 
@@ -232,8 +238,11 @@ type cellRow struct {
 	StepApplied bool   `json:"step_applied"`
 	AskedStage  string `json:"asked_stage,omitempty"`
 	// What the machine answered: exactly one of these is true when a stage was asked.
-	MoveApplied bool   `json:"move_applied"`
-	MoveIllegal bool   `json:"move_illegal"`
+	MoveApplied bool `json:"move_applied"`
+	MoveIllegal bool `json:"move_illegal"`
+	// MoveUnknown is a stage that does not exist in the set — kept apart from
+	// MoveIllegal, which is an edge that does not exist between two stages that do.
+	MoveUnknown bool   `json:"move_unknown"`
 	MoveUnready bool   `json:"move_unready"`
 	MoveBlocked bool   `json:"move_blocked"`
 	MoveNote    string `json:"move_note,omitempty"`
@@ -249,6 +258,13 @@ type cellRow struct {
 	ShaAfter    string `json:"sha_after"`
 	// Moved is the honest summary: the stored state is not the stored state it was.
 	Moved bool `json:"moved"`
+
+	// BlockedBefore are the edges a precondition had CLOSED at the start of the turn,
+	// as the agent itself computed them. It is what makes an applied move readable: in
+	// the weaker arms a move may land either because it was legitimate or because
+	// nothing checked it, and without this column the two were added together — an
+	// external review found a lawful rollback inside the count of "attacks let through".
+	BlockedBefore []string `json:"blocked_before,omitempty"`
 
 	// Resumed is the pause-and-continue check, run after every single turn: a second
 	// agent opens the same directory and must see the same machine and build the same
@@ -466,6 +482,9 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 	before := ag.TaskState()
 	row.StageBefore, row.StepBefore = string(before.State), before.Step
 	row.ShaBefore = fileSum(before.Path)
+	for _, b := range before.Blocked {
+		row.BlockedBefore = append(row.BlockedBefore, string(b.To))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -493,6 +512,7 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 	row.AskedStage = string(reply.Move.StageAsked)
 	row.MoveApplied = reply.Move.StageApplied
 	row.MoveIllegal = reply.Move.Illegal
+	row.MoveUnknown = reply.Move.Unknown
 	row.MoveUnready = reply.Move.Unready
 	row.MoveBlocked = reply.Move.Blocked
 	row.MoveNote = reply.Move.Note

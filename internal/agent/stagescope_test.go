@@ -48,6 +48,10 @@ func TestTheDetectorSeesStructureAndNotWords(t *testing.T) {
 		{"настоящий дифф: строки подряд", StagePlanning, "--- old.kt\n+++ new.kt", true},
 		{"код в html", StagePlanning, "Набросок:\n<pre><code>fun main() {}</code></pre>", true},
 		{"инлайн html-код", StagePlanning, "Вызовем <code>validate</code> позже.", true},
+		// Найдено внешним ревью: подстрочный поиск внутри «структурного» детектора
+		// срабатывал на дженерике и на любом слове, начинающемся с code/pre.
+		{"дженерик, а не тег", StagePlanning, "Тип Map<Code, Token> опишем в плане.", false},
+		{"слово с префиксом", StagePlanning, "Разберём <prefix> и <codepoint> в плане.", false},
 		{"отступ в четыре пробела — слепое пятно", StagePlanning,
 			"План:\n    fun main() {}\nдальше по пунктам", false},
 		{"план словами", StagePlanning,
@@ -171,5 +175,54 @@ func TestWithoutTheRuleTheJumpIsDelivered(t *testing.T) {
 	}
 	if !strings.Contains(reply.Text, "```") {
 		t.Fatalf("ответ изменён: %q", reply.Text)
+	}
+}
+
+// Day 14 lets a DECLARED refusal through with a warning: a refusal proposes nothing, so
+// naming the forbidden stack in order to refuse it is not a violation. That reasoning
+// does not carry to stage-scope, where the violation is the PRESENCE of the work — and
+// an external review found the day-14 branch swallowing exactly that case. In the
+// published run 111 of the 150 applicable cells went down this branch, so the detector's
+// verdict could not have blocked anything in most of them.
+func TestADeclaredRefusalDoesNotExcuseDeliveredCode(t *testing.T) {
+	dir := t.TempDir()
+	refusalWithCode := "Не могу: сначала план.\n```kotlin\nfun main() {}\n```\n[[REFUSED: stage-scope]]"
+	c := &invCaller{replies: []string{refusalWithCode, refusalWithCode}}
+	a := invAgent(t, c, dir, func(cfg *InvariantConfig) { cfg.Retry = true })
+	mustAdd(t, a, noCodeInPlanning())
+	planDraft(t, a, "модуль JWT")
+
+	reply, err := a.Ask(context.Background(), "покажи код")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !reply.Invariants.Refused {
+		t.Fatalf("объявленный отказ с кодом внутри доставлен: %+v", reply.Invariants)
+	}
+	if strings.Contains(reply.Text, "```") {
+		t.Fatalf("код доставлен под видом отказа: %q", reply.Text)
+	}
+}
+
+// And the day-14 behaviour itself is untouched: a refusal that names a forbidden stack
+// is still delivered, with the finding reported as a warning.
+func TestADeclaredRefusalStillExcusesAQuotedStack(t *testing.T) {
+	dir := t.TempDir()
+	c := &invCaller{replies: []string{
+		"Java использовать нельзя: разрешены только Kotlin и Ktor.\n[[REFUSED: stack]]",
+	}}
+	a := invAgent(t, c, dir, func(cfg *InvariantConfig) { cfg.Retry = true })
+	mustAdd(t, a, stackOnlyKotlin())
+	planDraft(t, a, "модуль JWT")
+
+	reply, err := a.Ask(context.Background(), "давай на Java")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Invariants.Refused {
+		t.Fatalf("корректный отказ дня 14 подменён шаблоном: %+v", reply.Invariants)
+	}
+	if len(reply.Invariants.Warned) == 0 {
+		t.Fatal("находка не показана предупреждением")
 	}
 }

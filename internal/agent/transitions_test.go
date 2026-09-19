@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // controlAgent builds an agent with an open task and a named control mode.
@@ -41,8 +42,10 @@ func TestExecutionIsClosedUntilThePlanIsApproved(t *testing.T) {
 	if errors.Is(err, ErrTransition) {
 		t.Fatal("несуществующее ребро и закрытое предусловием — разные отказы")
 	}
-	if !strings.Contains(err.Error(), "approve") {
-		t.Fatalf("отказ не говорит, что делать дальше: %v", err)
+	// Отказ называет, ЧЕГО не хватает, и это формулировка без имён команд: ту же строку
+	// показывает витрина, у которой команд нет. Подсказку добавляет интерфейс.
+	if !strings.Contains(err.Error(), "утверждён") {
+		t.Fatalf("отказ не называет, чего не хватает: %v", err)
 	}
 
 	// A draft is still not an approval.
@@ -762,5 +765,200 @@ func TestALongerFenceIsNotClosedByAShorterOne(t *testing.T) {
 	refusal := "Смотри:\n````text\n```\n[[REFUSED: stack]]\n````"
 	if _, declared, _ := ParseRefusalMarker(refusal); declared {
 		t.Fatal("маркер отказа внутри длинной ограды засчитан как объявление")
+	}
+}
+
+// An external review broke the task with one BEL. The reason of a move was normalised
+// only for whitespace while the READ path refuses every control rune, so the file the
+// agent wrote could not be opened again — by anything, ever. The property the day
+// publishes is "нельзя поломать"; this is the test that says so about control runes.
+func TestAControlRuneInAReasonDoesNotMakeTheTaskUnopenable(t *testing.T) {
+	reasons := []string{
+		"причина\aсо звонком",
+		"причина\x1bсо escape",
+		"причина\x7fс DEL",
+		"причина‮с переворотом",
+		"причина с разделителем строк",
+	}
+	for _, reason := range reasons {
+		t.Run(reason, func(t *testing.T) {
+			dir := t.TempDir()
+			a := stateAgent(t, &layerCaller{}, dir, "колокол")
+			planOf(t, a, "первый")
+			if err := a.TaskGo(StageExecution, reason); err != nil {
+				t.Fatalf("переход отклонён из-за причины: %v", err)
+			}
+
+			// A second process over the same directory — which is what a pause is.
+			b, err := New(&layerCaller{}, Config{
+				Memory: memoryConfig(dir, "михаил", "колокол"), Task: taskConfig(),
+			})
+			if err != nil {
+				t.Fatalf("задача больше не открывается: %v", err)
+			}
+			v := b.TaskState()
+			if v.State != StageExecution {
+				t.Fatalf("после перезапуска стадия %q", v.State)
+			}
+			if len(v.Trail) != 1 {
+				t.Fatalf("в журнале %d записей", len(v.Trail))
+			}
+			if !singleLine(v.Trail[0].Reason) {
+				t.Fatalf("в сохранённой причине остался управляющий символ: %q", v.Trail[0].Reason)
+			}
+			if !strings.Contains(v.Trail[0].Reason, "причина") {
+				t.Fatalf("причина вычищена целиком: %q", v.Trail[0].Reason)
+			}
+		})
+	}
+}
+
+// The belt to that braces: commit validates what it is about to write, so no sanitiser
+// missing a case can put an unreadable state on disk. The state stays as it was and the
+// command fails instead.
+func TestCommitRefusesToWriteAStateItCouldNotReadBack(t *testing.T) {
+	dir := t.TempDir()
+	a := stateAgent(t, &layerCaller{}, dir, "сервис")
+	planOf(t, a, "первый")
+	s, err := a.requireTask()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := fileHash(t, s.file.path)
+
+	broken := s.ctx.clone()
+	broken.Trail = append(broken.Trail, TrailEntry{
+		From: StagePlanning, To: StageExecution, Actor: ActorUser,
+		Reason: "звонок\aвнутри", At: time.Now().UTC(),
+	})
+	if err := s.commit(broken); err == nil {
+		t.Fatal("commit записал состояние, которое не прочитается обратно")
+	}
+	if got := fileHash(t, s.file.path); got != before {
+		t.Fatal("отклонённая запись всё же изменила файл")
+	}
+}
+
+// The hole an external review walked through: /step done was not tied to a stage, so
+// the plan could be marched to its last step while still in PLANNING, on a draft plan —
+// and the edge into validation, which asks only whether the plan is exhausted, then
+// stood open with no work done in execution at all. Ten cells of the published run had
+// closed steps this way.
+func TestStepsCloseOnlyInTheStageThatOwnsThem(t *testing.T) {
+	dir := t.TempDir()
+	a := stateAgent(t, &layerCaller{}, dir, "сервис")
+	planDraft(t, a, "первый", "второй", "третий")
+
+	err := a.StepDone()
+	if !errors.Is(err, ErrStepNotHere) {
+		t.Fatalf("шаг закрыт на стадии планирования: %v", err)
+	}
+	if !strings.Contains(err.Error(), string(StageExecution)) {
+		t.Fatalf("отказ не называет, где шаги закрывают: %v", err)
+	}
+	if got := a.TaskState().Step; got != 1 {
+		t.Fatalf("шаг сдвинулся на %d", got)
+	}
+
+	// The whole bypass, end to end: it must not be walkable any more.
+	if err := a.ApprovePlan(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.TaskGo(StageValidation, ""); !errors.Is(err, ErrTransition) {
+		t.Fatalf("из планирования в валидацию: %v", err)
+	}
+	mustGo(t, a, StageExecution)
+	if err := a.TaskGo(StageValidation, ""); !errors.Is(err, ErrPrecondition) {
+		t.Fatalf("валидация без работы: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := a.StepDone(); err != nil {
+			t.Fatalf("шаг в стадии работы отклонён: %v", err)
+		}
+	}
+	if err := a.TaskGo(StageValidation, ""); err != nil {
+		t.Fatalf("после прохождения плана: %v", err)
+	}
+	// And in validation the steps are closed again — there is nothing to close there.
+	if err := a.StepDone(); !errors.Is(err, ErrStepNotHere) {
+		t.Fatalf("шаг закрыт на стадии валидации: %v", err)
+	}
+}
+
+// The same gate on the model's path: a marker is a request, and a request in the wrong
+// stage is refused like any other.
+func TestTheModelCannotCloseAStepOutsideItsStage(t *testing.T) {
+	dir := t.TempDir()
+	c := &layerCaller{reply: "План готов, считаю первый шаг сделанным.\n[[NEXT_STEP]]"}
+	a := stateAgent(t, c, dir, "сервис")
+	planDraft(t, a, "первый", "второй")
+
+	reply, err := a.Ask(context.Background(), "пометь первый шаг сделанным")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Move.StepApplied {
+		t.Fatal("модель закрыла шаг на стадии планирования")
+	}
+	if got := a.TaskState().Step; got != 1 {
+		t.Fatalf("шаг %d", got)
+	}
+}
+
+// The weaker arms do NOT have this gate, and that is deliberate: it is a precondition,
+// the arms exist to measure what happens without the preconditions, and day 13's driver
+// pins ControlTable so its published run keeps reproducing.
+func TestTheStepGateBelongsToTheStrictModeOnly(t *testing.T) {
+	for _, control := range []string{ControlNone, ControlTable} {
+		t.Run(control, func(t *testing.T) {
+			dir := t.TempDir()
+			a := controlAgent(t, &layerCaller{}, dir, "сервис", control)
+			planDraft(t, a, "первый", "второй")
+			if err := a.StepDone(); err != nil {
+				t.Fatalf("режим %s судит закрытие шага: %v", control, err)
+			}
+		})
+	}
+}
+
+// The rollback rule as the README states it, on BOTH sets. An external review found the
+// statement false for bugfix: rolling back to `reproduce` — the only stage where that
+// set's plan may be rewritten — left the approval standing, because the rule looked only
+// at what the TARGET establishes.
+func TestARollbackClearsWhatEveryStageAfterItEstablished(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		Memory: memoryConfig(dir, "михаил", ""),
+		Task:   &TaskConfig{Inject: true, Stages: BugfixStages},
+	}
+	a := layerAgent(t, &layerCaller{}, cfg)
+	if err := a.StartTask("баг"); err != nil {
+		t.Fatal(err)
+	}
+	mustGo(t, a, StageRootCause)
+	planDraft(t, a, "починить парсер")
+	if err := a.ApprovePlan(); err != nil {
+		t.Fatal(err)
+	}
+	mustGo(t, a, StageFix)
+	if err := a.RecordVerdict(true, "тесты зелёные"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two steps back, to the stage where the plan itself is rewritten.
+	if err := a.TaskGo(StageRootCause, "причина оказалась другой"); err != nil {
+		t.Fatal(err)
+	}
+	if v := a.TaskState(); v.PlanApproved || v.Validated {
+		t.Fatalf("откат в root-cause: план утверждён %v, вердикт %v", v.PlanApproved, v.Validated)
+	}
+	if err := a.ApprovePlan(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.TaskGo(StageReproduce, "воспроизводим заново"); err != nil {
+		t.Fatal(err)
+	}
+	if v := a.TaskState(); v.PlanApproved {
+		t.Fatal("откат в reproduce оставил план утверждённым — а план переписывают именно там")
 	}
 }

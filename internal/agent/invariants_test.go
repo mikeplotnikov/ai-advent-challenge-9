@@ -1210,13 +1210,18 @@ func TestTheRetriedAnswerIsTheOneThatMovesTheMachine(t *testing.T) {
 	dir := t.TempDir()
 	c := &invCaller{replies: []string{
 		// Rejected: proposes the forbidden stack, and asks for a transition on its way.
-		"Берём Java со Spring Boot.\n[[TRANSITION: execution]]",
+		// The stage is execution, so the transition it asks for is validation — a legal
+		// edge, which is the point: it must not happen because the ANSWER was rejected,
+		// not because the table refused it.
+		"Берём Java со Spring Boot.\n[[TRANSITION: validation]]",
 		// Accepted: within the rules, and closes the current step.
 		"Берём Kotlin и Ktor.\n[[NEXT_STEP]]",
 	}}
 	a := invAgent(t, c, dir, func(cfg *InvariantConfig) { cfg.Retry = true })
 	mustAdd(t, a, stackOnlyKotlin())
 	planOf(t, a, "первый", "второй")
+	// Шаги закрывают на стадии работы: день 15 привязал закрытие шага к стадии.
+	mustGo(t, a, StageExecution)
 
 	reply, err := a.Ask(context.Background(), "чем писать сервис")
 	if err != nil {
@@ -1245,7 +1250,7 @@ func TestTheRetriedAnswerIsTheOneThatMovesTheMachine(t *testing.T) {
 	if reply.Move.StageApplied || reply.Move.StageAsked != "" {
 		t.Fatalf("переход отброшенного ответа выполнен: %+v", reply.Move)
 	}
-	if got := a.TaskState().State; got != StagePlanning {
+	if got := a.TaskState().State; got != StageExecution {
 		t.Fatalf("стадия %q — машину двинул отброшенный ответ", got)
 	}
 }
