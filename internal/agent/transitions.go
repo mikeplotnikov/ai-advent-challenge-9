@@ -445,3 +445,32 @@ func (s *taskStateState) controlMode() string {
 	}
 	return mode
 }
+
+// StateBlock is the [TASK_STATE] block as it would travel in the next request. It is
+// exported for two readers that must not guess at it: the measurement, which compares
+// the block a resumed agent builds against the one the live agent built, and the
+// showcase, whose JavaScript mirror is checked against these bytes.
+func (a *Agent) StateBlock() string { return a.taskStateBlock() }
+
+// RequirementInfo is one precondition as the outside world may read it: its name and
+// what it says. The predicate itself is not exported — a mirror that reimplemented it
+// from a description would be a second, quieter judge.
+type RequirementInfo struct {
+	Name  string `json:"name"`
+	About string `json:"about"`
+}
+
+// Requirements lists the preconditions of one edge, in the order they are checked.
+// Exported for the dump the showcase is verified against: the page draws an edge as
+// closed, and it must draw it from the same table the agent refuses from.
+func (s StageSet) Requirements(from, to TaskStage) []RequirementInfo {
+	reqs := s.requirementsOn(from, to)
+	if len(reqs) == 0 {
+		return nil
+	}
+	out := make([]RequirementInfo, 0, len(reqs))
+	for _, r := range reqs {
+		out = append(out, RequirementInfo{Name: r.Name, About: r.About})
+	}
+	return out
+}
