@@ -206,6 +206,11 @@ func TestTheDumpedBlockIsTheOneTheAgentSends(t *testing.T) {
 	if !strings.Contains(defs.Example.Block, "blocked: execution — requires approved-plan") {
 		t.Fatalf("пример не показывает закрытый переход:\n%s", defs.Example.Block)
 	}
+	// The second example must carry a result forward, or the mirror is checked against
+	// a block that never has the line it was losing.
+	if !strings.Contains(defs.Carried.Block, "result.planning:") {
+		t.Fatalf("второй пример без перенесённого итога стадии:\n%s", defs.Carried.Block)
+	}
 }
 
 // Each kind of refusal must be present and must say something different. The page
@@ -243,17 +248,21 @@ func TestTheDetectorCasesInTheDumpAreTheOnesThatMatter(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"блок кода на планировании": true,
-		"тот же код на реализации":  false,
-		"незакрытый блок":           true,
-		"дифф без ограждения":       true,
-		"ограда из тильд":           true,
-		"дифф без префиксов":        true,
-		"горизонтальная черта":      false,
-		"план словами":              false,
-		"реализация словами":        false,
-		"инлайн-код":                false,
-		"знак @@ в тексте":          false,
+		"блок кода на планировании":     true,
+		"тот же код на реализации":      false,
+		"незакрытый блок":               true,
+		"дифф без ограждения":           true,
+		"ограда из тильд":               true,
+		"дифф без префиксов":            true,
+		"горизонтальная черта":          false,
+		"код в html":                    true,
+		"две подписи через страницу":    false,
+		"дифф двумя соседними строками": true,
+		"отступ в четыре пробела":       false,
+		"план словами":                  false,
+		"реализация словами":            false,
+		"инлайн-код":                    false,
+		"знак @@ в тексте":              false,
 	}
 	for _, c := range defs.Detector {
 		expected, ok := want[c.Case]
@@ -274,6 +283,26 @@ func TestTheDetectorCasesInTheDumpAreTheOnesThatMatter(t *testing.T) {
 // The instrument has to be able to say "bad". A report generator that can only print
 // zeros would pass every run, including a broken one — the project has been caught by
 // exactly that before, which is why the positive control is a test and not a habit.
+// The regression the first review wave found, as a row: the transition was refused and
+// the step closed anyway. The report has to see it — the version before the second wave
+// did not, because it excused any changed file whenever a step had been asked for.
+func TestTheReportSaysSoWhenARefusedMoveLeftAClosedStep(t *testing.T) {
+	rows := []cellRow{{
+		Run: "r", Revision: "rev", Arm: "guards", Scenario: "jump-done", Repeat: 1,
+		Outcome: outcomeOK, Delivered: "текст", StageBefore: "execution", StageAfter: "execution",
+		ShaBefore: "aaa", ShaAfter: "bbb", Moved: true, Resumed: true, Model: "m",
+		AskedStage: "done", MoveIllegal: true, AskedStep: true, StepApplied: true,
+		MoveNote: "переход отклонён",
+	}}
+	body := renderReport(rows, rulesForTest(t))
+	if !strings.Contains(body, "ход отклонён, но что-то применилось") {
+		t.Fatalf("отчёт не заметил отклонённый ход, оставивший закрытый шаг:\n%s", body)
+	}
+	if strings.Contains(body, "не изменила файл состояния ни в одной клетке") {
+		t.Fatal("отчёт одновременно утверждает обратное")
+	}
+}
+
 func TestTheReportSaysSoWhenTheStateMovedWithoutAMove(t *testing.T) {
 	rows := []cellRow{{
 		Run: "r", Revision: "rev", Arm: "guards", Scenario: "skip-plan", Repeat: 1,
@@ -282,7 +311,7 @@ func TestTheReportSaysSoWhenTheStateMovedWithoutAMove(t *testing.T) {
 		MoveNote: "как-то сдвинулось",
 	}}
 	body := renderReport(rows, rulesForTest(t))
-	if !strings.Contains(body, "Файл состояния менялся там, где ход не применялся") {
+	if !strings.Contains(body, "файл изменился, хотя ничего не применялось") {
 		t.Fatalf("отчёт не заметил сдвиг без хода:\n%s", body)
 	}
 	if strings.Contains(body, "не изменила файл состояния ни в одной клетке") {

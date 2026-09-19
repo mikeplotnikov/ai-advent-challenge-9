@@ -619,7 +619,7 @@ func parseControlMarkers(text string) (clean string, step bool, stage TaskStage)
 	fenced := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
+		if isFence(trimmed) {
 			fenced = !fenced
 			kept = append(kept, line)
 			continue

@@ -37,6 +37,10 @@ type definitions struct {
 	BlockOrder []string `json:"blockOrder"`
 	// Example is one real request's state block, with the state that produced it.
 	Example exampleDump `json:"example"`
+	// Carried is a SECOND real block, taken one stage later, where the state carries a
+	// result handed forward by the stage it left. The mirror lost that line entirely
+	// and the single planning-stage example could not see it — a review found it.
+	Carried exampleDump `json:"carried"`
 	// Refusals are the exact words of every kind of refusal, produced by refusing.
 	// A mirror that paraphrased one would be showing the visitor a different agent.
 	Refusals []refusalDump `json:"refusals"`
@@ -106,6 +110,12 @@ func detectorCases() []struct{ name, stage, text string } {
 		{"ограда из тильд", "planning", "~~~kotlin\nfun main() {}\n~~~"},
 		{"дифф без префиксов", "planning", "--- old.kt\n+++ new.kt\n@@ -1 +1 @@\n-a\n+b"},
 		{"горизонтальная черта", "planning", "План:\n--- дальше по пунктам\n1) модуль JWT"},
+		// The second review wave's cases: HTML is a code block too, and two captions
+		// pages apart are not a patch while two adjacent lines are.
+		{"код в html", "planning", "Набросок:\n<pre><code>fun main() {}</code></pre>"},
+		{"две подписи через страницу", "planning", "--- Минусы\n1) дольше\n\n+++ Плюсы\n1) быстрее"},
+		{"дифф двумя соседними строками", "planning", "--- old.kt\n+++ new.kt"},
+		{"отступ в четыре пробела", "planning", "План:\n    fun main() {}\nдальше по пунктам"},
 		{"план словами", "planning", "План: 1) модуль JWT, 2) проверка токена, 3) отзыв."},
 		{"реализация словами", "planning", "Сделай класс TokenService с методом validate, он парсит заголовок."},
 		{"инлайн-код", "planning", "Шаг 2 закрывает функция `validate`, но пишем её позже."},
@@ -187,6 +197,18 @@ func buildDefinitions(invPath string) (definitions, error) {
 	defs.Example = exampleDump{
 		Scenario: scenarios()[0].Name, Context: ctx, Block: block,
 		Blocked: blocked, Request: request,
+	}
+
+	// The second example: execution, with the planning stage's result carried forward.
+	carriedScenario := scenarioSpec{Name: "carried", Seed: seedSpec{Stage: agent.StageExecution, Approve: true, Step: 1},
+		Question: scenarios()[0].Question}
+	cBlock, cCtx, cBlocked, cRequest, err := recordBlock(carriedScenario, rules)
+	if err != nil {
+		return defs, err
+	}
+	defs.Carried = exampleDump{
+		Scenario: carriedScenario.Name, Context: cCtx, Block: cBlock,
+		Blocked: cBlocked, Request: cRequest,
 	}
 
 	refusals, err := recordRefusals(rules)

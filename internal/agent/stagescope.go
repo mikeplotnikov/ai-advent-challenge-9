@@ -52,7 +52,21 @@ func implementationMarkers(answer string) []string {
 	if hasDiffHeader(answer) {
 		out = append(out, "дифф")
 	}
+	if hasHTMLCode(answer) {
+		out = append(out, "html-код")
+	}
 	return out
+}
+
+// hasHTMLCode reports a code block written as HTML. Found by the second review wave:
+// <pre> and <code> are as much "a block of code" as a fence is, and the detector saw
+// neither. An indented four-space block is still invisible and is NOT added here — in
+// Russian prose an indented continuation line is ordinary, and a detector that read one
+// as an implementation would repeat the lexical mistakes of days 12-14 in a new costume.
+// That blind spot is named in the report instead.
+func hasHTMLCode(answer string) bool {
+	lower := strings.ToLower(answer)
+	return strings.Contains(lower, "<pre") || strings.Contains(lower, "<code")
 }
 
 // hasFencedBlock reports a fenced code block. An OPENING fence is enough: an answer cut
@@ -64,12 +78,20 @@ func implementationMarkers(answer string) []string {
 // of the two spellings is a detector with a published spelling for getting past it.
 func hasFencedBlock(answer string) bool {
 	for _, line := range strings.Split(answer, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		if isFence(strings.TrimSpace(line)) {
 			return true
 		}
 	}
 	return false
+}
+
+// isFence is the ONE definition of a code fence in this package, and having one is the
+// point. The second review wave found the detector treating "~~~" as a fence while both
+// marker parsers treated it as ordinary text — so a marker shown as an example inside a
+// perfectly valid CommonMark block moved the state machine. Two spellings of the same
+// concept in two places is how that happens.
+func isFence(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
 // hasDiffHeader reports the shape of a patch. It is checked apart from the fence
@@ -82,8 +104,8 @@ func hasFencedBlock(answer string) bool {
 // version required them, and a review produced a perfectly ordinary unified diff that
 // the detector did not see.
 func hasDiffHeader(answer string) bool {
-	var minus, plus bool
-	for _, line := range strings.Split(answer, "\n") {
+	lines := strings.Split(answer, "\n")
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		// "@@ -" rather than "@@ ": a hunk header always names the old range first,
 		// and the narrower prefix keeps an answer that merely writes "@@ здесь" out of
@@ -91,17 +113,18 @@ func hasDiffHeader(answer string) bool {
 		if strings.HasPrefix(trimmed, "diff --git ") || strings.HasPrefix(trimmed, "@@ -") {
 			return true
 		}
-		// A lone "--- что-то" is an ordinary horizontal rule followed by text, and a
-		// lone "+++" is decoration. The PAIR is a diff header, and requiring both is
-		// what keeps a Markdown separator out of the evidence.
-		if strings.HasPrefix(trimmed, "--- ") && len(trimmed) > 4 {
-			minus = true
-		}
-		if strings.HasPrefix(trimmed, "+++ ") && len(trimmed) > 4 {
-			plus = true
+		// A lone "--- что-то" is an ordinary separator with a caption, and a lone "+++"
+		// is decoration. A diff header is the two ADJACENT: "--- old" immediately
+		// followed by "+++ new". The second review wave found "--- Минусы" and "+++
+		// Плюсы" — two captions in one answer, pages apart — read as a patch.
+		if strings.HasPrefix(trimmed, "--- ") && len(trimmed) > 4 && i+1 < len(lines) {
+			next := strings.TrimSpace(lines[i+1])
+			if strings.HasPrefix(next, "+++ ") && len(next) > 4 {
+				return true
+			}
 		}
 	}
-	return minus && plus
+	return false
 }
 
 // stageScopeViolation judges one stage-scope rule against one answer.

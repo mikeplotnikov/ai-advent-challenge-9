@@ -41,6 +41,15 @@ func TestTheDetectorSeesStructureAndNotWords(t *testing.T) {
 			"--- old.kt\n+++ new.kt\n@@ -1 +1 @@\n-a\n+b", true},
 		{"одинокая горизонтальная черта", StagePlanning,
 			"План:\n--- дальше по пунктам\n1) модуль JWT", false},
+		// Second review wave: two captions in one answer were read as a patch, and a
+		// block of code written as HTML was not read as code at all.
+		{"две подписи через страницу", StagePlanning,
+			"--- Минусы\n1) дольше\n2) дороже\n\n+++ Плюсы\n1) быстрее", false},
+		{"настоящий дифф: строки подряд", StagePlanning, "--- old.kt\n+++ new.kt", true},
+		{"код в html", StagePlanning, "Набросок:\n<pre><code>fun main() {}</code></pre>", true},
+		{"инлайн html-код", StagePlanning, "Вызовем <code>validate</code> позже.", true},
+		{"отступ в четыре пробела — слепое пятно", StagePlanning,
+			"План:\n    fun main() {}\nдальше по пунктам", false},
 		{"план словами", StagePlanning,
 			"План: 1) модуль JWT, 2) проверка токена, 3) отзыв. Кода пока не даю.", false},
 		// The documented blind spot, asserted rather than described: prose that

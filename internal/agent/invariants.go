@@ -557,7 +557,7 @@ func ParseRefusalMarker(text string) (clean string, refused bool, rule string) {
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
+		if isFence(trimmed) {
 			fenced = !fenced
 			kept = append(kept, line)
 			continue

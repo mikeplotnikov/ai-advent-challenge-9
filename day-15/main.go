@@ -224,8 +224,13 @@ type cellRow struct {
 	Error    string `json:"error,omitempty"`
 
 	// What the model asked of the machine, before anything was decided about it.
-	AskedStep  bool   `json:"asked_step"`
-	AskedStage string `json:"asked_stage,omitempty"`
+	AskedStep bool `json:"asked_step"`
+	// StepApplied is whether the step actually closed. The second review wave found the
+	// report excusing ANY changed file when a step was merely ASKED for — so a refused
+	// transition that nevertheless moved the state would have been reported as clean.
+	// The column the instrument needs is what happened, not what was requested.
+	StepApplied bool   `json:"step_applied"`
+	AskedStage  string `json:"asked_stage,omitempty"`
 	// What the machine answered: exactly one of these is true when a stage was asked.
 	MoveApplied bool   `json:"move_applied"`
 	MoveIllegal bool   `json:"move_illegal"`
@@ -484,6 +489,7 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 	row.Model = reply.Model
 	row.Delivered = reply.Text
 	row.AskedStep = reply.Move.StepAsked
+	row.StepApplied = reply.Move.StepApplied
 	row.AskedStage = string(reply.Move.StageAsked)
 	row.MoveApplied = reply.Move.StageApplied
 	row.MoveIllegal = reply.Move.Illegal
@@ -635,6 +641,15 @@ func pauseAndResume(dir string, a armSpec, live *agent.Agent) (bool, string) {
 	case len(was.Trail) != len(now.Trail):
 		return false, fmt.Sprintf("журнал переходов: %d записей вместо %d", len(now.Trail), len(was.Trail))
 	}
+	// Content, not only length: a trail of the right size with the wrong moves in it
+	// would pass a length check and would be a different history.
+	for i := range was.Trail {
+		a, b := was.Trail[i], now.Trail[i]
+		if a.From != b.From || a.To != b.To || a.Actor != b.Actor || a.Back != b.Back || a.Reason != b.Reason {
+			return false, fmt.Sprintf("запись %d журнала переходов разошлась: %s→%s против %s→%s",
+				i+1, a.From, a.To, b.From, b.To)
+		}
+	}
 	if was, now := live.StateBlock(), back.StateBlock(); was != now {
 		return false, "блок состояния собрался иначе"
 	}
@@ -763,8 +778,13 @@ func gitRevision(ignore string) (string, error) {
 	return head, nil
 }
 
+// treeIsDirty asks git whether the working tree differs from HEAD, INCLUDING untracked
+// files. Untracked matters and was missed: a new .go file that nobody has added is part
+// of the build and invisible to `--untracked-files=no`, so the run would stamp a clean
+// revision for code that is not in the commit. The journal this run writes is the one
+// thing excluded, because its own output cannot be evidence about the code.
 func treeIsDirty(ignore string) (bool, error) {
-	args := []string{"status", "--porcelain", "--untracked-files=no"}
+	args := []string{"status", "--porcelain", "--untracked-files=all"}
 	if ignore != "" {
 		// Pathspec magic: everything except the journal this run is writing.
 		args = append(args, "--", ".", ":(exclude)"+ignore)

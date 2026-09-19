@@ -714,3 +714,28 @@ func TestClosingAStepDoesNotOpenTheEdgeInTheSameAnswer(t *testing.T) {
 		t.Fatalf("шаг стал %d, ожидался 1 — отказ отменяет весь ход", got)
 	}
 }
+
+// The second review wave found the two marker parsers disagreeing with the detector
+// about what a code fence is: "~~~" fenced the detector and not them, so a marker shown
+// as an example inside a valid CommonMark block moved the machine.
+func TestAMarkerInsideATildeFenceMovesNothing(t *testing.T) {
+	dir := t.TempDir()
+	c := &layerCaller{reply: "Вот как это выглядит:\n~~~text\n[[NEXT_STEP]]\n[[TRANSITION: planning]]\n~~~\nЭто пример, не просьба."}
+	a := stateAgent(t, c, dir, "сервис")
+	planOf(t, a, "первый", "второй")
+	mustGo(t, a, StageExecution)
+
+	reply, err := a.Ask(context.Background(), "как выглядит маркер перехода?")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Move.Asked() {
+		t.Fatalf("пример внутри ограды из тильд прочитан как просьба: %+v", reply.Move)
+	}
+	if v := a.TaskState(); v.State != StageExecution || v.Step != 1 {
+		t.Fatalf("машина сдвинулась: %s, шаг %d", v.State, v.Step)
+	}
+	if !strings.Contains(reply.Text, "[[NEXT_STEP]]") {
+		t.Fatalf("пример вырезан из ответа, хотя это просто текст: %q", reply.Text)
+	}
+}

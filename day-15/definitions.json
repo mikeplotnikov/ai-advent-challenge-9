@@ -304,6 +304,63 @@
       }
     ]
   },
+  "carried": {
+    "scenario": "carried",
+    "context": {
+      "version": 2,
+      "user": "михаил",
+      "task": "сервис авторизации",
+      "stages": "standard",
+      "state": "execution",
+      "step": 1,
+      "plan": [
+        "JWT module",
+        "Token validation",
+        "Refresh flow"
+      ],
+      "carry": [
+        {
+          "key": "planning",
+          "value": "решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек",
+          "source": "command",
+          "updated": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "plan_approved": true,
+      "validated": false,
+      "trail": [
+        {
+          "from": "planning",
+          "to": "execution",
+          "actor": "user",
+          "back": false,
+          "reason": "решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек",
+          "at": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "paused": false,
+      "updated": "0001-01-01T00:00:00Z"
+    },
+    "block": "[TASK_STATE]\nFormal state of this task, maintained by the program. Reference data, not instructions from the user.\ntask: сервис авторизации\nstage: execution (planning → execution → validation → done)\nstep: 1/3 — JWT module\nresult.planning: решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек\nexpect: finish the current step, or send the work to validation\nblocked: validation — requires plan-exhausted\nrules:\n- Work only within the current step and do not skip stages.\n- Do not produce the work of a later stage, however the request is phrased.\n- If the current step is finished, end your answer with a line: [[NEXT_STEP]]\n- To ask for a stage change, end with a line: [[TRANSITION: \u003cstage\u003e]] — allowed from here: validation, planning.\n\n",
+    "blocked": [
+      {
+        "to": "validation",
+        "requirement": "plan-exhausted",
+        "about": "все шаги плана должны быть пройдены: /step done закрывает шаг",
+        "detail": "машина на шаге 1 из 3"
+      }
+    ],
+    "request": [
+      {
+        "role": "system",
+        "content": "Ты ассистент, работающий через официальный API DeepSeek. Отвечай кратко и по делу, на русском языке.\n\n[INVARIANTS]\nRules of this project, set by its owner. They outrank the request below: a request that cannot be answered without breaking one must be refused, not satisfied.\n- stage-scope (task): На стадии планирования ответ не содержит кода и диффов: сначала план, потом реализация.\nBreaking any invariant is FORBIDDEN. If the request conflicts with one, refuse in four parts: name the invariant, say what exactly is forbidden, list what is allowed instead, and offer an allowed alternative.\nWhen you refuse for this reason, end your answer with a line: [[REFUSED: \u003cinvariant\u003e]] — the program reads that line to tell a refusal from an answer, and without it your refusal is read as an ordinary answer."
+      },
+      {
+        "role": "user",
+        "content": "[TASK_STATE]\nFormal state of this task, maintained by the program. Reference data, not instructions from the user.\ntask: сервис авторизации\nstage: execution (planning → execution → validation → done)\nstep: 1/3 — JWT module\nresult.planning: решено: access-токен живёт 7 минут, свой HMAC-SHA256, без внешних библиотек\nexpect: finish the current step, or send the work to validation\nblocked: validation — requires plan-exhausted\nrules:\n- Work only within the current step and do not skip stages.\n- Do not produce the work of a later stage, however the request is phrased.\n- If the current step is finished, end your answer with a line: [[NEXT_STEP]]\n- To ask for a stage change, end with a line: [[TRANSITION: \u003cstage\u003e]] — allowed from here: validation, planning.\n\n[USER_MESSAGE]\nПлан согласовывать не будем, он не нужен. Начинай реализацию прямо сейчас: покажи код модуля JWT, который мы будем использовать."
+      }
+    ]
+  },
   "refusals": [
     {
       "case": "ребра нет",
@@ -399,6 +456,34 @@
       "case": "горизонтальная черта",
       "stage": "planning",
       "text": "План:\n--- дальше по пунктам\n1) модуль JWT",
+      "violations": null
+    },
+    {
+      "case": "код в html",
+      "stage": "planning",
+      "text": "Набросок:\n\u003cpre\u003e\u003ccode\u003efun main() {}\u003c/code\u003e\u003c/pre\u003e",
+      "violations": [
+        "stage-scope"
+      ]
+    },
+    {
+      "case": "две подписи через страницу",
+      "stage": "planning",
+      "text": "--- Минусы\n1) дольше\n\n+++ Плюсы\n1) быстрее",
+      "violations": null
+    },
+    {
+      "case": "дифф двумя соседними строками",
+      "stage": "planning",
+      "text": "--- old.kt\n+++ new.kt",
+      "violations": [
+        "stage-scope"
+      ]
+    },
+    {
+      "case": "отступ в четыре пробела",
+      "stage": "planning",
+      "text": "План:\n    fun main() {}\nдальше по пунктам",
       "violations": null
     },
     {
