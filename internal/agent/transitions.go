@@ -76,6 +76,12 @@ type requirement struct {
 	About  string
 	Detail func(TaskContext) string
 	Met    func(TaskContext) bool
+	// Clear is what entering the stage that ESTABLISHES this requirement undoes. It
+	// lives on the requirement rather than in a switch inside enterStage, and that is
+	// not a style choice: a switch over names is a second place to edit, and a
+	// requirement added without its case there would be a condition that quietly
+	// survives a rollback.
+	Clear func(*TaskContext)
 }
 
 // The three preconditions of the standard and bugfix sets. They are values, not methods
@@ -95,7 +101,8 @@ var (
 			}
 			return fmt.Sprintf("план из %d шагов не утверждён", c.Total())
 		},
-		Met: func(c TaskContext) bool { return c.Total() > 0 && c.PlanApproved },
+		Met:   func(c TaskContext) bool { return c.Total() > 0 && c.PlanApproved },
+		Clear: func(c *TaskContext) { c.PlanApproved = false },
 	}
 	// reqPlanExhausted is "перепрыгнуть этап" at the level the table cannot see: the
 	// stage is right, the work is not done. Reaching the last step is what counts as
@@ -111,6 +118,10 @@ var (
 			return fmt.Sprintf("машина на шаге %d из %d", c.Step, c.Total())
 		},
 		Met: func(c TaskContext) bool { return c.Total() > 0 && c.Step == c.Total() },
+		// Nothing to clear: the steps already taken are work, and entering a stage
+		// does not undo work. This is the requirement whose absence of a Clear is
+		// deliberate, and saying so here is cheaper than wondering later.
+		Clear: nil,
 	}
 	// reqValidationVerdict is the task's second example: "нельзя делать финал без
 	// валидации". The table already routes done through validation; without a verdict
@@ -120,6 +131,7 @@ var (
 		About:  "результат должен быть провалидирован: /validate ok или /validate fail",
 		Detail: func(TaskContext) string { return "вердикт валидации не записан" },
 		Met:    func(c TaskContext) bool { return c.Validated },
+		Clear:  func(c *TaskContext) { c.Validated = false },
 	}
 )
 
@@ -220,11 +232,8 @@ func checkPreconditions(set StageSet, c TaskContext, to TaskStage) (requirement,
 // gets the behaviour by declaring its edges and nothing else.
 func enterStage(set StageSet, next *TaskContext, to TaskStage) {
 	for _, req := range set.requirementsFrom(to) {
-		switch req.Name {
-		case reqApprovedPlan.Name:
-			next.PlanApproved = false
-		case reqValidationVerdict.Name:
-			next.Validated = false
+		if req.Clear != nil {
+			req.Clear(next)
 		}
 	}
 }
