@@ -63,6 +63,17 @@ type exampleDump struct {
 	Context  agent.TaskContext         `json:"context"`
 	Block    string                    `json:"block"`
 	Blocked  []agent.BlockedTransition `json:"blocked"`
+	// Request is the whole assembled request of that scenario's question: the system
+	// message with the rules already in it, and the user message with the state block
+	// in front of the question. The showcase sends its own version of this, and a
+	// mirror that agreed on every block while assembling them differently would be
+	// showing the visitor a request the agent never sends.
+	Request []wireMessage `json:"request"`
+}
+
+type wireMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type refusalDump struct {
@@ -163,11 +174,14 @@ func buildDefinitions(invPath string) (definitions, error) {
 
 	// The example is the scenario that shows the most: a draft plan, so the block
 	// carries a closed edge and the reason it is closed.
-	block, ctx, blocked, err := recordBlock(scenarios()[0], rules)
+	block, ctx, blocked, request, err := recordBlock(scenarios()[0], rules)
 	if err != nil {
 		return defs, err
 	}
-	defs.Example = exampleDump{Scenario: scenarios()[0].Name, Context: ctx, Block: block, Blocked: blocked}
+	defs.Example = exampleDump{
+		Scenario: scenarios()[0].Name, Context: ctx, Block: block,
+		Blocked: blocked, Request: request,
+	}
 
 	refusals, err := recordRefusals(rules)
 	if err != nil {
@@ -194,25 +208,32 @@ func (e errorString) Error() string { return string(e) }
 
 // recordBlock seeds one scenario and returns the state block the agent would send,
 // the state that produced it and the edges that state closes.
-func recordBlock(sc scenarioSpec, rules []agent.Invariant) (string, agent.TaskContext, []agent.BlockedTransition, error) {
+func recordBlock(sc scenarioSpec, rules []agent.Invariant) (string, agent.TaskContext, []agent.BlockedTransition, []wireMessage, error) {
 	var ctx agent.TaskContext
 	dir, err := os.MkdirTemp("", "day15-dump-")
 	if err != nil {
-		return "", ctx, nil, err
+		return "", ctx, nil, nil, err
 	}
 	defer os.RemoveAll(dir)
 
-	a, err := newCellAgent(&recorderOnly{}, dir, arms()[len(arms())-1], rules, sc.Seed)
+	rec := &recorderOnly{}
+	a, err := newCellAgent(rec, dir, arms()[len(arms())-1], rules, sc.Seed)
 	if err != nil {
-		return "", ctx, nil, err
+		return "", ctx, nil, nil, err
 	}
 	block := a.StateBlock()
+	// The call fails on purpose: what is wanted is the request it assembled.
+	_, _ = a.Ask(context.Background(), sc.Question)
+	request := make([]wireMessage, 0, len(rec.wire))
+	for _, m := range rec.wire {
+		request = append(request, wireMessage{Role: m.Role, Content: m.Content})
+	}
 	raw, err := os.ReadFile(a.TaskState().Path)
 	if err != nil {
-		return "", ctx, nil, err
+		return "", ctx, nil, nil, err
 	}
 	if err := json.Unmarshal(raw, &ctx); err != nil {
-		return "", ctx, nil, err
+		return "", ctx, nil, nil, err
 	}
 	// The timestamps change on every generation and say nothing the showcase needs.
 	// Leaving them in would make the dump differ from itself on every run, and a
@@ -224,7 +245,7 @@ func recordBlock(sc scenarioSpec, rules []agent.Invariant) (string, agent.TaskCo
 	for i := range ctx.Trail {
 		ctx.Trail[i].At = time.Time{}
 	}
-	return block, ctx, a.TaskState().Blocked, nil
+	return block, ctx, a.TaskState().Blocked, request, nil
 }
 
 // recordRefusals produces every kind of refusal by actually being refused. The three
