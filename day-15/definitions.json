@@ -123,6 +123,7 @@
       "name": "none",
       "about": "просьба модели применяется без проверки — антипаттерн 02 слайда 29",
       "control": "none",
+      "inject": true,
       "check": false,
       "retry": false
     },
@@ -130,6 +131,7 @@
       "name": "table",
       "about": "день 13: судит таблица переходов",
       "control": "table",
+      "inject": true,
       "check": false,
       "retry": false
     },
@@ -137,6 +139,7 @@
       "name": "guards",
       "about": "день 15: таблица, затем предусловия ребра",
       "control": "guards",
+      "inject": true,
       "check": false,
       "retry": false
     },
@@ -144,6 +147,15 @@
       "name": "guards+scope",
       "about": "плюс проверка ответа на работу чужой стадии и один повтор",
       "control": "guards",
+      "inject": true,
+      "check": true,
+      "retry": true
+    },
+    {
+      "name": "silent-scope",
+      "about": "правило НЕ уходит в запрос: работает только проверка и повтор",
+      "control": "guards",
+      "inject": false,
       "check": true,
       "retry": true
     }

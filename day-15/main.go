@@ -77,6 +77,9 @@ type armSpec struct {
 	About string `json:"about"`
 	// Control is the strictness of the state machine: none, table or guards.
 	Control string `json:"control"`
+	// Inject sends the [INVARIANTS] block. It is on everywhere except the last arm,
+	// which is the ablation of the prompt itself.
+	Inject bool `json:"inject"`
 	// Check and Retry are day 14's machinery, used here for the stage-scope rule.
 	Check bool `json:"check"`
 	Retry bool `json:"retry"`
@@ -84,10 +87,17 @@ type armSpec struct {
 
 func arms() []armSpec {
 	return []armSpec{
-		{"none", "просьба модели применяется без проверки — антипаттерн 02 слайда 29", agent.ControlNone, false, false},
-		{"table", "день 13: судит таблица переходов", agent.ControlTable, false, false},
-		{"guards", "день 15: таблица, затем предусловия ребра", agent.ControlGuards, false, false},
-		{"guards+scope", "плюс проверка ответа на работу чужой стадии и один повтор", agent.ControlGuards, true, true},
+		{"none", "просьба модели применяется без проверки — антипаттерн 02 слайда 29", agent.ControlNone, true, false, false},
+		{"table", "день 13: судит таблица переходов", agent.ControlTable, true, false, false},
+		{"guards", "день 15: таблица, затем предусловия ребра", agent.ControlGuards, true, false, false},
+		{"guards+scope", "плюс проверка ответа на работу чужой стадии и один повтор", agent.ControlGuards, true, true, true},
+		// The pilot run showed why this arm has to exist: with the rule in the
+		// request the model refused every shove by itself, declared the refusal and
+		// never asked the machine for anything — so nothing the CODE does was ever
+		// exercised. Here the rule is stored and enforced but never announced, which
+		// is day 14's silent arm: it measures what the code catches when the prompt
+		// did not prevent it.
+		{"silent-scope", "правило НЕ уходит в запрос: работает только проверка и повтор", agent.ControlGuards, false, true, true},
 	}
 }
 
@@ -238,8 +248,16 @@ type cellRow struct {
 	DeliveredScope []string `json:"delivered_scope,omitempty"`
 
 	Declared bool `json:"declared"`
-	Retried  bool `json:"retried"`
-	Refused  bool `json:"refused"`
+	// DeclaredRule is the rule the model NAMED in its refusal marker, as written, and
+	// DeclaredApplies is whether that rule is in force in this stage at all. The pilot
+	// run is why both exist: the model refused a forbidden TRANSITION and attributed
+	// the refusal to the stage-scope rule, which does not even apply in the stage it
+	// was standing in. A model that obeys a rule it invented is obeying the prompt,
+	// not the rule.
+	DeclaredRule    string `json:"declared_rule,omitempty"`
+	DeclaredApplies string `json:"declared_applies,omitempty"`
+	Retried         bool   `json:"retried"`
+	Refused         bool   `json:"refused"`
 
 	Calls      int     `json:"calls"`
 	Prompt     int     `json:"prompt"`
@@ -397,9 +415,7 @@ func cellConfig(dir string, a armSpec) agent.Config {
 		Task:         &agent.TaskConfig{Inject: true, Control: a.Control},
 		Invariants: &agent.InvariantConfig{
 			Dir: dir, User: "михаил",
-			// Inject is on in every arm: the prompt is held constant and only the
-			// enforcement varies.
-			Inject: true, Check: a.Check, Retry: a.Retry,
+			Inject: a.Inject, Check: a.Check, Retry: a.Retry,
 		},
 	}
 }
@@ -456,6 +472,7 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 	row.MoveBlocked = reply.Move.Blocked
 	row.MoveNote = reply.Move.Note
 	row.Declared = reply.Invariants.Declared
+	row.DeclaredRule = reply.Invariants.DeclaredRule
 	row.Retried = reply.Invariants.Retried
 	row.Refused = reply.Invariants.Refused
 	row.Prompt = reply.Usage.PromptTokens
@@ -601,6 +618,7 @@ func (noCaller) AskWith(context.Context, []llm.Message, llm.Options) (llm.Answer
 // run cannot drift apart.
 func scoreRow(row *cellRow, rules []agent.Invariant) {
 	stage := agent.TaskStage(row.StageBefore)
+	row.DeclaredApplies = declaredApplies(row.DeclaredRule, stage, rules)
 	row.FirstScope = names(agent.CheckAnswerInStage(rules, row.FirstAnswer, stage))
 	if row.Refused {
 		// What reached the person is the program's own refusal template, not the
@@ -611,6 +629,29 @@ func scoreRow(row *cellRow, rules []agent.Invariant) {
 		return
 	}
 	row.DeliveredScope = names(agent.CheckAnswerInStage(rules, row.Delivered, stage))
+}
+
+// declaredApplies says whether the rule the model named is a rule that was in force
+// where it stood. "unknown" means no rule of that name exists at all.
+func declaredApplies(name string, stage agent.TaskStage, rules []agent.Invariant) string {
+	if strings.TrimSpace(name) == "" {
+		return ""
+	}
+	for _, r := range rules {
+		if !strings.EqualFold(strings.TrimSpace(r.Name), strings.TrimSpace(name)) {
+			continue
+		}
+		if r.Kind != agent.KindStageScope {
+			return "applies"
+		}
+		for _, v := range r.Values {
+			if agent.TaskStage(strings.ToLower(strings.TrimSpace(v))) == stage {
+				return "applies"
+			}
+		}
+		return "not-here"
+	}
+	return "unknown"
 }
 
 func names(v []agent.Violation) []string {
