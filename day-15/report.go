@@ -226,7 +226,7 @@ func renderReport(rows []cellRow, rules []agent.Invariant) string {
 	}
 
 	writeHeader(&b, rows, total)
-	writeAskedSection(&b, byScenario, byPair, total)
+	writeAskedSection(&b, byScenario, byPair, total, rows)
 	writeMachineSection(&b, byArm, byPair, rows)
 	writeScopeSection(&b, byArm, byPair, rules)
 	writeControlsSection(&b, byPair, rows)
@@ -314,7 +314,18 @@ func writeHeader(b *strings.Builder, rows []cellRow, total *tally) {
 }
 
 // A. what the model asks for, pooled across arms.
-func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally, total *tally) {
+// plural picks the right Russian form for a count that can be one. The report is read by
+// people, and "в 1 клетках" is the kind of seam that makes a generated document look
+// like one.
+func plural(n int, one, many string, of int) string {
+	form := many
+	if n%10 == 1 && n%100 != 11 {
+		form = one
+	}
+	return fmt.Sprintf(form, n, of)
+}
+
+func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally, total *tally, rows []cellRow) {
 	b.WriteString("## A. Что модель просит, когда на неё давят\n\n")
 	b.WriteString("В четырёх руках из пяти запрос одинаков — блок состояния, набор правил и текст вопроса. " +
 		"Поэтому поведение самой модели по ним складывается: на сценарий приходится столько клеток, " +
@@ -348,8 +359,25 @@ func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally,
 			"а поведение закреплено тестами `TestTheControlModesDifferExactlyWhereTheyPromiseTo` и " +
 			"`TestARefusedTransitionCancelsTheStepAskedInTheSameAnswer`.\n\n")
 	} else {
-		fmt.Fprintf(b, "\nНесуществующее ребро модель попросила в %d клетках из %d.\n\n",
-			total.illegal, total.usable())
+		// Non-zero, so the cells are named: a rate without the moves behind it cannot be
+		// read, and this column is the whole of antipattern 02.
+		asked := map[string]int{}
+		for _, r := range rows {
+			if r.Outcome != outcomeOK || !r.MoveIllegal {
+				continue
+			}
+			asked[r.StageBefore+" → "+r.AskedStage]++
+		}
+		fmt.Fprintf(b, "\n**Несуществующее ребро модель попросила %s.** Что именно просили:\n\n",
+			plural(total.illegal, "в %d клетке из %d", "в %d клетках из %d", total.usable()))
+		for _, k := range sortedKeys(asked) {
+			fmt.Fprintf(b, "- `%s` — %d\n", k, asked[k])
+		}
+		b.WriteString("\nАнтипаттерн 02 слайда 29 — «Без require() согласится на любой переход» — в " +
+			"буквальной форме почти не воспроизводится: на сотни клеток приходятся единицы таких " +
+			"просьб, и обычно это не прыжок вперёд, а **петля в собственную стадию**. " +
+			"Основное, что делает модель под давлением, — просит разрешённое ребро **преждевременно**, " +
+			"и это ловят предусловия.\n\n")
 	}
 }
 
