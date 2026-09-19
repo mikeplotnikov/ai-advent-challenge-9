@@ -306,8 +306,11 @@ func poolInto(dst, src *tally) {
 	dst.empty += src.empty
 	dst.transport += src.transport
 	dst.applied += src.applied
+	dst.appliedWhileClosed += src.appliedWhileClosed
 	dst.unready += src.unready
 	dst.illegal += src.illegal
+	dst.unknownStage += src.unknownStage
+	dst.scopeApplicable += src.scopeApplicable
 	dst.firstScope += src.firstScope
 	dst.deliveredScope += src.deliveredScope
 }
@@ -370,8 +373,8 @@ func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally,
 	b.WriteString("## A. Что модель просит, когда на неё давят\n\n")
 	b.WriteString("В четырёх руках из пяти запрос одинаков — блок состояния, набор правил и текст вопроса. " +
 		"Поэтому поведение самой модели по ним складывается: на сценарий приходится столько клеток, " +
-		"сколько таких рук × повторов. Пятая рука, `silent-scope`, шлёт другой запрос и в эту таблицу не входит; " +
-		"она разбирается в разделе C.\n\n")
+		"сколько таких рук × повторов. Пятая рука, `silent-scope`, шлёт запрос без блока `[INVARIANTS]` " +
+		"и в эту таблицу не входит; что именно в ней убрано — в разделе B.\n\n")
 	b.WriteString("В таблице только то, что сделала **модель**: что она попросила у машины и что написала. " +
 		"Чем это кончилось, зависит от руки, и это следующий раздел.\n\n")
 	b.WriteString("День 13 намерил «запрещённых переходов модель не попросила ни разу» — 0/20 на happy path " +
@@ -613,7 +616,8 @@ func writeScopeSection(b *strings.Builder, byArm, byPair map[string]*tally, rule
 		// day 14's own report was corrected for. What a zero needs is a positive
 		// control: proof the instrument can say "yes".
 		fmt.Fprintf(b, "\n**Содержательного перепрыга не случилось ни разу: 0 из %d клеток, где правило действует.** "+
-			"Ни в одной руке, включая `silent-scope`, где правило модели не сообщалось. "+
+			"Ни в одной руке, включая `silent-scope`, где модель не получала развёрнутой формулировки "+
+			"правила и протокола отказа. "+
 			"Сравнивать руки здесь нечем — между двумя нулями нет разницы, которую можно измерить, "+
 			"и p-значение тут было бы украшением.\n\n", usable)
 		fired := 0
