@@ -322,8 +322,8 @@ type TaskStateView struct {
 	Plan     []string
 	Done     []string
 	Carry    []MemoryEntry
-	Expect  string
-	Allowed []TaskStage
+	Expect   string
+	Allowed  []TaskStage
 	// Blocked are the allowed edges a precondition currently closes, with the reason.
 	Blocked []BlockedTransition
 	// PlanApproved and Validated are day 15's two facts about readiness.

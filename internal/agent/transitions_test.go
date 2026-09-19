@@ -243,10 +243,10 @@ func TestARefusedAttemptDoesNotChangeTheStateByOneByte(t *testing.T) {
 	before := fileHash(t, path)
 
 	attempts := []func() error{
-		func() error { return a.TaskGo(StageExecution, "") },       // closed by a precondition
-		func() error { return a.TaskGo(StageDone, "") },            // no such edge
-		func() error { return a.TaskGo(StageFix, "") },             // no such stage in this set
-		func() error { return a.RecordVerdict(true, "") },          // wrong stage
+		func() error { return a.TaskGo(StageExecution, "") }, // closed by a precondition
+		func() error { return a.TaskGo(StageDone, "") },      // no such edge
+		func() error { return a.TaskGo(StageFix, "") },       // no such stage in this set
+		func() error { return a.RecordVerdict(true, "") },    // wrong stage
 		func() error { _, err := a.applyMove("ok", StageDone); return err },
 	}
 	for i, attempt := range attempts {
