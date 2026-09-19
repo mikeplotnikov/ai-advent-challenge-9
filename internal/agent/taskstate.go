@@ -806,8 +806,6 @@ func (c TaskContext) clone() TaskContext {
 	return out
 }
 
-// commit writes a modified context and adopts it ONLY if the write succeeded.
-//
 // The order matters and was wrong once: mutating s.ctx first and saving after left the
 // agent serving a stage that is not on disk whenever the write failed — and the write
 // fails exactly in the case the file layer exists to catch, a second process having
@@ -816,16 +814,28 @@ func (c TaskContext) clone() TaskContext {
 //
 // Every mutation persists immediately, which is what makes "пауза на любом этапе" a
 // property rather than a command: the process may die at any point.
-func (s *taskStateState) commit(next TaskContext) error {
+//
+// commit writes a modified context and adopts it ONLY if the write succeeded.
+//
+// user is the identity the READER will check against — not the one inside the record.
+// The first version of this validation passed next.User, so the field was compared with
+// itself and a wrong user sailed through; a review found it. Same reason the stage is
+// re-checked against the set here: both are things the loader refuses, and a writer that
+// does not refuse them can still produce a file nothing opens.
+func (s *taskStateState) commit(next TaskContext, user string) error {
 	next.Version = TaskStateVersion
 	next.Stages = s.set.Name
 	next.Updated = time.Now().UTC()
+	if _, ok := s.set.rule(next.State); !ok {
+		return fmt.Errorf("состояние задачи %s: %w: стадия %q не входит в набор %q",
+			s.file.path, ErrStageSetMismatch, next.State, s.set.Name)
+	}
 	// Validate what is about to be WRITTEN, with the same function the read path uses.
 	// Until an external review found otherwise, validation ran only on load — so a
 	// value that passed its own sanitiser and failed the loader produced a file the
 	// agent could never open again. A refused command costs a command; an unreadable
 	// state file costs the task.
-	if err := validateTaskContext(next, next.User, s.task); err != nil {
+	if err := validateTaskContext(next, user, s.task); err != nil {
 		return fmt.Errorf("состояние задачи %s: %w", s.file.path, err)
 	}
 	if err := s.file.write(next); err != nil {
@@ -1066,7 +1076,7 @@ func (a *Agent) ResumeTask() (TaskStateView, error) {
 }
 
 func (a *Agent) commitTaskState(s *taskStateState, next TaskContext) error {
-	if err := s.commit(next); err != nil {
+	if err := s.commit(next, a.taskUser()); err != nil {
 		return fmt.Errorf("%s: %w", a.Name(), err)
 	}
 	return nil

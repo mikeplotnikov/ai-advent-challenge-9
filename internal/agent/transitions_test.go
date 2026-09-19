@@ -831,11 +831,27 @@ func TestCommitRefusesToWriteAStateItCouldNotReadBack(t *testing.T) {
 		From: StagePlanning, To: StageExecution, Actor: ActorUser,
 		Reason: "звонок\aвнутри", At: time.Now().UTC(),
 	})
-	if err := s.commit(broken); err == nil {
+	if err := s.commit(broken, "михаил"); err == nil {
 		t.Fatal("commit записал состояние, которое не прочитается обратно")
 	}
 	if got := fileHash(t, s.file.path); got != before {
 		t.Fatal("отклонённая запись всё же изменила файл")
+	}
+
+	// Найдено ревью правок: пользователь сверялся сам с собой, а стадия не сверялась с
+	// набором вовсе — обе проверки читатель делает, а писатель не делал.
+	wrongUser := s.ctx.clone()
+	wrongUser.User = "кто-то другой"
+	if err := s.commit(wrongUser, "михаил"); err == nil {
+		t.Fatal("commit записал состояние с чужим пользователем")
+	}
+	wrongStage := s.ctx.clone()
+	wrongStage.State = StageFix // стадия набора bugfix в задаче набора standard
+	if err := s.commit(wrongStage, "михаил"); err == nil {
+		t.Fatal("commit записал стадию не из своего набора")
+	}
+	if got := fileHash(t, s.file.path); got != before {
+		t.Fatal("отклонённые записи изменили файл")
 	}
 }
 
