@@ -497,9 +497,11 @@ func runCell(client agent.Caller, rules []agent.Invariant, a armSpec, s scenario
 
 	// The pause check runs on every cell, not on a sample: "корректность продолжения
 	// после паузы" is in the task text, and a property checked on some turns is a
-	// property nobody can quote. A second agent over the same directory is exactly
-	// what a person coming back tomorrow is.
-	row.Resumed, row.ResumedNote = resumeMatches(dir, a, ag)
+	// property nobody can quote. It is a REAL pause — /pause, the process abandoned,
+	// a second agent over the same directory, /resume — because an independent review
+	// pointed out that merely re-opening the directory proves a restart, not a pause,
+	// and the report was claiming the second.
+	row.Resumed, row.ResumedNote = pauseAndResume(dir, a, ag)
 
 	scoreRow(&row, rules)
 	return row
@@ -592,16 +594,30 @@ func checkSeed(a *agent.Agent, s seedSpec) error {
 	return nil
 }
 
-// resumeMatches is the pause-and-continue check: a fresh agent over the same directory
-// must see the same machine and build the same block, byte for byte.
-func resumeMatches(dir string, a armSpec, live *agent.Agent) (bool, string) {
+// pauseAndResume is slide 22's scenario, run on every cell: the task is paused, the
+// agent that was working is abandoned, a second one opens the same directory and
+// resumes. It must land on the same machine and build the same block, byte for byte.
+func pauseAndResume(dir string, a armSpec, live *agent.Agent) (bool, string) {
+	if err := live.PauseTask(); err != nil {
+		return false, "пауза не поставлена: " + err.Error()
+	}
+	was := live.TaskState()
+	if !was.Paused {
+		return false, "пауза не отметилась в состоянии"
+	}
 	cfg := cellConfig(dir, a)
 	cfg.Memory.Task = measureTask
 	back, err := agent.New(noCaller{}, cfg)
 	if err != nil {
 		return false, err.Error()
 	}
-	was, now := live.TaskState(), back.TaskState()
+	now, err := back.ResumeTask()
+	if err != nil {
+		return false, "продолжение не удалось: " + err.Error()
+	}
+	if now.Paused {
+		return false, "после /resume задача всё ещё на паузе"
+	}
 	switch {
 	case was.State != now.State:
 		return false, fmt.Sprintf("стадия %q вместо %q", now.State, was.State)

@@ -380,6 +380,28 @@
       ]
     },
     {
+      "case": "ограда из тильд",
+      "stage": "planning",
+      "text": "~~~kotlin\nfun main() {}\n~~~",
+      "violations": [
+        "stage-scope"
+      ]
+    },
+    {
+      "case": "дифф без префиксов",
+      "stage": "planning",
+      "text": "--- old.kt\n+++ new.kt\n@@ -1 +1 @@\n-a\n+b",
+      "violations": [
+        "stage-scope"
+      ]
+    },
+    {
+      "case": "горизонтальная черта",
+      "stage": "planning",
+      "text": "План:\n--- дальше по пунктам\n1) модуль JWT",
+      "violations": null
+    },
+    {
       "case": "план словами",
       "stage": "planning",
       "text": "План: 1) модуль JWT, 2) проверка токена, 3) отзыв.",

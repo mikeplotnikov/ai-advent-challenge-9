@@ -199,11 +199,11 @@ func buildReport(rowsPath, outPath string, rescore bool, invPath string) error {
 	if rescore {
 		rows = rescoreRows(rows, rules)
 	}
-	body := renderReport(rows)
+	body := renderReport(rows, rules)
 	return os.WriteFile(outPath, []byte(body), 0o644)
 }
 
-func renderReport(rows []cellRow) string {
+func renderReport(rows []cellRow, rules []agent.Invariant) string {
 	var b strings.Builder
 	b.WriteString(generatedHeader + "\n\n")
 	b.WriteString("# День 15 — контролируемые переходы: что держит красный путь\n\n")
@@ -226,9 +226,9 @@ func renderReport(rows []cellRow) string {
 	}
 
 	writeHeader(&b, rows, total)
-	writeAskedSection(&b, byScenario, byPair)
+	writeAskedSection(&b, byScenario, byPair, total)
 	writeMachineSection(&b, byArm, byPair, rows)
-	writeScopeSection(&b, byArm, byPair)
+	writeScopeSection(&b, byArm, byPair, rules)
 	writeControlsSection(&b, byPair, rows)
 	writeWordOfTheModelSection(&b, byArm, byScenario)
 	writePauseSection(&b, byArm, rows)
@@ -314,7 +314,7 @@ func writeHeader(b *strings.Builder, rows []cellRow, total *tally) {
 }
 
 // A. what the model asks for, pooled across arms.
-func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally) {
+func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally, total *tally) {
 	b.WriteString("## A. Что модель просит, когда на неё давят\n\n")
 	b.WriteString("В четырёх руках из пяти запрос одинаков — блок состояния, набор правил и текст вопроса. " +
 		"Поэтому поведение самой модели по ним складывается: на сценарий приходится столько клеток, " +
@@ -336,10 +336,21 @@ func writeAskedSection(b *strings.Builder, byScenario, byPair map[string]*tally)
 			s.Name, n, share(t.askedStage, n), pct1(lo), pct1(hi),
 			share(t.askedStep, n), share(t.firstScope, n))
 	}
-	b.WriteString("\n**Несуществующего ребра модель не попросила ни разу** — ни в одной из 450 клеток " +
-		"(столбец «отклонён: ребра нет» в разделе B — ноль во всех руках). " +
-		"Антипаттерн 02 слайда 29 — «Без require() согласится на любой переход» — в этой форме **не воспроизвёлся**: " +
-		"модель просит не запрещённое ребро, а разрешённое, но **преждевременно**. Именно это и ловят предусловия.\n\n")
+	if total.illegal == 0 {
+		fmt.Fprintf(b, "\n**Несуществующего ребра модель не попросила ни разу** — ни в одной из %d пригодных клеток "+
+			"(столбец «отклонён: ребра нет» в разделе B — ноль во всех руках). "+
+			"Антипаттерн 02 слайда 29 — «Без require() согласится на любой переход» — в этой форме **не воспроизвёлся**: "+
+			"модель просит не запрещённое ребро, а разрешённое, но **преждевременно**. Именно это и ловят предусловия.\n\n",
+			total.usable())
+		b.WriteString("Этот ноль — тоже ноль, и он приведён с положительным контролем: тот же счётчик " +
+			"возвращает не ноль, когда запрещённое ребро просят. Отказ, который при этом печатается, " +
+			"лежит дословно в выгрузке `day-15/definitions.json` (раздел `refusals`, случай «ребра нет»), " +
+			"а поведение закреплено тестами `TestTheControlModesDifferExactlyWhereTheyPromiseTo` и " +
+			"`TestARefusedTransitionCancelsTheStepAskedInTheSameAnswer`.\n\n")
+	} else {
+		fmt.Fprintf(b, "\nНесуществующее ребро модель попросила в %d клетках из %d.\n\n",
+			total.illegal, total.usable())
+	}
 }
 
 // B. what the code did about it.
@@ -446,7 +457,7 @@ func writeMovedFootnote(b *strings.Builder, rows []cellRow) {
 }
 
 // C. the silent jump.
-func writeScopeSection(b *strings.Builder, byArm, byPair map[string]*tally) {
+func writeScopeSection(b *strings.Builder, byArm, byPair map[string]*tally, rules []agent.Invariant) {
 	b.WriteString("## C. Перепрыг, которого таблица не видит\n\n")
 	b.WriteString("Модель может не просить перехода вовсе и просто выдать работу следующей стадии. " +
 		"Столбец «в первом ответе» — поведение самой модели; «дошло до человека» — что осталось после " +
@@ -475,12 +486,19 @@ func writeScopeSection(b *strings.Builder, byArm, byPair map[string]*tally) {
 			"Ни в одной руке, включая `silent-scope`, где правило модели не сообщалось. "+
 			"Сравнивать руки здесь нечем — между двумя нулями нет разницы, которую можно измерить, "+
 			"и p-значение тут было бы украшением.\n\n", usable)
-		b.WriteString("Ноль читается только вместе с положительным контролем: тот же детектор, " +
-			"вызванный тем же кодом, **возвращает нарушение** на блоке кода и на диффе в стадии " +
-			"планирования и **не возвращает** его на том же тексте в стадии реализации. Восемь " +
-			"разобранных случаев лежат в выгрузке `day-15/definitions.json` (раздел `detector`), " +
-			"их же проверяют тесты `TestTheDetectorSeesStructureAndNotWords` и " +
-			"`TestTheDetectorCasesInTheDumpAreTheOnesThatMatter`.\n\n")
+		fired := 0
+		for _, c := range detectorCases() {
+			if len(agent.CheckAnswerInStage(rules, c.text, agent.TaskStage(c.stage))) > 0 {
+				fired++
+			}
+		}
+		fmt.Fprintf(b, "Ноль читается только вместе с положительным контролем: тот же детектор, "+
+			"вызванный тем же кодом, на разобранных случаях срабатывает **%d раз из %d** — "+
+			"на блоке кода (обе ограды), на диффе и на диффе без префиксов, и молчит на том же "+
+			"тексте в стадии реализации, на плане словами и на инлайн-коде. Случаи целиком лежат "+
+			"в выгрузке `day-15/definitions.json` (раздел `detector`), их же проверяют тесты "+
+			"`TestTheDetectorSeesStructureAndNotWords` и `TestTheDetectorCasesInTheDumpAreTheOnesThatMatter`.\n\n",
+			fired, len(detectorCases()))
 		b.WriteString("Что это значит по существу: **блока состояния хватило.** Модель, которой " +
 			"сказали, на какой она стадии и что перепрыгивать нельзя, не выдаёт код на планировании " +
 			"даже тогда, когда её об этом прямо просят, — она либо отказывает словами, либо просит " +
@@ -618,6 +636,14 @@ func writeCostSection(b *strings.Builder, byArm map[string]*tally) {
 	base, armed := byArm["guards"], byArm["guards+scope"]
 	if base != nil && armed != nil && base.cost > 0 {
 		fmt.Fprintf(b, "\nОтношение стоимости `guards+scope` к `guards`: ×%.2f.\n", armed.cost/base.cost)
+		if armed.retried == 0 {
+			fmt.Fprintf(b, "\n**Это отношение не измеряет цену проверки.** Повтор не сработал ни разу "+
+				"(%s), вызовов у обеих рук поровну, входные токены совпадают до единицы — значит, "+
+				"различаются только длины независимых ответов модели: %d токенов выхода против %d. "+
+				"Правильное чтение: **включённая проверка не стоила ничего, потому что ей нечего было "+
+				"чинить**; сколько стоил бы повтор, этот прогон не показывает. День 14 показывал: ×2.11.\n",
+				share(armed.retried, armed.usable()), armed.completion, base.completion)
+		}
 	}
 	b.WriteString("\n")
 }

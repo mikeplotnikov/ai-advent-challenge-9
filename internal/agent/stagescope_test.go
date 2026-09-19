@@ -34,6 +34,13 @@ func TestTheDetectorSeesStructureAndNotWords(t *testing.T) {
 		{"незакрытый блок", StagePlanning, "```kotlin\nfun main() {", true},
 		{"дифф без ограждения", StagePlanning,
 			"--- a/main.kt\n+++ b/main.kt\n@@ -1,2 +1,3 @@\n+val x = 1", true},
+		// Both found by an independent review, walking through a detector that knew
+		// only backticks and only git's a/ b/ prefixes.
+		{"ограда из тильд", StagePlanning, "~~~kotlin\nfun main() {}\n~~~", true},
+		{"дифф без префиксов a/ b/", StagePlanning,
+			"--- old.kt\n+++ new.kt\n@@ -1 +1 @@\n-a\n+b", true},
+		{"одинокая горизонтальная черта", StagePlanning,
+			"План:\n--- дальше по пунктам\n1) модуль JWT", false},
 		{"план словами", StagePlanning,
 			"План: 1) модуль JWT, 2) проверка токена, 3) отзыв. Кода пока не даю.", false},
 		// The documented blind spot, asserted rather than described: prose that

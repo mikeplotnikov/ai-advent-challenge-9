@@ -888,14 +888,10 @@ func (a *Agent) StepDone() error {
 	if err != nil {
 		return err
 	}
-	if s.ctx.Total() == 0 {
-		return fmt.Errorf("%s: %w", a.Name(), ErrNoPlan)
-	}
-	if s.ctx.Step >= s.ctx.Total() {
-		return fmt.Errorf("%s: %w: шаг %d из %d", a.Name(), ErrPlanExhausted, s.ctx.Step, s.ctx.Total())
-	}
 	next := s.ctx.clone()
-	next.Step++
+	if err := closeStep(&next); err != nil {
+		return fmt.Errorf("%s: %w", a.Name(), err)
+	}
 	return a.commitTaskState(s, next)
 }
 
@@ -927,8 +923,30 @@ func (a *Agent) TaskGo(target TaskStage, carry string) error {
 // project will not let the model take alone are three different things to report, and
 // a single "запрещено" would lose all three.
 func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, byModel bool) (TaskStage, error) {
-	target = TaskStage(strings.ToLower(strings.TrimSpace(string(target))))
 	from := s.ctx.State
+	next := s.ctx.clone()
+	if err := a.judgeTransition(s, s.ctx, &next, target, carry, byModel); err != nil {
+		return from, err
+	}
+	// A failed write leaves the agent on the stage it was on. The caller is told the
+	// move did not happen, and what it reads afterwards agrees with the disk.
+	return from, a.commitTaskState(s, next)
+}
+
+// judgeTransition runs the gate against `base` and, if every layer allows the move,
+// writes its mutations into `next`. Nothing is persisted here: the caller commits, and
+// the caller may be applying more than one move in the same turn.
+//
+// The split exists because of a defect an independent review reproduced. The model can
+// end one answer with BOTH [[NEXT_STEP]] and [[TRANSITION: …]]. The previous code closed
+// the step, committed it, and only then judged the transition — so a REFUSED transition
+// left the file changed, and the day's own property ("отклонённая попытка не меняет
+// состояние ни на байт") was false in exactly that case. One answer is now one decision:
+// both moves are judged against the state the turn started from, and either both land or
+// neither does.
+func (a *Agent) judgeTransition(s *taskStateState, base TaskContext, next *TaskContext, target TaskStage, carry string, byModel bool) error {
+	target = TaskStage(strings.ToLower(strings.TrimSpace(string(target))))
+	from := base.State
 	actor := ActorUser
 	if byModel {
 		actor = ActorModelMove
@@ -936,7 +954,7 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, by
 	if _, ok := s.set.rule(target); !ok {
 		a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedUnknown,
 			Reason: "такой стадии нет в наборе " + s.set.Name})
-		return from, fmt.Errorf("%s: %w: %q; в наборе %q есть %s",
+		return fmt.Errorf("%s: %w: %q; в наборе %q есть %s",
 			a.Name(), ErrUnknownStage, target, s.set.Name, joinStages(s.set.Stages()))
 	}
 	control := s.controlMode()
@@ -948,16 +966,16 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, by
 		}
 		a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedIllegal,
 			Reason: "из " + string(from) + " разрешено: " + allowed})
-		return from, fmt.Errorf("%s: %w: %s → %s; из %s разрешено: %s",
+		return fmt.Errorf("%s: %w: %s → %s; из %s разрешено: %s",
 			a.Name(), ErrTransition, from, target, from, allowed)
 	}
 	// Day 15: the edge exists and the state may still not be ready to take it.
 	if control == ControlGuards {
-		if req, ok := checkPreconditions(s.set, s.ctx, target); !ok {
-			detail := req.Detail(s.ctx)
+		if req, ok := checkPreconditions(s.set, base, target); !ok {
+			detail := req.Detail(base)
 			a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedUnready,
 				Reason: req.Name + ": " + detail})
-			return from, fmt.Errorf("%s: %w: %s → %s; %s (сейчас: %s)",
+			return fmt.Errorf("%s: %w: %s → %s; %s (сейчас: %s)",
 				a.Name(), ErrPrecondition, from, target, req.About, detail)
 		}
 	}
@@ -968,10 +986,9 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, by
 		if v, bad := transitionViolation(a.invariants.transitionRules(), from, target, byModel); bad {
 			a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedBlocked,
 				Reason: v.Name + ": " + v.Detail})
-			return from, fmt.Errorf("%s: %w: %s (%s)", a.Name(), ErrInvariantViolated, v.Detail, v.Name)
+			return fmt.Errorf("%s: %w: %s (%s)", a.Name(), ErrInvariantViolated, v.Detail, v.Name)
 		}
 	}
-	next := s.ctx.clone()
 	if summary := summariseForCarry(carry); summary != "" {
 		entries, err := upsertEntry(next.Carry, MemoryEntry{
 			Key: string(from), Value: summary, Source: SourceCommand, Updated: time.Now().UTC(),
@@ -995,14 +1012,12 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, by
 		next.Validated = false
 	}
 	// Every visit to a stage earns that stage's own conditions again, forward or back.
-	enterStage(s.set, &next, target)
+	enterStage(s.set, next, target)
 	next.Trail = appendTrail(next.Trail, TrailEntry{
 		From: from, To: target, Actor: actor, Back: back,
 		Reason: trailReason(carry), At: time.Now().UTC(),
 	})
-	// A failed write leaves the agent on the stage it was on. The caller is told the
-	// move did not happen, and what it reads afterwards agrees with the disk.
-	return from, a.commitTaskState(s, next)
+	return nil
 }
 
 // PauseTask marks the task as put down. The state is already on disk — every mutation
@@ -1075,6 +1090,16 @@ func (a *Agent) TaskState() TaskStateView {
 // applyTaskMove is the machine answering the model. It runs after a usable answer has
 // arrived and before that answer joins the conversation, so the history never contains
 // a marker and the next request cannot be driven by the last one's text.
+//
+// One answer is ONE decision. The model may ask to close the step and to change the
+// stage in the same answer, and both are judged against the state the turn started
+// from, then committed together. An independent review found the previous arrangement
+// — close the step, commit, then judge the transition — leaving a changed file behind a
+// refused move, which is exactly the property this day claims to hold.
+//
+// Judging the transition against the state BEFORE the step closes is deliberate too:
+// otherwise a model standing on step 2 of 3 could emit both markers and reach validation
+// without step 3 ever being worked on, which is the "перепрыгнуть этап" the day forbids.
 func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove {
 	move := TaskMove{StepAsked: step, StageAsked: stage}
 	if !move.Asked() {
@@ -1085,22 +1110,25 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 		move.Note = "модель попросила сдвинуть состояние, но состояние выключено"
 		return move
 	}
+	base := s.ctx
+	next := base.clone()
 	var notes []string
+
+	stepApplied := false
 	if step {
-		switch err := a.StepDone(); {
-		case err == nil:
-			move.StepApplied = true
-			notes = append(notes, fmt.Sprintf("шаг закрыт, теперь %d/%d", s.ctx.Step, s.ctx.Total()))
-		default:
-			notes = append(notes, "шаг не закрыт: "+err.Error())
+		if err := closeStep(&next); err != nil {
+			notes = append(notes, "шаг не закрыт: "+a.Name()+": "+err.Error())
+		} else {
+			stepApplied = true
 		}
 	}
+
 	if stage != "" {
-		from, err := a.transition(s, stage, text, true)
+		err := a.judgeTransition(s, base, &next, stage, text, true)
 		switch {
 		case err == nil:
 			move.StageApplied = true
-			notes = append(notes, fmt.Sprintf("переход %s → %s выполнен", from, stage))
+			notes = append(notes, fmt.Sprintf("переход %s → %s выполнен", base.State, stage))
 		case errors.Is(err, ErrInvariantViolated):
 			// The table allowed it and an invariant did not. It is reported apart
 			// from an illegal move because the two are different findings: one says
@@ -1122,9 +1150,43 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 		default:
 			notes = append(notes, "переход не выполнен: "+err.Error())
 		}
+		if err != nil {
+			// The whole answer is declined, the step included: the model asked for one
+			// thing in two parts, and half of it would be a state nobody asked for.
+			if stepApplied {
+				notes = append(notes, "шаг тоже не закрыт: отказ отменяет весь ход")
+			}
+			move.Note = strings.Join(notes, "; ")
+			return move
+		}
+	}
+
+	if stepApplied {
+		move.StepApplied = true
+		notes = append(notes, fmt.Sprintf("шаг закрыт, теперь %d/%d", next.Step, next.Total()))
+	}
+	if move.StepApplied || move.StageApplied {
+		if err := a.commitTaskState(s, next); err != nil {
+			move.StepApplied, move.StageApplied = false, false
+			move.Note = "ход не записан: " + err.Error()
+			return move
+		}
 	}
 	move.Note = strings.Join(notes, "; ")
 	return move
+}
+
+// closeStep is StepDone's mutation, without the read and the write: applyTaskMove needs
+// to fold it into a decision that may still be refused.
+func closeStep(c *TaskContext) error {
+	if c.Total() == 0 {
+		return ErrNoPlan
+	}
+	if c.Step >= c.Total() {
+		return fmt.Errorf("%w: шаг %d из %d", ErrPlanExhausted, c.Step, c.Total())
+	}
+	c.Step++
+	return nil
 }
 
 // syncActiveTask points everything that is scoped to a task at the task the memory

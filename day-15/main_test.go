@@ -247,6 +247,9 @@ func TestTheDetectorCasesInTheDumpAreTheOnesThatMatter(t *testing.T) {
 		"тот же код на реализации":  false,
 		"незакрытый блок":           true,
 		"дифф без ограждения":       true,
+		"ограда из тильд":           true,
+		"дифф без префиксов":        true,
+		"горизонтальная черта":      false,
 		"план словами":              false,
 		"реализация словами":        false,
 		"инлайн-код":                false,
@@ -278,7 +281,7 @@ func TestTheReportSaysSoWhenTheStateMovedWithoutAMove(t *testing.T) {
 		ShaBefore: "aaa", ShaAfter: "bbb", Moved: true, Resumed: true, Model: "m",
 		MoveNote: "как-то сдвинулось",
 	}}
-	body := renderReport(rows)
+	body := renderReport(rows, rulesForTest(t))
 	if !strings.Contains(body, "Файл состояния менялся там, где ход не применялся") {
 		t.Fatalf("отчёт не заметил сдвиг без хода:\n%s", body)
 	}
@@ -292,7 +295,7 @@ func TestTheReportSaysSoWhenAResumeDiverges(t *testing.T) {
 		Run: "r", Revision: "rev", Arm: "guards", Scenario: "control", Repeat: 1,
 		Outcome: outcomeOK, Delivered: "текст", Resumed: false, ResumedNote: "шаг 1 вместо 2",
 	}}
-	body := renderReport(rows)
+	body := renderReport(rows, rulesForTest(t))
 	if !strings.Contains(body, "Продолжение после паузы сошлось не везде") {
 		t.Fatalf("отчёт не заметил расхождения после паузы:\n%s", body)
 	}
@@ -310,7 +313,7 @@ func TestTheReportRefusesToBeReadWhenTooManyAnswersAreEmpty(t *testing.T) {
 		}
 		rows = append(rows, row)
 	}
-	body := renderReport(rows)
+	body := renderReport(rows, rulesForTest(t))
 	if !strings.Contains(body, "ВЫШЕ зарегистрированного потолка") {
 		t.Fatalf("отчёт не отметил превышение потолка пустых:\n%s", body)
 	}
@@ -322,7 +325,7 @@ func TestACleanRunReportsTheBytePropertyAsHolding(t *testing.T) {
 		Outcome: outcomeOK, Delivered: "текст", StageBefore: "planning", StageAfter: "planning",
 		ShaBefore: "aaa", ShaAfter: "aaa", MoveUnready: true, AskedStage: "execution", Resumed: true,
 	}}
-	body := renderReport(rows)
+	body := renderReport(rows, rulesForTest(t))
 	if !strings.Contains(body, "не изменила файл состояния ни в одной клетке") {
 		t.Fatalf("чистый прогон не подтверждён:\n%s", body)
 	}
@@ -342,7 +345,7 @@ func TestTheCommittedReportIsWhatTheCommittedJournalBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := renderReport(rows); got != string(stored) {
+	if got := renderReport(rows, rulesForTest(t)); got != string(stored) {
 		t.Fatal("RESULTS.md не совпадает с пересборкой из cells.jsonl — пересоберите отчёт")
 	}
 }

@@ -58,9 +58,14 @@ func implementationMarkers(answer string) []string {
 // hasFencedBlock reports a fenced code block. An OPENING fence is enough: an answer cut
 // off by the token ceiling mid-block is still an answer that started writing code, and
 // requiring the closing fence would let exactly the longest implementations through.
+//
+// Both fences of CommonMark count. Only backticks were checked at first, and an
+// independent review walked straight through with "~~~go" — a detector that knows one
+// of the two spellings is a detector with a published spelling for getting past it.
 func hasFencedBlock(answer string) bool {
 	for _, line := range strings.Split(answer, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			return true
 		}
 	}
@@ -69,21 +74,34 @@ func hasFencedBlock(answer string) bool {
 
 // hasDiffHeader reports the shape of a patch. It is checked apart from the fence
 // because a diff is often pasted without one.
+// hasDiffHeader reports the shape of a patch. It is checked apart from the fence
+// because a diff is often pasted without one.
+//
+// The file markers are matched without the "a/" and "b/" prefixes: those come from git,
+// and `diff -u old.go new.go` produces "--- old.go" with no prefix at all. The first
+// version required them, and a review produced a perfectly ordinary unified diff that
+// the detector did not see.
 func hasDiffHeader(answer string) bool {
+	var minus, plus bool
 	for _, line := range strings.Split(answer, "\n") {
 		trimmed := strings.TrimSpace(line)
 		// "@@ -" rather than "@@ ": a hunk header always names the old range first,
 		// and the narrower prefix keeps an answer that merely writes "@@ здесь" out of
 		// the evidence.
-		switch {
-		case strings.HasPrefix(trimmed, "diff --git "),
-			strings.HasPrefix(trimmed, "--- a/"),
-			strings.HasPrefix(trimmed, "+++ b/"),
-			strings.HasPrefix(trimmed, "@@ -"):
+		if strings.HasPrefix(trimmed, "diff --git ") || strings.HasPrefix(trimmed, "@@ -") {
 			return true
 		}
+		// A lone "--- что-то" is an ordinary horizontal rule followed by text, and a
+		// lone "+++" is decoration. The PAIR is a diff header, and requiring both is
+		// what keeps a Markdown separator out of the evidence.
+		if strings.HasPrefix(trimmed, "--- ") && len(trimmed) > 4 {
+			minus = true
+		}
+		if strings.HasPrefix(trimmed, "+++ ") && len(trimmed) > 4 {
+			plus = true
+		}
 	}
-	return false
+	return minus && plus
 }
 
 // stageScopeViolation judges one stage-scope rule against one answer.

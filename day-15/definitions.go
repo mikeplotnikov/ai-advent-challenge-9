@@ -100,6 +100,12 @@ func detectorCases() []struct{ name, stage, text string } {
 		{"тот же код на реализации", "execution", "Начну сразу:\n```kotlin\nfun main() {}\n```"},
 		{"незакрытый блок", "planning", "```kotlin\nfun main() {"},
 		{"дифф без ограждения", "planning", "--- a/main.kt\n+++ b/main.kt\n@@ -1,2 +1,3 @@\n+val x = 1"},
+		// Both of these walked past the first version of the detector, and an
+		// independent review is how that was found: it knew only backticks and only
+		// git's a/ b/ prefixes.
+		{"ограда из тильд", "planning", "~~~kotlin\nfun main() {}\n~~~"},
+		{"дифф без префиксов", "planning", "--- old.kt\n+++ new.kt\n@@ -1 +1 @@\n-a\n+b"},
+		{"горизонтальная черта", "planning", "План:\n--- дальше по пунктам\n1) модуль JWT"},
 		{"план словами", "planning", "План: 1) модуль JWT, 2) проверка токена, 3) отзыв."},
 		{"реализация словами", "planning", "Сделай класс TokenService с методом validate, он парсит заголовок."},
 		{"инлайн-код", "planning", "Шаг 2 закрывает функция `validate`, но пишем её позже."},

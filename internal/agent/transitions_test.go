@@ -634,3 +634,83 @@ func TestAnApprovalWithoutAPlanIsRefusedOnLoad(t *testing.T) {
 		t.Fatalf("отказ не называет противоречие: %v", err)
 	}
 }
+
+// An independent review reproduced this one: the model ends an answer with BOTH
+// [[NEXT_STEP]] and a transition the machine refuses. The step used to be closed and
+// committed before the transition was judged, so a refused move left the file changed —
+// the day's own property, false in exactly the case the day is about.
+func TestARefusedTransitionCancelsTheStepAskedInTheSameAnswer(t *testing.T) {
+	dir := t.TempDir()
+	c := &layerCaller{reply: "Шаг готов, закрываю задачу.\n[[NEXT_STEP]]\n[[TRANSITION: done]]"}
+	a := stateAgent(t, c, dir, "сервис")
+	planOf(t, a, "первый", "второй", "третий")
+	mustGo(t, a, StageExecution)
+	path := a.TaskState().Path
+	before := fileHash(t, path)
+
+	reply, err := a.Ask(context.Background(), "продолжай")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Move.StageApplied {
+		t.Fatal("переход execution → done выполнен")
+	}
+	if !reply.Move.Illegal {
+		t.Fatalf("переход не помечен незаконным: %+v", reply.Move)
+	}
+	if reply.Move.StepApplied {
+		t.Fatalf("шаг закрыт, хотя ход отклонён целиком: %+v", reply.Move)
+	}
+	if got := a.TaskState().Step; got != 1 {
+		t.Fatalf("шаг стал %d, ожидался 1", got)
+	}
+	if got := fileHash(t, path); got != before {
+		t.Fatal("отклонённый ход изменил файл состояния")
+	}
+}
+
+// The other half of the same decision: when the transition IS allowed, both moves land,
+// and they land together.
+func TestAnAllowedTransitionAndTheStepLandTogether(t *testing.T) {
+	dir := t.TempDir()
+	c := &layerCaller{reply: "Второй шаг сделан, возвращаемся к плану.\n[[NEXT_STEP]]\n[[TRANSITION: planning]]"}
+	a := stateAgent(t, c, dir, "сервис")
+	planOf(t, a, "первый", "второй", "третий")
+	mustGo(t, a, StageExecution)
+
+	reply, err := a.Ask(context.Background(), "продолжай")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !reply.Move.StageApplied || !reply.Move.StepApplied {
+		t.Fatalf("ход применён не целиком: %+v", reply.Move)
+	}
+	v := a.TaskState()
+	if v.State != StagePlanning || v.Step != 2 {
+		t.Fatalf("после хода: %s, шаг %d", v.State, v.Step)
+	}
+}
+
+// And the reason the gate judges the state BEFORE the step closes: otherwise one answer
+// could close step 2 of 3 and walk into validation, with step 3 never worked on.
+func TestClosingAStepDoesNotOpenTheEdgeInTheSameAnswer(t *testing.T) {
+	dir := t.TempDir()
+	c := &layerCaller{reply: "Шаг закрыт, отправляю на проверку.\n[[NEXT_STEP]]\n[[TRANSITION: validation]]"}
+	a := stateAgent(t, c, dir, "сервис")
+	planOf(t, a, "первый", "второй")
+	mustGo(t, a, StageExecution)
+
+	reply, err := a.Ask(context.Background(), "продолжай")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if reply.Move.StageApplied {
+		t.Fatal("шаг, закрытый в этом же ответе, открыл дверь в валидацию")
+	}
+	if !reply.Move.Unready {
+		t.Fatalf("переход не помечен преждевременным: %+v", reply.Move)
+	}
+	if got := a.TaskState().Step; got != 1 {
+		t.Fatalf("шаг стал %d, ожидался 1 — отказ отменяет весь ход", got)
+	}
+}
