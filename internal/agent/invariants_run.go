@@ -69,7 +69,7 @@ func (a *Agent) invariantsContext() string {
 // (#3156).
 func (a *Agent) checkInvariants(ctx context.Context, question, answer string) ([]Violation, int, Usage, string) {
 	rules := a.invariants.answerRules(a.invariants.cfg.Judge)
-	violations := checkMachine(rules, answer)
+	violations := checkMachine(rules, answer, a.checkEnv())
 
 	if !a.invariants.cfg.Judge {
 		return violations, 0, Usage{}, ""
@@ -279,7 +279,7 @@ func readJudgeVerdict(rest string) (string, bool) {
 // with checking switched off still has to be judged, and judging it with a second,
 // look-alike implementation would compare two detectors instead of two arms.
 func CheckAnswer(rules []Invariant, answer string) []Violation {
-	return checkMachine(rules, answer)
+	return checkMachine(rules, answer, checkEnv{})
 }
 
 // invariantSetFile is the shape of a hand-written set. The "comment" key the shipped

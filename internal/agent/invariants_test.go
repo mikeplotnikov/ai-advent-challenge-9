@@ -162,10 +162,10 @@ func TestEachMachineCheckHasBothControls(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if v := checkMachine([]Invariant{tc.inv}, tc.clean); len(v) != 0 {
+			if v := checkMachine([]Invariant{tc.inv}, tc.clean, checkEnv{}); len(v) != 0 {
 				t.Fatalf("чистый ответ признан нарушением: %+v", v)
 			}
-			v := checkMachine([]Invariant{tc.inv}, tc.violating)
+			v := checkMachine([]Invariant{tc.inv}, tc.violating, checkEnv{})
 			if len(v) != 1 {
 				t.Fatalf("нарушение не найдено, получено %d", len(v))
 			}
@@ -193,7 +193,7 @@ func TestAnOrdinaryConnectiveNoLongerHidesAProposal(t *testing.T) {
 		"Не буду скрывать: тут используется Java и Spring Boot, а не Kotlin.",
 		"Java использовать нельзя, но вот пример на Java.",
 	} {
-		if v := checkMachine([]Invariant{inv}, text); len(v) == 0 {
+		if v := checkMachine([]Invariant{inv}, text, checkEnv{}); len(v) == 0 {
 			t.Errorf("нарушение не найдено в %q", text)
 		}
 	}
@@ -718,6 +718,10 @@ func TestAModelMayNotCloseTheTaskWithoutTheUser(t *testing.T) {
 	if err := a.TaskGo(StageValidation, ""); err != nil {
 		t.Fatalf("TaskGo validation: %v", err)
 	}
+	// Day 15's precondition on this edge is satisfied first, so that what the model
+	// then runs into is the INVARIANT and not the missing verdict. The two refusals
+	// are different findings and this test is about the second one.
+	verdictOK(t, a)
 
 	// The model asks for the move the table allows and the invariant does not.
 	move := a.applyTaskMove("готово", false, StageDone)
@@ -1312,12 +1316,12 @@ func TestTheDependencyCeilingDoesNotCountTheMandatedStack(t *testing.T) {
 	// Three third-party libraries on top of the mandated Kotlin+Ktor is exactly the
 	// ceiling, not five.
 	ok := "Берём Kotlin и Ktor, плюс PostgreSQL, Redis и Prometheus."
-	if v := checkMachine(set, ok); len(v) != 0 {
+	if v := checkMachine(set, ok, checkEnv{}); len(v) != 0 {
 		t.Fatalf("послушный ответ признан нарушением: %+v", v)
 	}
 	// The positive control: a fourth third-party dependency does break it.
 	bad := "Берём Kotlin и Ktor, плюс PostgreSQL, Redis, Prometheus и Kafka."
-	v := checkMachine(set, bad)
+	v := checkMachine(set, bad, checkEnv{})
 	if len(v) != 1 || v[0].Name != "max-deps" {
 		t.Fatalf("четвёртая зависимость не поймана: %+v", v)
 	}
@@ -1330,7 +1334,7 @@ func TestTheDependencyCeilingDoesNotCountTheMandatedStack(t *testing.T) {
 
 	// And without a stack rule in force nothing is mandated, so the same answer counts
 	// every term — the ceiling is a property of the SET, not of one rule.
-	alone := checkMachine([]Invariant{deps}, ok)
+	alone := checkMachine([]Invariant{deps}, ok, checkEnv{})
 	if len(alone) != 1 {
 		t.Fatalf("без правила стека тот же ответ должен превышать потолок: %+v", alone)
 	}
@@ -1402,14 +1406,14 @@ func TestABannedNameIsCaughtInEverySpellingTheVocabularyKnows(t *testing.T) {
 	inv := Invariant{Name: "no-orm", About: "Работаем без ORM.", Scope: ScopeTask,
 		Kind: KindNoBanned, Values: []string{"Hibernate", "JPA", "Exposed"}}
 	for _, text := range []string{"возьмём Hibernate", "возьмём хибернейт", "нужен JPA"} {
-		if v := checkMachine([]Invariant{inv}, text); len(v) != 1 {
+		if v := checkMachine([]Invariant{inv}, text, checkEnv{}); len(v) != 1 {
 			t.Errorf("запрещённое не поймано в %q: %+v", text, v)
 		}
 	}
 	// The negative control, and the hole this does NOT close: a concept word is not a
 	// library name, and the check does not know concepts.
 	for _, text := range []string{"пишем SQL руками", "нужен ORM-слой"} {
-		if v := checkMachine([]Invariant{inv}, text); len(v) != 0 {
+		if v := checkMachine([]Invariant{inv}, text, checkEnv{}); len(v) != 0 {
 			t.Errorf("сработало там, где имени библиотеки нет: %q → %+v", text, v)
 		}
 	}

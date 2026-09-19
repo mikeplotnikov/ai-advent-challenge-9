@@ -118,6 +118,12 @@ func recordBlock(sc scenario) (string, agent.TaskContext, error) {
 	for i := range ctx.Carry {
 		ctx.Carry[i].Updated = time.Time{}
 	}
+	// Day 15 added a trail of moves to the state, and every entry carries the moment
+	// it happened. Same reason as above, one field deeper: the dump has to be a
+	// function of the code, not of the clock.
+	for i := range ctx.Trail {
+		ctx.Trail[i].At = time.Time{}
+	}
 	return stateBlockOf(rec.wire), ctx, nil
 }
 

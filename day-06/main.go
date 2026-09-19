@@ -88,6 +88,7 @@ func main() {
 		stages    = flag.String("stages", "", "набор стадий: standard или bugfix; пусто — как просит профиль (с -task-state)")
 		taskAuto  = flag.Bool("task-auto", false, "заводить задачу с первого же сообщения, если активной нет (с -task-state)")
 		autoName  = flag.String("task-auto-name", "task", "имя задачи, которую заводит -task-auto")
+		control   = flag.String("control", "", "контроль переходов дня 15: guards (по умолчанию), table — только таблица, none — без проверки (с -task-state)")
 
 		// День 14 — инварианты: правила, которые нарушать нельзя.
 		invariants = flag.Bool("invariants", false, "инварианты дня 14: правила проекта, которые агент не имеет права нарушать (с -layers)")
@@ -141,9 +142,10 @@ func main() {
 		if *taskState {
 			task13 = &agent.TaskConfig{
 				Stages: *stages, Inject: injectState, Auto: *taskAuto, AutoName: *autoName,
+				Control: *control,
 			}
 		} else {
-			for _, name := range []string{"stages", "task-auto", "task-auto-name"} {
+			for _, name := range []string{"stages", "task-auto", "task-auto-name", "control"} {
 				if flagWasSet(name) {
 					fail(fmt.Errorf("-%s действует только вместе с -task-state", name))
 				}
@@ -165,7 +167,8 @@ func main() {
 		}
 	} else {
 		for _, name := range []string{"user", "memory-dir", "task", "inject", "profile", "profile-route",
-			"task-state", "stages", "task-auto", "task-auto-name", "invariants", "inv", "inv-load"} {
+			"task-state", "stages", "task-auto", "task-auto-name", "control",
+			"invariants", "inv", "inv-load"} {
 			if flagWasSet(name) {
 				fail(fmt.Errorf("-%s действует только вместе с -layers", name))
 			}

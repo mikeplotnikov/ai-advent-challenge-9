@@ -22,7 +22,12 @@ func handleStateCommand(a *agent.Agent, line string) (bool, error) {
 		return false, nil
 	}
 	switch parts[0] {
-	case "/state", "/plan", "/step", "/go", "/pause", "/resume":
+	case "/state", "/plan", "/step", "/go", "/pause", "/resume",
+		// Day 15: approving a plan, recording a verdict and reading the trail are the
+		// three acts the preconditions are about. They are commands and not something
+		// the model may do, which is the point — the machine's readiness is the
+		// person's to declare.
+		"/approve", "/validate", "/trail":
 	default:
 		return false, nil
 	}
@@ -43,8 +48,39 @@ func handleStateCommand(a *agent.Agent, line string) (bool, error) {
 		if err := a.PlanTask(steps); err != nil {
 			return true, err
 		}
-		fmt.Fprintf(os.Stderr, "план утверждён, шагов: %d\n", len(steps))
+		// Day 15: this writes a DRAFT. Day 13's message here said "план утверждён",
+		// and that wording was the whole confusion the day is about — a plan that
+		// exists is not a plan somebody agreed to.
+		fmt.Fprintf(os.Stderr, "план записан черновиком, шагов: %d — утвердить: /approve\n", len(steps))
 		printTaskState(a)
+		return true, nil
+
+	case "/approve":
+		if err := a.ApprovePlan(); err != nil {
+			return true, err
+		}
+		fmt.Fprintln(os.Stderr, "план утверждён")
+		printTaskState(a)
+		return true, nil
+
+	case "/validate":
+		pass, note, err := parseVerdict(line)
+		if err != nil {
+			return true, err
+		}
+		if err := a.RecordVerdict(pass, note); err != nil {
+			return true, err
+		}
+		if pass {
+			fmt.Fprintln(os.Stderr, "вердикт: валидация пройдена")
+		} else {
+			fmt.Fprintln(os.Stderr, "вердикт: валидация НЕ пройдена — финал закрыт, путь назад открыт")
+		}
+		printTaskState(a)
+		return true, nil
+
+	case "/trail":
+		printTrail(a)
 		return true, nil
 
 	case "/step":
@@ -131,11 +167,82 @@ func parseGo(line string) (agent.TaskStage, string, error) {
 	return agent.TaskStage(stage), carry, nil
 }
 
+// parseVerdict reads "/validate ok" and "/validate fail = что именно не так".
+func parseVerdict(line string) (bool, string, error) {
+	rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "/validate"))
+	if rest == "" {
+		return false, "", errors.New("формат: /validate ok  или  /validate fail = что именно не так")
+	}
+	verdict, note := rest, ""
+	if i := strings.Index(rest, "="); i >= 0 {
+		verdict, note = strings.TrimSpace(rest[:i]), strings.TrimSpace(rest[i+1:])
+	}
+	switch strings.ToLower(verdict) {
+	case "ok", "pass":
+		return true, note, nil
+	case "fail", "no":
+		return false, note, nil
+	default:
+		return false, "", fmt.Errorf("вердикт %q не понят: ok или fail", verdict)
+	}
+}
+
+// printTrail shows both halves of the record: the moves that happened, which live in
+// the state file and survive a pause, and the moves this session was refused, which do
+// not — a refused attempt may not change the state, so it is not written into it.
+func printTrail(a *agent.Agent) {
+	v := a.TaskState()
+	if v.Task == "" {
+		fmt.Fprintln(os.Stderr, "активной задачи нет — /task new ИМЯ")
+		return
+	}
+	if len(v.Trail) == 0 {
+		fmt.Fprintln(os.Stderr, "переходов ещё не было")
+	}
+	for _, e := range v.Trail {
+		mark := "→"
+		if e.Back {
+			mark = "↩"
+		}
+		line := fmt.Sprintf("  %s %s %s %s (%s)", e.At.Local().Format("15:04:05"), e.From, mark, e.To, e.Actor)
+		if e.Reason != "" {
+			line += ": " + e.Reason
+		}
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if len(v.Refused) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "отклонено в этой сессии (в файл не пишется — отказ не меняет состояние):")
+	for _, r := range v.Refused {
+		fmt.Fprintf(os.Stderr, "  %s %s ⨯ %s (%s, %s): %s\n",
+			r.At.Local().Format("15:04:05"), r.From, r.To, r.Actor, r.Kind, r.Reason)
+	}
+}
+
 func stepLabel(v agent.TaskStateView) string {
 	if v.Total == 0 {
 		return "плана ещё нет"
 	}
 	return fmt.Sprintf("%d/%d", v.Step, v.Total)
+}
+
+func approvalLabel(v agent.TaskStateView) string {
+	switch {
+	case v.Total == 0:
+		return "нет"
+	case v.PlanApproved:
+		return "утверждён"
+	default:
+		return "черновик (/approve)"
+	}
+}
+
+func verdictLabel(v agent.TaskStateView) string {
+	if v.Validated {
+		return "пройдена"
+	}
+	return "нет вердикта (/validate ok|fail)"
 }
 
 func continueLabel(v agent.TaskStateView) string {
@@ -165,6 +272,13 @@ func printTaskState(a *agent.Agent) {
 		fmt.Fprintf(os.Stderr, "  итог стадии %s: %s\n", e.Key, e.Value)
 	}
 	fmt.Fprintf(os.Stderr, "ожидается: %s\n", v.Expect)
+	// Day 15: readiness, and then what it closes. A list of allowed transitions that
+	// does not say which of them are shut right now is the list day 13 printed, and it
+	// is exactly the thing a person then walks into.
+	fmt.Fprintf(os.Stderr, "план: %s · валидация: %s\n", approvalLabel(v), verdictLabel(v))
+	for _, b := range v.Blocked {
+		fmt.Fprintf(os.Stderr, "закрыт переход в %s — %s (сейчас: %s)\n", b.To, b.About, b.Detail)
+	}
 	if len(v.Allowed) > 0 {
 		// Запятая, а не стрелка: это список вариантов, а не последовательность.
 		// Стрелка здесь читалась бы как «сначала validation, потом planning».
@@ -174,6 +288,12 @@ func printTaskState(a *agent.Agent) {
 	}
 	if v.Paused {
 		fmt.Fprintln(os.Stderr, "задача на паузе — /resume")
+	}
+	if v.Control != agent.ControlGuards {
+		// An arm of the measurement running in an interactive session says so out
+		// loud: a weaker control that looked like the default would be a demo of a
+		// guarantee the build is not making.
+		fmt.Fprintf(os.Stderr, "контроль переходов: %s (не строгий; по умолчанию %s)\n", v.Control, agent.ControlGuards)
 	}
 	if !v.Inject {
 		fmt.Fprintln(os.Stderr, "состояние НЕ уходит в запрос (-inject без state); хранится всё")

@@ -27,7 +27,30 @@ func stateAgent(t *testing.T, c *layerCaller, dir, task string) *Agent {
 	return a
 }
 
+// planOf writes a plan AND approves it, which is what day 13's single /plan command
+// did: the tests written then are about carry, pause, markers and the block, and they
+// start from "there is a plan the machine may work on". Day 15 split writing from
+// approving, so the helper does both and the split itself is tested separately, in the
+// day-15 tests, with planDraft.
 func planOf(t *testing.T, a *Agent, steps ...string) {
+	t.Helper()
+	planDraft(t, a, steps...)
+	if err := a.ApprovePlan(); err != nil {
+		t.Fatalf("ApprovePlan: %v", err)
+	}
+}
+
+// verdictOK records a passing validation verdict, which day 15 requires before the
+// terminal stage: "нельзя делать финал без валидации".
+func verdictOK(t *testing.T, a *Agent) {
+	t.Helper()
+	if err := a.RecordVerdict(true, ""); err != nil {
+		t.Fatalf("RecordVerdict: %v", err)
+	}
+}
+
+// planDraft writes a plan and leaves it unapproved.
+func planDraft(t *testing.T, a *Agent, steps ...string) {
 	t.Helper()
 	if err := a.PlanTask(steps); err != nil {
 		t.Fatalf("PlanTask: %v", err)
@@ -149,6 +172,9 @@ func TestATerminalStageSaysSoInsteadOfListingNothing(t *testing.T) {
 	a := stateAgent(t, &layerCaller{}, dir, "сервис")
 	planOf(t, a, "шаг")
 	for _, to := range []TaskStage{StageExecution, StageValidation, StageDone} {
+		if to == StageDone {
+			verdictOK(t, a)
+		}
 		if err := a.TaskGo(to, ""); err != nil {
 			t.Fatalf("переход в %s: %v", to, err)
 		}
@@ -367,6 +393,9 @@ func TestPauseAndResumeHoldOnEveryStage(t *testing.T) {
 	planOf(t, a, "шаг")
 	for _, stage := range []TaskStage{StagePlanning, StageExecution, StageValidation, StageDone} {
 		if stage != StagePlanning {
+			if stage == StageDone {
+				verdictOK(t, a)
+			}
 			if err := a.TaskGo(stage, "итог "+string(stage)); err != nil {
 				t.Fatalf("переход в %s: %v", stage, err)
 			}

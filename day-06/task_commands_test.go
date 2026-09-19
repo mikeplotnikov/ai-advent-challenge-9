@@ -113,6 +113,13 @@ func TestPlanAndGoRunThroughTheCommandSurface(t *testing.T) {
 	if v := a.TaskState(); v.Total != 2 || v.Current != "JWT module" {
 		t.Fatalf("после /plan: %d шагов, текущий %q", v.Total, v.Current)
 	}
+	// Day 15: /plan writes a draft, /approve is what opens the edge to execution.
+	if v := a.TaskState(); v.PlanApproved {
+		t.Fatal("/plan сам утвердил план")
+	}
+	if handled, err := handleStateCommand(a, "/approve"); !handled || err != nil {
+		t.Fatalf("/approve: %v %v", handled, err)
+	}
 	if handled, err := handleStateCommand(a, "/go execution = план утверждён"); !handled || err != nil {
 		t.Fatalf("/go: %v %v", handled, err)
 	}
@@ -153,6 +160,9 @@ func TestPauseAndResumeSpeakSlideTwentyTwo(t *testing.T) {
 	dir := t.TempDir()
 	a := stateCLIAgent(t, dir, &agent.TaskConfig{Inject: true})
 	if _, err := handleStateCommand(a, "/plan JWT module; Token validation"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleStateCommand(a, "/approve"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := handleStateCommand(a, "/go execution"); err != nil {

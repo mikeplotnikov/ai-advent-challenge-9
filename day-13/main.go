@@ -302,7 +302,10 @@ func seed(dir string, sc scenario, set string, withHistory, withCarry bool) erro
 	cfg := agent.Config{
 		Name: "day-13", SystemPrompt: measureSystem,
 		Memory: memoryCfg(dir, ""),
-		Task:   &agent.TaskConfig{Inject: true, Stages: set},
+		// Day 15 made "guards" the default strictness. Day 13's driver pins the
+		// mode it measured — the table alone — so that re-running it reproduces day
+		// 13 and not a later day's agent wearing day 13's name.
+		Task: &agent.TaskConfig{Inject: true, Stages: set, Control: agent.ControlTable},
 	}
 	if withHistory {
 		var answers []string
@@ -576,7 +579,7 @@ func measureConfig(dir, set string, withHistory, injectState bool) agent.Config 
 	cfg := agent.Config{
 		Name: "day-13", SystemPrompt: measureSystem, Thinking: "disabled", MaxTokens: answerTokens,
 		Memory: memoryCfg(dir, task),
-		Task:   &agent.TaskConfig{Inject: injectState, Stages: set},
+		Task:   &agent.TaskConfig{Inject: injectState, Stages: set, Control: agent.ControlTable},
 	}
 	if withHistory {
 		cfg.Store = storeOf(dir)

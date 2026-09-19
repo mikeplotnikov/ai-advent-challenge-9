@@ -35,6 +35,10 @@ type stageRule struct {
 	Stage TaskStage
 	// Allow is every stage reachable from Stage. An empty slice is a terminal stage.
 	Allow []TaskStage
+	// Guards are day 15's preconditions, by target stage: the edge exists and may still
+	// be closed until the state satisfies it. An edge with no entry here is open the
+	// moment the table allows it, which is every edge day 13 had.
+	Guards map[TaskStage][]requirement
 	// Expect is the "ожидаемое действие" of the task text, in the words of this
 	// stage. It lives on the stage set rather than in the saved file because a stored
 	// expectation can disagree with the machine that produces it, and determinism is
@@ -80,20 +84,54 @@ var stageSets = map[string]StageSet{
 		Name:  StandardStages,
 		About: "slide 18: planning → execution → validation → done",
 		Rules: []stageRule{
-			{StagePlanning, []TaskStage{StageExecution}, "approve the plan, then move to execution"},
-			{StageExecution, []TaskStage{StageValidation, StagePlanning}, "finish the current step, or send the work to validation"},
-			{StageValidation, []TaskStage{StageDone, StageExecution}, "accept the result, or send it back to execution"},
-			{StageDone, nil, "nothing — the task is closed"},
+			{
+				Stage: StagePlanning, Allow: []TaskStage{StageExecution},
+				// Day 15's first example, verbatim: "нельзя делать реализацию до
+				// утверждённого плана".
+				Guards: map[TaskStage][]requirement{StageExecution: {reqApprovedPlan}},
+				Expect: "approve the plan, then move to execution",
+			},
+			{
+				Stage: StageExecution, Allow: []TaskStage{StageValidation, StagePlanning},
+				Guards: map[TaskStage][]requirement{StageValidation: {reqPlanExhausted}},
+				Expect: "finish the current step, or send the work to validation",
+			},
+			{
+				Stage: StageValidation, Allow: []TaskStage{StageDone, StageExecution},
+				// The second example: "нельзя делать финал без валидации". The table
+				// already routes done through validation; the verdict is what keeps
+				// that route from being walked in a single turn.
+				Guards: map[TaskStage][]requirement{StageDone: {reqValidationVerdict}},
+				Expect: "accept the result, or send it back to execution",
+			},
+			{Stage: StageDone, Expect: "nothing — the task is closed"},
 		},
 	},
 	BugfixStages: {
 		Name:  BugfixStages,
 		About: "round 5: reproduce → root-cause → fix → pull-request",
 		Rules: []stageRule{
-			{StageReproduce, []TaskStage{StageRootCause}, "reproduce the defect, then look for its cause"},
-			{StageRootCause, []TaskStage{StageFix, StageReproduce}, "name the root cause, or go back and reproduce again"},
-			{StageFix, []TaskStage{StagePullRequest, StageRootCause}, "apply the fix, or go back to the cause"},
-			{StagePullRequest, nil, "nothing — the fix is out for review"},
+			{
+				Stage: StageReproduce, Allow: []TaskStage{StageRootCause},
+				Expect: "reproduce the defect, then look for its cause",
+			},
+			{
+				Stage: StageRootCause, Allow: []TaskStage{StageFix, StageReproduce},
+				// The same requirement on the bug path: the plan here is the plan of
+				// the fix, and it is approved before the fix is written. The guards are
+				// data, so the second set gets them by naming them — this is the test
+				// that they are not welded to the standard set's stage names.
+				Guards: map[TaskStage][]requirement{StageFix: {reqApprovedPlan}},
+				Expect: "name the root cause, or go back and reproduce again",
+			},
+			{
+				Stage: StageFix, Allow: []TaskStage{StagePullRequest, StageRootCause},
+				Guards: map[TaskStage][]requirement{
+					StagePullRequest: {reqPlanExhausted, reqValidationVerdict},
+				},
+				Expect: "apply the fix, or go back to the cause",
+			},
+			{Stage: StagePullRequest, Expect: "nothing — the fix is out for review"},
 		},
 	},
 }
@@ -156,8 +194,11 @@ func (s StageSet) Allowed(from, to TaskStage) bool {
 }
 
 const (
-	// TaskStateVersion is the format of the state file.
-	TaskStateVersion = 1
+	// TaskStateVersion is the format of the state file. Version 2 is day 15: it adds
+	// the approval of the plan, the validation verdict and the trail of moves.
+	TaskStateVersion = 2
+	// taskStateVersionDay13 is the format day 13 wrote, still read and migrated.
+	taskStateVersionDay13 = 1
 	// maxPlanSteps bounds the plan the way maxMemoryEntries bounds a memory block:
 	// the state is injected whole, so its size is settled where it is written.
 	maxPlanSteps = 32
@@ -197,9 +238,21 @@ type TaskContext struct {
 	// Carry is "передавая в каждый систем промпт результаты предыдущего промпта"
 	// (round 5): the result of a stage, kept for the stages that follow it. One entry
 	// per stage, keyed by stage name, written by the machine at transition time.
-	Carry   []MemoryEntry `json:"carry"`
-	Paused  bool          `json:"paused"`
-	Updated time.Time     `json:"updated"`
+	Carry []MemoryEntry `json:"carry"`
+	// PlanApproved is day 15: the plan is not merely written but agreed to. Day 13 had
+	// no such distinction — /plan was the approval — and so "нельзя делать реализацию
+	// до утверждённого плана" had nothing to check.
+	PlanApproved bool `json:"plan_approved"`
+	// Validated is the verdict of this visit to the validating stage. It is cleared on
+	// every entry to that stage, so a task that came back for rework has to be
+	// validated again rather than inheriting the verdict it failed.
+	Validated bool `json:"validated"`
+	// Trail is the moves that actually happened, oldest first, bounded. Refusals are
+	// deliberately absent: a refused attempt may not change the state, and writing it
+	// down would be the state changing.
+	Trail   []TrailEntry `json:"trail,omitempty"`
+	Paused  bool         `json:"paused"`
+	Updated time.Time    `json:"updated"`
 }
 
 // Total is slide 19's `total`.
@@ -243,6 +296,10 @@ type TaskConfig struct {
 	// Inject decides whether [TASK_STATE] travels in requests. Storage is never
 	// affected — this is the ablation switch, exactly like Profile.Inject.
 	Inject bool
+	// Control is day 15's strictness: none, table or guards. Empty means guards, the
+	// strict default — the weaker modes exist to be measured against it, not to be
+	// fallen into by leaving a field unset.
+	Control string
 	// Auto starts a task in the first stage when a message arrives and no task is
 	// active. It is the host's "я считаю задачей с самого старта её, то есть когда
 	// юзер отправил промпт" (#3096).
@@ -265,11 +322,22 @@ type TaskStateView struct {
 	Plan     []string
 	Done     []string
 	Carry    []MemoryEntry
-	Expect   string
-	Allowed  []TaskStage
-	Paused   bool
-	Inject   bool
-	Tokens   int
+	Expect  string
+	Allowed []TaskStage
+	// Blocked are the allowed edges a precondition currently closes, with the reason.
+	Blocked []BlockedTransition
+	// PlanApproved and Validated are day 15's two facts about readiness.
+	PlanApproved bool
+	Validated    bool
+	// Control is the strictness in force: none, table or guards.
+	Control string
+	// Trail is the moves that happened, Refused is what this session was not allowed
+	// to do. The second is session-scoped by design — see taskStateState.refused.
+	Trail   []TrailEntry
+	Refused []RefusedMove
+	Paused  bool
+	Inject  bool
+	Tokens  int
 }
 
 type taskStateState struct {
@@ -278,6 +346,10 @@ type taskStateState struct {
 	task string
 	ctx  TaskContext
 	file layerFile
+	// refused is this session's log of moves the machine turned down. It is in memory
+	// and not in the file on purpose: a refused attempt must leave the state byte for
+	// byte as it was, and persisting the refusal would be the state changing.
+	refused []RefusedMove
 }
 
 func validateTaskConfig(t *TaskConfig, m *MemoryConfig) error {
@@ -289,6 +361,9 @@ func validateTaskConfig(t *TaskConfig, m *MemoryConfig) error {
 	}
 	if _, err := LookupStageSet(t.Stages); err != nil {
 		return fmt.Errorf("agent: Task.Stages: %w", err)
+	}
+	if err := validateControl(t.Control); err != nil {
+		return fmt.Errorf("agent: Task.Control: %w", err)
 	}
 	if t.AutoName != "" {
 		if _, err := validateTaskName(t.AutoName); err != nil {
@@ -313,6 +388,9 @@ func (s *taskStateState) setTask(dir, user, task string) {
 	s.task = task
 	s.ctx = TaskContext{}
 	s.file = layerFile{}
+	// The refusal log belongs to the task that produced it: carrying it to the next
+	// task would print one task's blocked moves while looking at another's state.
+	s.refused = nil
 	if task != "" {
 		s.file = layerFile{path: taskStatePath(dir, user, task)}
 	}
@@ -338,6 +416,7 @@ func (s *taskStateState) reload(user string) error {
 		}
 		return nil
 	}
+	ctx = migrateTaskContext(ctx)
 	if err := validateTaskContext(ctx, user, s.task); err != nil {
 		return fmt.Errorf("состояние задачи %s: %w", s.file.path, err)
 	}
@@ -354,6 +433,29 @@ func (s *taskStateState) reload(user string) error {
 	s.set = set
 	s.ctx = ctx
 	return nil
+}
+
+// migrateTaskContext brings a day-13 state file up to the day-15 format.
+//
+// A version-1 file with a plan is read as a file whose plan was APPROVED, and that is
+// not a guess: on day 13 writing the plan and approving it were the same act, and the
+// command said so — "план утверждён". A migration that read those files as unapproved
+// would stop a running task at a gate it had already passed under the rules it was
+// started under. A file with no plan migrates to no approval, which is the same state
+// day 13 was in.
+//
+// The migration happens on read and is not written back. A read that wrote would make
+// opening a task a mutation, and day 15's own property is that looking at the machine —
+// including looking at an attempt it refused — leaves the file alone.
+func migrateTaskContext(c TaskContext) TaskContext {
+	if c.Version != taskStateVersionDay13 {
+		return c
+	}
+	c.Version = TaskStateVersion
+	c.PlanApproved = len(c.Plan) > 0
+	c.Validated = false
+	c.Trail = nil
+	return c
 }
 
 func validateTaskContext(c TaskContext, user, task string) error {
@@ -378,6 +480,14 @@ func validateTaskContext(c TaskContext, user, task string) error {
 	}
 	if len(c.Plan) > 0 && c.Step == 0 {
 		return errors.New("план есть, а шаг не выставлен")
+	}
+	// An approval of a plan that does not exist would open the edge day 15 exists to
+	// close, and it can only arrive by a hand edit or an older build.
+	if c.PlanApproved && len(c.Plan) == 0 {
+		return errors.New("план утверждён, а шагов в нём нет")
+	}
+	if err := validateTrail(c.Trail); err != nil {
+		return err
 	}
 	if err := validateEntries(c.Carry); err != nil {
 		return fmt.Errorf("перенос между стадиями: %w", err)
@@ -482,6 +592,11 @@ type TaskMove struct {
 	// Illegal is a stage change the transition table refused. It is the measurement of
 	// antipattern 02: the model asked to skip, the code said no.
 	Illegal bool
+	// Unready is day 15: the edge exists, and the state has not met its preconditions —
+	// "нельзя делать реализацию до утверждённого плана". Kept apart from Illegal
+	// because "рано" and "нельзя" are different answers about different defects, and a
+	// measurement that added them up could not tell which control did the work.
+	Unready bool
 	// Blocked is a stage change the table allowed and an invariant of day 14 refused —
 	// typically "не закрывать задачу без согласия пользователя" (chat #3152). Kept
 	// apart from Illegal because they measure different things: an edge that does not
@@ -633,7 +748,27 @@ func (a *Agent) taskStateBlock() string {
 		}
 	}
 	lines = append(lines, "expect: "+rule.Expect)
-	lines = append(lines, "rules:", "- Work only within the current step and do not skip stages.")
+	// Day 15: what is allowed is not the whole truth — an edge can exist and still be
+	// closed. The model is told which ones and why, so that "не перепрыгивай" is a
+	// statement it can act on rather than a slogan.
+	//
+	// These lines are computed from the preconditions and do NOT depend on the control
+	// mode. That is deliberate and it is the ablation: the prompt is held identical
+	// across the measured arms, so the only thing that differs between them is what the
+	// CODE does with a request. In the weaker arms the block therefore describes a
+	// promise nothing keeps, which is exactly antipattern 03 — "текстовые правила =
+	// просьба" — put where it can be measured instead of asserted.
+	//
+	// The line names the requirement and not its Russian explanation: the block is in
+	// English by the project's rule for prompts, while About and Detail are what a
+	// person reads in the refusal. Naming the requirement keeps one wording in the
+	// prompt and one in the interface without either being a translation of the other
+	// that could drift.
+	for _, b := range blockedTransitions(s.set, c) {
+		lines = append(lines, "blocked: "+string(b.To)+" — requires "+b.Requirement)
+	}
+	lines = append(lines, "rules:", "- Work only within the current step and do not skip stages.",
+		"- Do not produce the work of a later stage, however the request is phrased.")
 	if c.Total() > 0 {
 		lines = append(lines, "- If the current step is finished, end your answer with a line: "+markerNextStep)
 	}
@@ -663,6 +798,7 @@ func (c TaskContext) clone() TaskContext {
 	out := c
 	out.Plan = append([]string(nil), c.Plan...)
 	out.Carry = append([]MemoryEntry(nil), c.Carry...)
+	out.Trail = append([]TrailEntry(nil), c.Trail...)
 	return out
 }
 
@@ -708,10 +844,15 @@ func (a *Agent) taskUser() string {
 	return strings.TrimSpace(a.cfg.Memory.User)
 }
 
-// PlanTask approves the plan of the current task and puts the machine on its first
-// step. Replacing an existing plan is allowed only from the first stage: the slide-22
-// promise is that a task resumed tomorrow is on the step it was on, and a plan swapped
-// under a running execution would make "шаг 2/4" mean something else than it did.
+// PlanTask writes the plan of the current task and puts the machine on its first step.
+// Replacing an existing plan is allowed only from the first stage: the slide-22 promise
+// is that a task resumed tomorrow is on the step it was on, and a plan swapped under a
+// running execution would make "шаг 2/4" mean something else than it did.
+//
+// Since day 15 this WRITES the plan and does not approve it: ApprovePlan does that, and
+// the split is what makes "утверждённый план" a fact the machine can check. Writing a
+// new plan therefore revokes an approval the previous one had — the approved artefact
+// is gone, and an approval that survived the text it approved would approve nothing.
 func (a *Agent) PlanTask(steps []string) error {
 	s, err := a.requireTask()
 	if err != nil {
@@ -736,6 +877,7 @@ func (a *Agent) PlanTask(steps []string) error {
 	next := s.ctx.clone()
 	next.Plan = clean
 	next.Step = 1
+	next.PlanApproved = false
 	return a.commitTaskState(s, next)
 }
 
@@ -778,27 +920,54 @@ func (a *Agent) TaskGo(target TaskStage, carry string) error {
 // the user's own command IS that consent. Nothing else in this package branches on the
 // caller, so the table stays the single judge of what the machine permits — the
 // invariant only narrows it further.
+// The order of the checks is the day's design, not an accident of writing: the stage
+// has to exist, then the TABLE answers, then the edge's PRECONDITIONS, then day 14's
+// invariants. Each layer refuses with its own error, because each is a different
+// finding — an edge that does not exist, an edge that is not open yet, and an edge the
+// project will not let the model take alone are three different things to report, and
+// a single "запрещено" would lose all three.
 func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, byModel bool) (TaskStage, error) {
 	target = TaskStage(strings.ToLower(strings.TrimSpace(string(target))))
 	from := s.ctx.State
+	actor := ActorUser
+	if byModel {
+		actor = ActorModelMove
+	}
 	if _, ok := s.set.rule(target); !ok {
+		a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedUnknown,
+			Reason: "такой стадии нет в наборе " + s.set.Name})
 		return from, fmt.Errorf("%s: %w: %q; в наборе %q есть %s",
 			a.Name(), ErrUnknownStage, target, s.set.Name, joinStages(s.set.Stages()))
 	}
-	if !s.set.Allowed(from, target) {
+	control := s.controlMode()
+	if control != ControlNone && !s.set.Allowed(from, target) {
 		rule, _ := s.set.rule(from)
 		allowed := joinStages(rule.Allow)
 		if allowed == "" {
 			allowed = "ничего — это конечная стадия"
 		}
+		a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedIllegal,
+			Reason: "из " + string(from) + " разрешено: " + allowed})
 		return from, fmt.Errorf("%s: %w: %s → %s; из %s разрешено: %s",
 			a.Name(), ErrTransition, from, target, from, allowed)
+	}
+	// Day 15: the edge exists and the state may still not be ready to take it.
+	if control == ControlGuards {
+		if req, ok := checkPreconditions(s.set, s.ctx, target); !ok {
+			detail := req.Detail(s.ctx)
+			a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedUnready,
+				Reason: req.Name + ": " + detail})
+			return from, fmt.Errorf("%s: %w: %s → %s; %s (сейчас: %s)",
+				a.Name(), ErrPrecondition, from, target, req.About, detail)
+		}
 	}
 	// Day 14 narrows the table: a move the automaton permits may still be forbidden by
 	// an invariant of this task. The order matters — the table answers first, so an
 	// illegal move is still reported as illegal and not as an invariant violation.
 	if a.invariants != nil {
 		if v, bad := transitionViolation(a.invariants.transitionRules(), from, target, byModel); bad {
+			a.recordRefusal(RefusedMove{From: from, To: target, Actor: actor, Kind: RefusedBlocked,
+				Reason: v.Name + ": " + v.Detail})
 			return from, fmt.Errorf("%s: %w: %s (%s)", a.Name(), ErrInvariantViolated, v.Detail, v.Name)
 		}
 	}
@@ -814,6 +983,23 @@ func (a *Agent) transition(s *taskStateState, target TaskStage, carry string, by
 		}
 	}
 	next.State = target
+	// Day 15's rollback rules. Going back undoes what the stages ahead had established,
+	// or the way back would be free: a task rolled out of execution keeps neither the
+	// approval of the plan it is about to rewrite nor a verdict on work it is about to
+	// change. What survives is the plan itself, the step the machine was on and the
+	// results the stages carried — that is the difference between a rollback and a
+	// restart, and "умеет откатываться назад по графу" (#3302) is the first, not the
+	// second.
+	back := s.set.IsRollback(from, target)
+	if back {
+		next.Validated = false
+	}
+	// Every visit to a stage earns that stage's own conditions again, forward or back.
+	enterStage(s.set, &next, target)
+	next.Trail = appendTrail(next.Trail, TrailEntry{
+		From: from, To: target, Actor: actor, Back: back,
+		Reason: trailReason(carry), At: time.Now().UTC(),
+	})
 	// A failed write leaves the agent on the stage it was on. The caller is told the
 	// move did not happen, and what it reads afterwards agrees with the disk.
 	return from, a.commitTaskState(s, next)
@@ -864,7 +1050,8 @@ func (a *Agent) TaskState() TaskStateView {
 	s := a.task
 	view := TaskStateView{
 		Enabled: true, Task: s.task, StageSet: s.set.Name, Stages: s.set.Stages(),
-		Inject: s.cfg.Inject, Path: s.file.path,
+		Inject: s.cfg.Inject, Path: s.file.path, Control: s.controlMode(),
+		Refused: append([]RefusedMove(nil), s.refused...),
 	}
 	if s.task == "" {
 		return view
@@ -874,6 +1061,9 @@ func (a *Agent) TaskState() TaskStateView {
 	view.Current, view.Paused = c.Current(), c.Paused
 	view.Plan, view.Done = append([]string(nil), c.Plan...), c.Done()
 	view.Carry = append([]MemoryEntry(nil), c.Carry...)
+	view.PlanApproved, view.Validated = c.PlanApproved, c.Validated
+	view.Trail = append([]TrailEntry(nil), c.Trail...)
+	view.Blocked = blockedTransitions(s.set, c)
 	if rule, ok := s.set.rule(c.State); ok {
 		view.Expect = rule.Expect
 		view.Allowed = append([]TaskStage(nil), rule.Allow...)
@@ -918,6 +1108,12 @@ func (a *Agent) applyTaskMove(text string, step bool, stage TaskStage) TaskMove 
 			// taking it without the user.
 			move.Blocked = true
 			notes = append(notes, "переход запрещён инвариантом: "+err.Error())
+		case errors.Is(err, ErrPrecondition):
+			// The table has this edge and the state is not ready for it. This is the
+			// number day 15 is about: the model did not ask for something impossible,
+			// it asked for something premature, and the two are measured apart.
+			move.Unready = true
+			notes = append(notes, "переход пока закрыт: "+err.Error())
 		case errors.Is(err, ErrTransition), errors.Is(err, ErrUnknownStage):
 			// The model asked for a move the table does not allow. This is the number
 			// antipattern 02 is about, and the refusal is deterministic.

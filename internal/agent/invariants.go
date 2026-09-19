@@ -285,6 +285,20 @@ func ValidateInvariant(i Invariant) error {
 		default:
 			return fmt.Errorf("%w: %s: actor = %q, допустимы %q и %q", ErrInvalidInvariant, name, i.Actor, ActorModel, ActorAny)
 		}
+	case KindStageScope:
+		if len(i.Values) == 0 {
+			return fmt.Errorf("%w: %s (stage-scope) без списка стадий", ErrInvalidInvariant, name)
+		}
+		// A stage that belongs to no set in this build would be a rule that never
+		// matches anything — the same failure mode as an unknown vocabulary term, and
+		// caught the same way: at the moment the rule is written, not at the moment an
+		// answer quietly passes it.
+		for _, v := range i.Values {
+			if !stageExistsInAnySet(v) {
+				return fmt.Errorf("%w: %s называет стадию %q, которой нет ни в одном наборе — правило не сработало бы никогда",
+					ErrInvalidInvariant, name, v)
+			}
+		}
 	case KindJudge:
 		if strings.TrimSpace(i.Ask) == "" {
 			return fmt.Errorf("%w: %s (judge) без вопроса судье", ErrInvalidInvariant, name)
@@ -491,14 +505,14 @@ func (r InvariantReport) Passed() bool { return len(r.Final) == 0 }
 
 // checkAnswer runs every machine rule over one answer. The judge is a separate step
 // because it costs money and may fail; this half never does either.
-func checkMachine(rules []Invariant, answer string) []Violation {
+func checkMachine(rules []Invariant, answer string, env checkEnv) []Violation {
 	mandated := mandatedTerms(rules)
 	var out []Violation
 	for _, i := range rules {
 		if i.Enforce() != EnforceMachine {
 			continue
 		}
-		if detail, bad := machineViolation(i, answer, mandated); bad {
+		if detail, bad := machineViolation(i, answer, mandated, env); bad {
 			out = append(out, Violation{
 				Name: i.Name, About: i.About, Detail: detail,
 				Scope: i.Scope, Kind: i.Kind, Enforce: EnforceMachine,
@@ -613,8 +627,13 @@ func mandatedTerms(rules []Invariant) map[string]bool {
 	return out
 }
 
-func machineViolation(i Invariant, answer string, mandated map[string]bool) (string, bool) {
+func machineViolation(i Invariant, answer string, mandated map[string]bool, env checkEnv) (string, bool) {
 	switch i.Kind {
+	case KindStageScope:
+		// Day 15. The only check that needs to know anything beyond the answer, and it
+		// needs exactly one thing: which stage produced it.
+		return stageScopeViolation(i, answer, env)
+
 	case KindStackOnly, KindArchOnly:
 		vocab := vocabularyFor(i.Kind)
 		allowed := make(map[string]bool, len(i.Values))
