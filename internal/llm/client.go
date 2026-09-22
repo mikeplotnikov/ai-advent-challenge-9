@@ -233,9 +233,58 @@ func NewLocal(model string) *Client {
 }
 
 // Message is one turn of the conversation: system, user or assistant.
+//
+// It stays a plain comparable struct on purpose: callers compare histories with
+// == (internal/agent does). Tool calling therefore has its own message type,
+// ToolMessage, rather than a slice field here that would break every such compare.
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// ToolMessage is a turn of a conversation that uses tools: it can also be an
+// assistant turn that asked for calls, or a role "tool" result. Its extra fields
+// are omitted from the wire when empty, so a Message sent through it serializes
+// exactly as it always did.
+type ToolMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ToolCalls is what an assistant turn asked to run. It has to travel back in
+	// the history verbatim, or the provider cannot match the tool results to it.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID ties a role "tool" message to the call it answers.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// Tool is one function the model may call, in the OpenAI-compatible shape the
+// provider documents: {"type": "function", "function": {name, description, parameters}}
+// (https://api-docs.deepseek.com/guides/tool_calls, checked 2026-09-22).
+type Tool struct {
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction carries the JSON Schema of the arguments as raw bytes: the schema
+// comes from somewhere else (an MCP server's tools/list) and must reach the model
+// unchanged, not re-encoded through a Go type that could drop what it does not know.
+type ToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// ToolCall is one call the model asked for. Arguments is a JSON document as a
+// string — the model wrote it, so it is untrusted and may not even parse.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction names the function and carries the model's arguments verbatim.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // Usage reports what the call cost in tokens.
@@ -338,6 +387,10 @@ type Options struct {
 	Thinking string
 	// ReasoningEffort ("high", "max") is sent only alongside enabled thinking.
 	ReasoningEffort string
+	// Tools the model may call. Empty means the field is not sent at all.
+	Tools []Tool
+	// ToolChoice is "auto", "none" or "required"; empty means not sent.
+	ToolChoice string
 }
 
 type thinking struct {
@@ -350,7 +403,7 @@ type responseFormat struct {
 
 type chatRequest struct {
 	Model           string          `json:"model"`
-	Messages        []Message       `json:"messages"`
+	Messages        []ToolMessage   `json:"messages"`
 	Stream          bool            `json:"stream"`
 	MaxTokens       int             `json:"max_tokens,omitempty"`
 	Stop            []string        `json:"stop,omitempty"`
@@ -360,6 +413,9 @@ type chatRequest struct {
 	// deepseek-v4 models reason before answering, and that reasoning eats the
 	// token budget. A chat demo wants the answer, not the deliberation.
 	Thinking *thinking `json:"thinking,omitempty"`
+	// Tools and ToolChoice are day 17's function calling; absent unless asked for.
+	Tools      []Tool `json:"tools,omitempty"`
+	ToolChoice string `json:"tool_choice,omitempty"`
 }
 
 type chatResponse struct {
@@ -374,8 +430,9 @@ type chatResponse struct {
 			// differently — DeepSeek reasoning_content, ollama reasoning — and both
 			// are read so that "did this model reason?" is answered by the response
 			// instead of by the request that hoped it would not.
-			ReasoningContent string `json:"reasoning_content"`
-			ReasoningAlt     string `json:"reasoning"`
+			ReasoningContent string     `json:"reasoning_content"`
+			ReasoningAlt     string     `json:"reasoning"`
+			ToolCalls        []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -398,6 +455,11 @@ type Answer struct {
 	// Reasoning is what the model thought before answering, present only when
 	// thinking was enabled.
 	Reasoning string
+	// ToolCalls is what the model asked to run instead of (or besides) answering.
+	// A turn that is only tool calls has empty Content, and that is not an error.
+	ToolCalls []ToolCall
+	// ResponseBody is the raw JSON the provider returned, kept for the day-17 trace.
+	ResponseBody string
 }
 
 // Reasoned reports whether the model deliberated before answering. A run that
@@ -415,6 +477,18 @@ func (c *Client) Ask(ctx context.Context, messages []Message) (Answer, error) {
 // AskWith sends the conversation under exactly the options given: whatever is
 // left at its zero value is not sent to the API at all.
 func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) (Answer, error) {
+	wire := make([]ToolMessage, len(messages))
+	for i, message := range messages {
+		wire[i] = ToolMessage{Role: message.Role, Content: message.Content}
+	}
+	return c.Converse(ctx, wire, opts)
+}
+
+// Converse is AskWith for a conversation that uses tools: the history may hold
+// assistant turns with ToolCalls and role "tool" results, and opts.Tools says what
+// the model may call. A reply made only of tool calls comes back in
+// Answer.ToolCalls with empty Content, and is not an error.
+func (c *Client) Converse(ctx context.Context, messages []ToolMessage, opts Options) (Answer, error) {
 	mode := opts.Thinking
 	if mode == "" {
 		mode = "disabled"
@@ -426,6 +500,8 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		MaxTokens:   opts.MaxTokens,
 		Stop:        opts.Stop,
 		Temperature: opts.Temperature,
+		Tools:       opts.Tools,
+		ToolChoice:  opts.ToolChoice,
 	}
 	switch c.Dialect {
 	case DialectOllama:
@@ -484,11 +560,14 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		return Answer{}, fmt.Errorf("модель вернула пустой ответ")
 	}
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	toolCalls := parsed.Choices[0].Message.ToolCalls
 	reasoning := strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent)
 	if reasoning == "" {
 		reasoning = strings.TrimSpace(parsed.Choices[0].Message.ReasoningAlt)
 	}
-	if content == "" {
+	// A turn made only of tool calls legitimately has no text: the model answered by
+	// asking for a function. Only an answer with neither text nor calls is empty.
+	if content == "" && len(toolCalls) == 0 {
 		if reasoning != "" {
 			// The provider billed this call: the answer never came, the reasoning
 			// tokens did. Returning the usage alongside the error is what lets a
@@ -522,6 +601,8 @@ func (c *Client) AskWith(ctx context.Context, messages []Message, opts Options) 
 		FinishReason: parsed.Choices[0].FinishReason,
 		RequestBody:  string(pretty),
 		Reasoning:    reasoning,
+		ToolCalls:    toolCalls,
+		ResponseBody: string(raw),
 	}, nil
 }
 
