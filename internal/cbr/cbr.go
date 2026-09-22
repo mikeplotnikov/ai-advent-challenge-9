@@ -21,6 +21,10 @@ import (
 const (
 	DefaultURL = "https://www.cbr.ru/scripts/XML_daily.asp"
 	maxBody    = 1 << 20
+	// UserAgent names this client. cbr.ru answers 403 to Go's default
+	// "Go-http-client/1.1" while serving curl, an empty UA and this one with 200 —
+	// measured 2026-09-22 by the first live run, which got 403 where curl got 200.
+	UserAgent = "ai-advent-day-17/1.0 (+https://github.com/mikeplotnikov/ai-advent-challenge-9)"
 )
 
 var Moscow = time.FixedZone("MSK", 3*60*60)
@@ -194,6 +198,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context, requested string) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	request.Header.Set("User-Agent", UserAgent)
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
