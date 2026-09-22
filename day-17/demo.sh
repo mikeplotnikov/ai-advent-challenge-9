@@ -92,7 +92,9 @@ fi
 
 if [ -f day-17/RESULTS.md ]; then
   say "Замер надёжности: 30 прогонов на группу — как часто модель зовёт нужный инструмент и использует результат"
-  run sed -n '/^| Группа/,/^$/p' day-17/RESULTS.md
+  # Only the columns that answer the task: the full row is ~260 characters and wraps
+  # into noise at screencast width. The whole table is one command away.
+  run awk -F'|' 'NR==1{next} /^\| Группа/{print "группа |" $6 "|" $7 "|" $8} /^\| [RCN] /{print $2 "|" $6 "|" $7 "|" $8}' day-17/RESULTS.md
   note "Полная таблица, контрольная рука и цена — в day-17/RESULTS.md."
 fi
 
