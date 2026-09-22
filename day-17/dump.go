@@ -12,6 +12,7 @@ import (
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/llm"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/mcpclient"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/ratesmcp"
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/toolagent"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -50,7 +51,7 @@ type dumpSpec struct {
 }
 
 func writeDump(w io.Writer) error {
-	tools, err := dumpTools()
+	tools, serverInfo, err := dumpTools()
 	if err != nil {
 		return err
 	}
@@ -72,23 +73,25 @@ func writeDump(w io.Writer) error {
 		cases = append(cases, item)
 	}
 	pricing := llm.PricingTable()
-	dump := dumpDefinitions{ServerInfo: map[string]string{"name": "cbr-rates", "version": "1.0.0"}, Tools: tools, SystemPrompt: systemPrompt, MaxModelCalls: 5, Temperature: 0, Model: llm.DefaultModel, Pricing: map[string]llm.Pricing{"deepseek-flash": pricing["deepseek-flash"], "deepseek-v4-flash": pricing["deepseek-v4-flash"]}, Peak: map[string]any{"weekdaysOnly": true, "hoursUTC": [][]int{{1, 4}, {6, 10}}}, Dates: map[string]any{"min": "1998-01-01", "maxDaysAfterToday": 1, "zone": "UTC+3"}, Cases: cases}
+	dump := dumpDefinitions{ServerInfo: serverInfo, Tools: tools, SystemPrompt: systemPrompt, MaxModelCalls: toolagent.MaxModelCalls, Temperature: 0, Model: llm.DefaultModel, Pricing: map[string]llm.Pricing{"deepseek-flash": pricing["deepseek-flash"], "deepseek-v4-flash": pricing["deepseek-v4-flash"]}, Peak: map[string]any{"weekdaysOnly": true, "hoursUTC": [][]int{{1, 4}, {6, 10}}}, Dates: map[string]any{"min": cbr.MinDate, "maxDaysAfterToday": cbr.MaxDaysAfterToday, "zone": "UTC+3"}, Cases: cases}
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(dump)
 }
 
-func dumpTools() (any, error) {
+// dumpTools returns what the real server says about itself: its tools/list and the
+// serverInfo from its initialize answer — both read over MCP, neither typed here.
+func dumpTools() (any, map[string]string, error) {
 	session, closeSession, err := openDumpServer("2026-09-01.xml", nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer closeSession()
 	listed, err := session.ListTools(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return listed.Tools, nil
+	return listed.Tools, map[string]string{"name": session.ServerName, "version": session.ServerVersion}, nil
 }
 
 // Every case opens a fresh CBR server: cached previous answers would make an
@@ -96,7 +99,7 @@ func dumpTools() (any, error) {
 func runDumpCase(spec dumpSpec) (*mcp.CallToolResult, error) {
 	var source error
 	if spec.upstream == "http500" {
-		source = errors.New("ЦБ ответил HTTP 500")
+		source = cbr.StatusError(500)
 	}
 	if spec.upstream == "network" {
 		source = errors.New("network unavailable")

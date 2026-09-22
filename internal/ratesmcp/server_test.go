@@ -42,7 +42,8 @@ func TestToolsListAndConversions(t *testing.T) {
 		}
 		for name, raw := range properties {
 			property := raw.(map[string]any)
-			if property["description"] == "" {
+			// A missing key is nil, and nil == "" is false in Go: assert the string itself.
+			if description, _ := property["description"].(string); strings.TrimSpace(description) == "" {
 				t.Fatalf("%s.%s has no description", tool.Name, name)
 			}
 		}

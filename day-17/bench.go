@@ -48,16 +48,28 @@ type Bench struct {
 // first group may be longer than three digits, otherwise 12345.67 is split.
 var numberRE = regexp.MustCompile(`[-+]?(?:\d+(?:[ \x{00A0}\x{202F}]\d{3})+(?:[,.]\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:[,.]\d+)?)`)
 
+// commaGroups is "21,594": Russian reads it as 21.594, English as 21594. The answer
+// is asked for in Russian but a model can slip into English grouping, and choosing one
+// reading would turn the other into a false "result not used". Both readings are kept:
+// the check is whether the tool's number is THERE, and either reading may be it.
+var commaGroups = regexp.MustCompile(`^\d{1,3}(?:,\d{3})+$`)
+
 func numbers(text string) (out []float64) {
 	for _, raw := range numberRE.FindAllString(text, -1) {
 		value := strings.NewReplacer(" ", "", "\u00a0", "", "\u202f", "").Replace(raw)
-		if strings.Contains(value, ",") && strings.Contains(value, ".") {
-			value = strings.ReplaceAll(value, ",", "")
-		} else {
-			value = strings.ReplaceAll(value, ",", ".")
+		candidates := []string{}
+		switch {
+		case strings.Contains(value, ",") && strings.Contains(value, "."):
+			candidates = append(candidates, strings.ReplaceAll(value, ",", ""))
+		case commaGroups.MatchString(value):
+			candidates = append(candidates, strings.ReplaceAll(value, ",", "."), strings.ReplaceAll(value, ",", ""))
+		default:
+			candidates = append(candidates, strings.ReplaceAll(value, ",", "."))
 		}
-		if number, err := strconv.ParseFloat(value, 64); err == nil {
-			out = append(out, number)
+		for _, candidate := range candidates {
+			if number, err := strconv.ParseFloat(candidate, 64); err == nil {
+				out = append(out, number)
+			}
 		}
 	}
 	return out

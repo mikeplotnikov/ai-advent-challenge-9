@@ -111,6 +111,14 @@ func TestNoToolsDoesNotStartMCPAndSaveHasNoKey(t *testing.T) {
 	if bytes.Contains(raw, []byte("Bearer")) || bytes.Contains(raw, []byte("test-day17-key")) {
 		t.Fatalf("secret escaped into trace: %s", raw)
 	}
+	// Free of secrets is half of AC10; the other half is that it IS the trace.
+	var saved toolagent.Trace
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("трасса не разбирается: %v\n%s", err, raw)
+	}
+	if saved.FinalAnswer != "без MCP" || saved.Totals.ModelCalls != 1 || len(saved.ModelCalls) != 1 || saved.ModelCalls[0].RequestBody == "" {
+		t.Fatalf("в сохранённой трассе не тот прогон: %+v", saved)
+	}
 }
 
 func TestPrintTraceKeepsToolCallsUnderTheirModelStep(t *testing.T) {

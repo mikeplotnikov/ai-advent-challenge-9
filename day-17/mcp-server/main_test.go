@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,11 +22,16 @@ func TestBinaryServesStdioMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fake counts what it served: a green result alone does not prove the child
+	// used it — with CBR_URL ignored the child would reach the real cbr.ru, which
+	// answers 2026-09-01 just as validly, and the test would pass for the wrong reason.
+	var served atomic.Int32
 	cbr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if got := request.URL.Query().Get("date_req"); got != "01/09/2026" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		served.Add(1)
 		_, _ = w.Write(fixture)
 	}))
 	defer cbr.Close()
@@ -46,6 +52,9 @@ func TestBinaryServesStdioMCP(t *testing.T) {
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "convert_currency", Arguments: map[string]any{"amount": 1, "from": "USD", "to": "RUB", "date": "2026-09-01"}})
 	if err != nil || result.IsError {
 		t.Fatalf("tools/call = %#v, %v", result, err)
+	}
+	if got := served.Load(); got != 1 {
+		t.Fatalf("фейковый ЦБ обслужил %d запросов, want 1: подпроцесс ходил не туда", got)
 	}
 }
 

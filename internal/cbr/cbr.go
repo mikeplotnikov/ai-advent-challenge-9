@@ -29,6 +29,19 @@ const (
 
 var Moscow = time.FixedZone("MSK", 3*60*60)
 
+// The date window the tools accept. MinDate is the 1998 denomination: earlier rates are
+// in old rubles (30.12.1997 AUD 3912,74 against 01.01.1998 AUD 3,9127, live 2026-09-22).
+// MaxDaysAfterToday is 1 because the CBR sets a rate the day before it applies. Both are
+// exported so the -dump for the showcase reads them instead of repeating them.
+const (
+	MinDate           = "1998-01-01"
+	MaxDaysAfterToday = 1
+)
+
+// StatusError is the failure for a non-200 answer. One constructor, so that the -dump's
+// golden case for HTTP 500 is the same text the fetcher really produces.
+func StatusError(code int) error { return fmt.Errorf("ЦБ ответил HTTP %d", code) }
+
 // Fetcher makes the network edge replaceable without changing rate semantics.
 type Fetcher interface {
 	Fetch(context.Context, string) ([]byte, error)
@@ -129,13 +142,13 @@ func (c *Client) validateDate(requested string) (time.Time, error) {
 	if err != nil || date.Format("2006-01-02") != requested {
 		return time.Time{}, fmt.Errorf("некорректная дата %q: нужен формат ГГГГ-ММ-ДД", requested)
 	}
-	minimum := time.Date(1998, time.January, 1, 0, 0, 0, 0, Moscow)
+	minimum, _ := time.ParseInLocation("2006-01-02", MinDate, Moscow)
 	if date.Before(minimum) {
 		return time.Time{}, errors.New("курсы до 01.01.1998 даны в рублях до деноминации; поддерживаются даты с 1998-01-01")
 	}
 	now := c.now().In(Moscow)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, Moscow)
-	tomorrow := today.AddDate(0, 0, 1)
+	tomorrow := today.AddDate(0, 0, MaxDaysAfterToday)
 	if date.After(tomorrow) {
 		return time.Time{}, fmt.Errorf("курс на %s ЦБ ещё не устанавливал: ЦБ устанавливает курс накануне, последний возможный — на завтра, %s", date.Format("02.01.2006"), tomorrow.Format("02.01.2006"))
 	}
@@ -205,7 +218,7 @@ func (f HTTPFetcher) Fetch(ctx context.Context, requested string) ([]byte, error
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ЦБ ответил HTTP %d", response.StatusCode)
+		return nil, StatusError(response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
 	if err != nil {

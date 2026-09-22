@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,6 +224,8 @@ func TestRunRejectsUnknownAndMalformedWithoutMCP(t *testing.T) {
 	if len(session.calls) != 0 || trace.ToolCalls[0].Rejected == "" {
 		t.Fatalf("unknown reached MCP: %#v", trace.ToolCalls[0])
 	}
+	// The rejection must reach the model, under the call's id, or it cannot correct itself.
+	assertLastToolMessage(t, model, "unknown", `инструмент "not-a-tool" не существует; доступны: convert_currency, get_currency_rates`)
 	model = &fakeLLM{answers: []llm.Answer{answer("", call("broken", "convert_currency", `{"amount": 25`)), answer("после ошибки")}}
 	trace, err = Run(context.Background(), model, session, Input{})
 	if err != nil {
@@ -230,5 +233,27 @@ func TestRunRejectsUnknownAndMalformedWithoutMCP(t *testing.T) {
 	}
 	if len(session.calls) != 0 || trace.ToolCalls[0].ParseError == "" || trace.ToolCalls[0].Rejected == "" {
 		t.Fatalf("broken reached MCP: %#v", trace.ToolCalls[0])
+	}
+	assertLastToolMessage(t, model, "broken", "аргументы не разобраны как JSON: ")
+	if trace.FinalAnswer != "после ошибки" {
+		t.Fatalf("цикл не продолжился после отказа: %q", trace.FinalAnswer)
+	}
+}
+
+// assertLastToolMessage checks what the SECOND model call received: the last message of
+// its history must be the tool message for the rejected call.
+func assertLastToolMessage(t *testing.T, model *fakeLLM, id, prefix string) {
+	t.Helper()
+	if len(model.messages) < 2 {
+		t.Fatalf("второго обращения к модели не было: %d", len(model.messages))
+	}
+	history := model.messages[1]
+	last := history[len(history)-1]
+	if last.Role != "tool" || last.ToolCallID != id || !strings.HasPrefix(last.Content, prefix) {
+		t.Fatalf("модель не получила отказ: %#v", last)
+	}
+	previous := history[len(history)-2]
+	if previous.Role != "assistant" || len(previous.ToolCalls) != 1 || previous.ToolCalls[0].ID != id {
+		t.Fatalf("в истории нет хода модели с этим вызовом: %#v", previous)
 	}
 }
