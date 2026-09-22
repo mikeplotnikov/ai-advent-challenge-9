@@ -163,3 +163,28 @@ func TestConvertGroupArgumentsAndResult(t *testing.T) {
 		t.Fatalf("верный прогон пересчёта: %+v", run)
 	}
 }
+
+// TestReadmeCarriesTheGeneratedResultsTable keeps the README's copy of the measurement
+// honest: every table row of the generated RESULTS.md must appear in it verbatim.
+func TestReadmeCarriesTheGeneratedResultsTable(t *testing.T) {
+	results, err := os.ReadFile("RESULTS.md")
+	if err != nil {
+		t.Skipf("RESULTS.md ещё не снят: %v", err)
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, line := range strings.Split(string(results), "\n") {
+		if strings.HasPrefix(line, "|") || strings.HasPrefix(line, "Коммит:") || strings.HasPrefix(line, "- R:") || strings.HasPrefix(line, "- C:") || strings.HasPrefix(line, "Стоимость:") {
+			rows++
+			if !strings.Contains(string(readme), line) {
+				t.Errorf("в README нет строки отчёта:\n%s", line)
+			}
+		}
+	}
+	if rows < 8 {
+		t.Fatalf("в RESULTS.md нашлось %d строк таблицы — отчёт не того формата", rows)
+	}
+}
