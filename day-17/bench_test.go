@@ -115,6 +115,8 @@ func TestTheControlArmChecksTheAnswerAgainstTheToolsArmValue(t *testing.T) {
 		{"Около 21 594,83 рубля.", 21594.825, true},
 		{"Курс на эту дату мне неизвестен.", 21594.825, false},
 		{"Около 21 594,83 рубля.", 0, false},
+		// No reference was captured: an answer that happens to contain 0 must not match it.
+		{"Курс сегодня: 0 изменений, данных нет.", 0, false},
 	} {
 		model := &scriptedLLM{answers: []llm.Answer{{Model: "deepseek-flash", Content: tc.answer}}}
 		run := measure(model, nil, convertQuestion, 1, "no-tools", true, tc.reference, time.Second)
