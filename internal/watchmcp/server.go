@@ -32,7 +32,9 @@ type StopWatchInput struct {
 
 type SummaryInput struct {
 	WatchID string `json:"watch_id,omitempty" jsonschema:"Идентификатор наблюдения; без него возвращаются все активные"`
-	Hours   int    `json:"hours,omitempty" jsonschema:"Окно агрегации в целых часах от 1 до 720; по умолчанию 24"`
+	// A pointer, so an explicit 0 is told apart from an omitted field: 0 is out of range,
+	// omitted (or null) means the default window.
+	Hours *int `json:"hours,omitempty" jsonschema:"Окно агрегации в целых часах от 1 до 720; по умолчанию 24"`
 }
 
 type ListWatchesOutput struct {
@@ -91,9 +93,9 @@ func NewServer(options Options) *mcp.Server {
 		return nil, watch.View(stopped), nil
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "get_watch_summary", Description: "Агрегированная сводка по наблюдению за окно"}, func(_ context.Context, _ *mcp.CallToolRequest, in SummaryInput) (*mcp.CallToolResult, watch.SummaryResponse, error) {
-		hours := in.Hours
-		if hours == 0 {
-			hours = 24
+		hours := 24
+		if in.Hours != nil {
+			hours = *in.Hours
 		}
 		if hours < 1 || hours > 720 {
 			return nil, watch.SummaryResponse{}, fmt.Errorf("hours должен быть целым числом от 1 до 720")

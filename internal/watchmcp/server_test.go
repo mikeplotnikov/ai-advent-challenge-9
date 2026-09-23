@@ -195,6 +195,21 @@ func TestToolsOutcomes(t *testing.T) {
 	if !badSummary.IsError || !strings.Contains(mcpclient.ToolText(badSummary), "w1") {
 		t.Fatalf("%s", mcpclient.ToolText(badSummary))
 	}
+	// hours: omitted (or null) → the default 24-hour window; an explicit 0 and 721 are out of
+	// the 1–720 range and must not be read as "use the default" (code review, wave 1).
+	omitted := call(t, session, "get_watch_summary", map[string]any{"watch_id": "w1"})
+	if omitted.IsError {
+		t.Fatal(mcpclient.ToolText(omitted))
+	}
+	if err := decode(omitted, &aggregated); err != nil || len(aggregated.Watches) != 1 || aggregated.Watches[0].Hours != 24 {
+		t.Fatalf("omitted hours: %+v %v", aggregated, err)
+	}
+	for _, hours := range []int{0, 721} {
+		out := call(t, session, "get_watch_summary", map[string]any{"watch_id": "w1", "hours": hours})
+		if !out.IsError || !strings.Contains(mcpclient.ToolText(out), "от 1 до 720") {
+			t.Fatalf("hours=%d: %s", hours, mcpclient.ToolText(out))
+		}
+	}
 }
 
 func TestCreateUnavailableAndActiveLimit(t *testing.T) {

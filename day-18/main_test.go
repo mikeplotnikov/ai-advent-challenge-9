@@ -433,3 +433,39 @@ func TestDaemonTwoSlotsCancellationLivenessAndModelFailure(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
+
+// The digest itself asks the server which watches are active. A transport failure there is
+// a dead server, not "no active watches": -tick must fail loudly and the daemon must exit,
+// both without spending a model call (test review, wave 1: this path was swallowable).
+func TestDigestListFailureIsALivenessFailure(t *testing.T) {
+	t.Run("tick", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "digests.json")
+		model := &digestLLM{}
+		var out, errOut bytes.Buffer
+		code := runTick(context.Background(), &fakeSession{failAfter: 1}, model, path, time.Hour, 1, &out, &errOut)
+		if code != 1 || !strings.Contains(errOut.String(), "MCP-сервер недоступен") || strings.Contains(out.String(), "активных наблюдений нет") {
+			t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+		}
+		if model.calls.Load() != 0 {
+			t.Fatalf("model called %d times", model.calls.Load())
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("digests file written: %v", err)
+		}
+	})
+	t.Run("daemon, after its own liveness check passed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "digests.json")
+		model := &digestLLM{}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var out, errOut bytes.Buffer
+		// Call 1 is the daemon's liveness check, call 2 is the digest's own list_watches.
+		code := runDaemon(ctx, &fakeSession{failAfter: 2}, model, path, time.Hour, 1, time.Second, 100*time.Millisecond, &out, &errOut)
+		if code != 1 || !strings.Contains(errOut.String(), "MCP-сервер недоступен") {
+			t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+		}
+		if model.calls.Load() != 0 {
+			t.Fatalf("model called %d times", model.calls.Load())
+		}
+	})
+}
