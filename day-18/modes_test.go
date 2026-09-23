@@ -152,6 +152,20 @@ func TestReportCoverageSchemaAndReproducibility(t *testing.T) {
 	if !bytes.Equal(one, two) || !bytes.Contains(one, []byte("Токенов схем на ход: 400")) || !bytes.Contains(one, []byte("1200 токенов")) {
 		t.Fatalf("not reproducible/schema missing:\n%s", one)
 	}
+	if bytes.Contains(one, []byte("расходятся")) {
+		t.Fatalf("agreeing measurements reported as a mismatch:\n%s", one)
+	}
+	// Three disagreeing schema measurements must be reported as such, not shown as a stable
+	// number (test review, wave 2: the warning branch was never exercised).
+	if err := writeJSONAtomic(schemaPath, SchemaCost{Differences: []int{400, 401, 400}, Mismatch: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeReport(firstReport, storePath, digestsPath, schemaPath, until); err != nil {
+		t.Fatal(err)
+	}
+	if mismatch, _ := os.ReadFile(firstReport); !bytes.Contains(mismatch, []byte("Три измерения расходятся")) {
+		t.Fatalf("mismatch not reported:\n%s", mismatch)
+	}
 	currentPoll := time.Date(2026, 9, 24, 0, 10, 0, 0, time.UTC)
 	short := coverage(watch.Watch{ID: "current", EveryMinutes: 60, Polls: []watch.Poll{{At: currentPoll.Format(time.RFC3339), OK: true}}}, currentPoll.Add(10*time.Minute))
 	if short.Expected != 0 {

@@ -170,6 +170,24 @@ func TestToolsOutcomes(t *testing.T) {
 	if !missing.IsError || !strings.Contains(mcpclient.ToolText(missing), "w1") {
 		t.Fatalf("%s", mcpclient.ToolText(missing))
 	}
+	// list_watches returns every watch, stopped ones included, with the server's clock
+	// (test review, wave 2: the real handler was never called by any test).
+	listed := call(t, session, "list_watches", map[string]any{})
+	if listed.IsError {
+		t.Fatal(mcpclient.ToolText(listed))
+	}
+	var watches ListWatchesOutput
+	if err := decode(listed, &watches); err != nil {
+		t.Fatal(err)
+	}
+	if watches.Now == "" || len(watches.Watches) != 2 || watches.Watches[0].ID != "w1" || watches.Watches[1].ID != "w2" {
+		t.Fatalf("list_watches: %+v", watches)
+	}
+	for _, listedWatch := range watches.Watches {
+		if listedWatch.Status != "stopped" || listedWatch.StoppedAt == "" || listedWatch.NextSlotAt != "" || listedWatch.PollsTotal != 1 {
+			t.Fatalf("stopped watch in list_watches: %+v", listedWatch)
+		}
+	}
 	summary := call(t, session, "get_watch_summary", map[string]any{"watch_id": "w1", "hours": 24})
 	if summary.IsError {
 		t.Fatal(mcpclient.ToolText(summary))
