@@ -2,7 +2,6 @@ package watch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -99,9 +98,4 @@ func FormatPollLine(current Watch, poll Poll, publication bool) string {
 		}
 	}
 	return text
-}
-
-func SourceUnavailable(err error) bool {
-	var source *cbr.SourceError
-	return errors.As(err, &source)
 }
