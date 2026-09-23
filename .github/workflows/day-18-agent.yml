@@ -1,0 +1,129 @@
+name: "Day 18: agent 24/7"
+
+# The day-18 agent lives here: every hour the MCP server polls the CBR for due watches
+# (-once), then the agent writes a digest if its 3-hour slot has none yet (-tick).
+# State is JSON on the day-18-state branch; the showcase page reads it from there.
+# Stop: `gh workflow disable day-18-agent.yml`; it also stops itself after STOP_AFTER.
+
+on:
+  schedule:
+    # Minute 23, not 00: GitHub warns that scheduled runs are delayed at the top of the hour.
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      question:
+        description: 'Вопрос агенту (необязательно), например «Следи за курсами доллара, евро и юаня — проверяй ЦБ раз в час»'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+# One run at a time on the state branch; waiting runs queue in order instead of replacing
+# each other, so a dispatched question is never dropped in favour of a scheduled tick.
+concurrency:
+  group: day-18-state
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STOP_AFTER: '2026-10-20T00:00:00Z'
+      STORE: state/day-18/store.json
+      DIGESTS: state/day-18/digests.json
+    steps:
+      - name: Stop date
+        id: gate
+        run: |
+          if [ "$(date -u +%s)" -ge "$(date -u -d "$STOP_AFTER" +%s)" ]; then
+            echo "день 18 остановлен по дате ($STOP_AFTER)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v6
+
+      - name: Check out the state branch into state/
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin day-18-state >/dev/null; then
+            git fetch --depth 1 origin day-18-state:day-18-state
+            git worktree add state day-18-state
+          else
+            echo "ветки day-18-state ещё нет — создаю её без общей истории с main"
+            git worktree add --orphan -b day-18-state state
+          fi
+          mkdir -p state/day-18
+
+      - name: Set up Go
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build the agent and the MCP server
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          go build -o bin/day18 ./day-18
+          go build -o bin/day18-mcp ./day-18/mcp-server
+
+      - name: Poll due watches (server -once)
+        id: poll
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        run: bin/day18-mcp -store "$STORE" -once
+
+      - name: Ask the agent (dispatch with a question)
+        id: question
+        if: steps.gate.outputs.run == 'true' && inputs.question != ''
+        continue-on-error: true
+        env:
+          # The question reaches the shell only as an environment variable, never pasted into
+          # the script text, so it cannot become shell syntax.
+          QUESTION: ${{ inputs.question }}
+          DEEPSEEK_API_KEY_DAY18: ${{ secrets.DEEPSEEK_API_KEY_DAY18 }}
+        run: bin/day18 -command "bin/day18-mcp -store $STORE" "$QUESTION"
+
+      - name: Digest if its slot is due (agent -tick)
+        id: digest
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY_DAY18: ${{ secrets.DEEPSEEK_API_KEY_DAY18 }}
+        run: bin/day18 -tick -digest-every 3h -window 24h -digests "$DIGESTS" -command "bin/day18-mcp -store $STORE"
+
+      # Always commit what was collected, even when a step above failed: polls are data.
+      - name: Commit the state
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          cd state
+          git add -A
+          if git diff --cached --quiet; then
+            echo "состояние не изменилось"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "day-18 state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin day-18-state
+
+      - name: Fail the job if the poll, the question or the digest failed
+        if: always() && steps.gate.outputs.run == 'true'
+        env:
+          POLL: ${{ steps.poll.outcome }}
+          QUESTION: ${{ steps.question.outcome }}
+          DIGEST: ${{ steps.digest.outcome }}
+        run: |
+          echo "опрос: $POLL · вопрос: $QUESTION · сводка: $DIGEST"
+          for outcome in "$POLL" "$QUESTION" "$DIGEST"; do
+            if [ "$outcome" = "failure" ]; then exit 1; fi
+          done
