@@ -61,6 +61,34 @@ go run ./day-18 -sample /tmp/day18-sample               # детерминиро
 останавливается сам. Ключ в Actions — секрет репозитория `DEEPSEEK_API_KEY_DAY18`, другого workflow не
 видит; серверу-подпроцессу ключи не передаются.
 
+## Трасса-пример
+
+Первый запуск в GitHub Actions, 23.09.2026 21:19 UTC, ручной, с вопросом
+([run 35921696321](https://github.com/mikeplotnikov/ai-advent-challenge-9/actions/runs/35921696321);
+фрагмент — `gh run view 35921696321 --log`, дословно, без отметок времени):
+
+```text
+[MCP] сервер cbr-watch 1.0.0 · протокол 2026-07-28 · транспорт stdio
+[MCP] tools/list → 4 инструмента: create_watch(codes, every_minutes), get_watch_summary(hours?, watch_id?), list_watches(), stop_watch(watch_id)
+[модель · шаг 1] finish_reason=tool_calls · вход 778 (из кэша 0) · выход 65
+[модель → tool_call] create_watch {"codes": ["USD", "EUR", "CNY"], "every_minutes": 60}
+[MCP tools/call → результат] {"codes":["USD","EUR","CNY"],"created_at":"2026-09-23T21:19:47Z","every_minutes":60,"id":"w1","last_error":"","last_poll_at":"2026-09-23T21:19:47Z","next_slot_at":"2026-09-23T22:00:00Z","polls_failed":0,"polls_total":1,"status":"active","stopped_at":""}
+[модель · шаг 2] finish_reason=stop · вход 959 (из кэша 768) · выход 48
+[ответ]
+Наблюдение создано: **w1** — USD, EUR, CNY, опрос раз в 60 минут. Статус active, первый опрос уже прошёл, следующий — в 01:00 МСК.
+```
+
+Тот же запуск, шаг `-tick` — первая сводка (модель вызвала `list_watches` и `get_watch_summary`,
+три обращения к модели, $0.000344):
+
+```text
+[сводка 24.09 00:19 МСК · окно 24 ч]
+| USD | 84,3969 | 24.09.2026 | 0 | 0 % | 1 | 1 | 0 |
+| EUR | 96,7442 | 24.09.2026 | 0 | 0 % | 1 | 1 | 0 |
+| CNY | 12,5598 | 24.09.2026 | 0 | 0 % | 1 | 1 | 0 |
+Итого по наблюдению: опросов 1 (успешных 1, сбоев 0), публикаций 1. Изменения нулевые, так как за окно ЦБ опубликовал только один курс — сравнивать не с чем.
+```
+
 ## Замер
 
 `RESULTS.md` появится после суток работы в Actions: он генерируется `-report` из состояния ветки
