@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "next_id": 2,
+  "watches": [
+    {
+      "id": "w1",
+      "codes": [
+        "USD",
+        "EUR",
+        "CNY"
+      ],
+      "every_minutes": 60,
+      "status": "active",
+      "created_at": "2026-09-23T21:19:47Z",
+      "stopped_at": "",
+      "polls": [
+        {
+          "at": "2026-09-23T21:19:47Z",
+          "ok": true,
+          "rates_date": "2026-09-24",
+          "rates": {
+            "CNY": 12.5598,
+            "EUR": 96.7442,
+            "USD": 84.3969
+          },
+          "missing": [],
+          "error": ""
+        }
+      ]
+    }
+  ]
+}
