@@ -21,3 +21,5 @@
 # Day 8: the provider account balance is the owner's, not repository content
 /day-08/balance-*.json
 /.memory/
+/day-18/state/
+/state/
