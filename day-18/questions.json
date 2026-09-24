@@ -118,5 +118,45 @@
     },
     "cost": 0.0006151080000000001,
     "cost_known": true
+  },
+  {
+    "request_id": "0a62e72d2f3bebd901450c54255a64ad",
+    "at": "2026-09-24T06:56:53Z",
+    "question": "Останови наблюдение w1",
+    "answer": "Не удалось: гостевые наблюдения остановить нельзя — они живут сутки и завершаются сами. Данные w1 при этом сохраняются.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 2,
+    "tool_calls": [
+      {
+        "step": 1,
+        "name": "stop_watch",
+        "arguments": {
+          "watch_id": "w1"
+        },
+        "result": "гость не останавливает наблюдения: гостевые живут сутки и останавливаются сами",
+        "is_error": true,
+        "rejected": ""
+      }
+    ],
+    "tokens": {
+      "prompt": 1667,
+      "cached": 640,
+      "output": 75,
+      "per_call": [
+        {
+          "prompt": 788,
+          "cached": 0,
+          "output": 40
+        },
+        {
+          "prompt": 879,
+          "cached": 640,
+          "output": 35
+        }
+      ]
+    },
+    "cost": 0.00040193999999999994,
+    "cost_known": true
   }
 ]
