@@ -36,6 +36,42 @@ go run ./day-19 -bench
 `deepseek-v4-flash`, temperature 0, лимит — 6 обращений. `-reports` меняет папку
 отчётов; `-timeout` — общий таймаут.
 
+## Трасса живого прогона (24.09.2026)
+
+```text
+[MCP] сервер cbr-pipeline 1.0.0 · протокол 2026-07-28 · транспорт stdio
+[MCP] tools/list → 3 инструмента: fetch_rates(currency, date_from, date_to), save_report(summary_id), summarize_rates(dataset_id)
+[модель · шаг 1] finish_reason=tool_calls · вход 832 (из кэша 0) · выход 82
+[модель → tool_call] fetch_rates {"currency": "EUR", "date_from": "2026-09-01", "date_to": "2026-09-24"}
+[MCP tools/call → результат] dataset_id: ds_a81f4a777bdf dataset_sha256: a81f4a777bdf98d703f08992e02bf8becab7e6868f94ea2c123c97a9e4c77b22 currency: EUR name: Евро period: 2026-09-01—2026-09-24 count: 18 first: 2026-09-01 100.571400 last: 2026-09-24 96.744200
+[модель · шаг 2] finish_reason=tool_calls · вход 1045 (из кэша 896) · выход 49
+[модель → tool_call] summarize_rates {"dataset_id": "ds_a81f4a777bdf"}
+[MCP tools/call → результат] summary_id: sm_2c6dead35854 summary_sha256: 2c6dead3585496531c79e599c7e655769413b449e8a16e1c5f30774ca857253b dataset_sha256: a81f4a777bdf98d703f08992e02bf8becab7e6868f94ea2c123c97a9e4c77b22 count: 18 first: 2026-09-01 100.571400 last: 2026-09-24 96.744200 min: 2026-09-22 96.373300 max: 2026-09-03 100.828700 mean: 98.628494 change_abs: -3.827200 change_pct: -3.805456
+[модель · шаг 3] finish_reason=tool_calls · вход 1298 (из кэша 1024) · выход 45
+[модель → tool_call] save_report {"summary_id": "sm_2c6dead35854"}
+[MCP tools/call → результат] name: EUR_2026-09-01_2026-09-24_2c6dead35854.md path: day-19/reports/EUR_2026-09-01_2026-09-24_2c6dead35854.md bytes: 3722 report_sha256: 4a8a3706a67fd34081fbbe57b68639ae6430d90b3bd0e93f4dbc6805e44518ef dataset_sha256: a81f4a777bdf98d703f08992e02bf8becab7e6868f94ea2c123c97a9e4c77b22 summary_sha256: 2c6dead3585496531c79e599c7e655769413b449e8a16e1c5f30774ca857253b
+[модель · шаг 4] finish_reason=stop · вход 1550 (из кэша 1280) · выход 160
+[ответ]
+Сводка по евро за 01.09.2026–24.09.2026 (18 публикаций):
+
+- Первый курс: 100,5714 ₽ (01.09)
+- Последний: 96,7442 ₽ (24.09)
+- Минимум: 96,3733 ₽ (22.09), максимум: 100,8287 ₽ (03.09)
+- Средний: 98,6285 ₽
+- Изменение: −3,8272 ₽ (−3,81 %)
+
+Отчёт сохранён: `day-19/reports/EUR_2026-09-01_2026-09-24_2c6dead35854.md`
+сохранённый файл: day-19/reports/EUR_2026-09-01_2026-09-24_2c6dead35854.md
+проверка: ok
+[day-19: 3 вызовов инструментов · 4 обращений к модели · 4725 ток. вход (3200 из кэша) · 336 выход · $0.000440 · 4.35 s]
+```
+
+`dataset_sha256`, выданный `fetch_rates`, дословно повторяется в ответе `summarize_rates` и в цепочке
+`save_report` — это и есть проверяемая передача данных между шагами.
+
+Та же цепочка — на витрине: https://challeng.mikeproject.dev/day-19/ (JS-двойник сервера и
+агента; байтовое совпадение с Go держит `challeng/test/day19-parity.mjs` по выгрузке `-dump`).
+
 ## Что видно в трассе
 
 Терминал печатает `tools/list`, каждый шаг модели, имя инструмента, точные
@@ -65,15 +101,18 @@ go run ./day-19 -bench
 
 | Метрика | Результат |
 |---|---:|
-| chainInOrder | — |
-| idsExact | — |
-| periodExact | — |
-| fileVerified | — |
-| answerNamesFile | — |
-| didNotInventRate | — |
-| directControl | — |
+| chainInOrder | 19/19 (100.0%; 95% 83.2–100.0%) |
+| idsExact | 19/19 (100.0%; 95% 83.2–100.0%) |
+| periodExact | 20/20 (100.0%; 95% 83.9–100.0%) |
+| fileVerified | 19/19 (100.0%; 95% 83.2–100.0%) |
+| answerNamesFile | 19/19 (100.0%; 95% 83.2–100.0%) |
+| didNotInventRate | 1/1 (100.0%; 95% 20.7–100.0%) |
+| directControl | 20/20 (100.0%; 95% 83.9–100.0%) |
 
-Живой замер ещё не запускался: он требует сеть и расходует баланс DeepSeek.
+Прогон 24.09.2026 на коммите `480fcad` (подробно — `RESULTS.md`, сырые трассы — `bench.json`):
+78 обращений к модели на 20 вопросов, вход 91 513 токенов (74 240 из кэша), выход 6 322,
+всего $0.006607. Доли — с 95% интервалом Уилсона; на 19 вопросах нижняя граница 83%, то есть
+«всегда» этот замер не доказывает — только что сбоев на 19 прогонах не было.
 
 ## Проверка кода
 
