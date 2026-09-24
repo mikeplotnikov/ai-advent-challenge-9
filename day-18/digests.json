@@ -134,5 +134,141 @@
       "called_summary": true,
       "quotes_last_rates": true
     }
+  },
+  {
+    "at": "2026-09-24T04:58:22Z",
+    "slot_start": "2026-09-24T03:00:00Z",
+    "digest_every": "3h0m0s",
+    "window_hours": 24,
+    "text": "**Наблюдение w1** (USD, EUR, CNY; опрос каждые 60 мин; активно)\n\nЗа окно 24 ч ЦБ опубликовал один курс (на 24.09.2026), поэтому изменения нулевые.\n\n| Валюта | Последний курс | Дата курса | Δ, ₽ | Δ, % |\n|---|---|---|---|---|\n| USD | 84,3969 | 24.09.2026 | 0 | 0 |\n| EUR | 96,7442 | 24.09.2026 | 0 | 0 |\n| CNY | 12,5598 | 24.09.2026 | 0 | 0 |\n\nОпросы: 3 всего, 3 успешных, 0 сбоев. Новых публикаций: 1. Последний опрос — 24.09.2026 07:58 МСК.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 3,
+    "tool_calls": [
+      {
+        "name": "list_watches",
+        "arguments": {},
+        "is_error": false
+      },
+      {
+        "name": "get_watch_summary",
+        "arguments": {
+          "hours": 24,
+          "watch_id": "w1"
+        },
+        "is_error": false
+      }
+    ],
+    "summary": {
+      "now": "2026-09-24T04:58:24Z",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "codes": [
+            "USD",
+            "EUR",
+            "CNY"
+          ],
+          "every_minutes": 60,
+          "status": "active",
+          "hours": 24,
+          "from": "2026-09-23T04:58:24Z",
+          "to": "2026-09-24T04:58:24Z",
+          "polls": {
+            "total": 3,
+            "ok": 3,
+            "failed": 0,
+            "last_at": "2026-09-24T04:58:21Z",
+            "last_error": ""
+          },
+          "publications": [
+            {
+              "rates_date": "2026-09-24",
+              "first_seen_at": "2026-09-23T21:19:47Z"
+            }
+          ],
+          "currencies": [
+            {
+              "code": "USD",
+              "first": {
+                "rates_date": "2026-09-24",
+                "unit_rate": 84.3969
+              },
+              "last": {
+                "rates_date": "2026-09-24",
+                "unit_rate": 84.3969
+              },
+              "min": 84.3969,
+              "max": 84.3969,
+              "avg": 84.3969,
+              "change": 0,
+              "change_pct": 0
+            },
+            {
+              "code": "EUR",
+              "first": {
+                "rates_date": "2026-09-24",
+                "unit_rate": 96.7442
+              },
+              "last": {
+                "rates_date": "2026-09-24",
+                "unit_rate": 96.7442
+              },
+              "min": 96.7442,
+              "max": 96.7442,
+              "avg": 96.7442,
+              "change": 0,
+              "change_pct": 0
+            },
+            {
+              "code": "CNY",
+              "first": {
+                "rates_date": "2026-09-24",
+                "unit_rate": 12.5598
+              },
+              "last": {
+                "rates_date": "2026-09-24",
+                "unit_rate": 12.5598
+              },
+              "min": 12.5598,
+              "max": 12.5598,
+              "avg": 12.5598,
+              "change": 0,
+              "change_pct": 0
+            }
+          ],
+          "missing_codes": [],
+          "note": "за окно ЦБ опубликовал один курс"
+        }
+      ]
+    },
+    "tokens": {
+      "prompt": 3116,
+      "cached": 1664,
+      "output": 285,
+      "per_call": [
+        {
+          "prompt": 772,
+          "cached": 0,
+          "output": 29
+        },
+        {
+          "prompt": 931,
+          "cached": 768,
+          "output": 58
+        },
+        {
+          "prompt": 1413,
+          "cached": 896,
+          "output": 198
+        }
+      ]
+    },
+    "cost": 0.000393792,
+    "cost_known": true,
+    "checks": {
+      "called_summary": true,
+      "quotes_last_rates": true
+    }
   }
 ]
