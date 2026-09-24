@@ -36,5 +36,49 @@
     },
     "cost": 0.000455208,
     "cost_known": true
+  },
+  {
+    "request_id": "f24917d5ae9e2a1a2cba6c029a24639e",
+    "at": "2026-09-24T06:53:51Z",
+    "question": "Следи за курсом юаня и тенге — проверяй ЦБ раз в час",
+    "answer": "Наблюдение создано: **w2** — CNY и KZT, опрос раз в 60 минут (до 25.09.2026 06:53 МСК). Первый опрос уже прошёл.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 2,
+    "tool_calls": [
+      {
+        "step": 1,
+        "name": "create_watch",
+        "arguments": {
+          "codes": [
+            "CNY",
+            "KZT"
+          ],
+          "every_minutes": 60
+        },
+        "result": "{\"codes\":[\"CNY\",\"KZT\"],\"created_at\":\"2026-09-24T06:53:52Z\",\"every_minutes\":60,\"expires_at\":\"2026-09-25T06:53:52Z\",\"guest\":true,\"id\":\"w2\",\"last_error\":\"\",\"last_poll_at\":\"2026-09-24T06:53:52Z\",\"next_slot_at\":\"2026-09-24T07:00:00Z\",\"polls_failed\":0,\"polls_total\":1,\"status\":\"active\",\"stopped_at\":\"\"}",
+        "is_error": false,
+        "rejected": ""
+      }
+    ],
+    "tokens": {
+      "prompt": 1748,
+      "cached": 768,
+      "output": 110,
+      "per_call": [
+        {
+          "prompt": 774,
+          "cached": 0,
+          "output": 63
+        },
+        {
+          "prompt": 974,
+          "cached": 768,
+          "output": 47
+        }
+      ]
+    },
+    "cost": 0.00043060799999999997,
+    "cost_known": true
   }
 ]

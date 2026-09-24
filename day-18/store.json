@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "next_id": 2,
+  "next_id": 3,
   "watches": [
     {
       "id": "w1",
@@ -70,6 +70,32 @@
             "CNY": 12.5598,
             "EUR": 96.7442,
             "USD": 84.3969
+          },
+          "missing": [],
+          "error": ""
+        }
+      ]
+    },
+    {
+      "id": "w2",
+      "codes": [
+        "CNY",
+        "KZT"
+      ],
+      "every_minutes": 60,
+      "status": "active",
+      "created_at": "2026-09-24T06:53:52Z",
+      "stopped_at": "",
+      "guest": true,
+      "expires_at": "2026-09-25T06:53:52Z",
+      "polls": [
+        {
+          "at": "2026-09-24T06:53:52Z",
+          "ok": true,
+          "rates_date": "2026-09-24",
+          "rates": {
+            "CNY": 12.5598,
+            "KZT": 0.188449
           },
           "missing": [],
           "error": ""
