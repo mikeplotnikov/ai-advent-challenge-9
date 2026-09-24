@@ -145,3 +145,20 @@ func TestToolResultTruncationBoundary(t *testing.T) {
 		t.Fatalf("over the limit: %d runes, suffix marker %v", utf8.RuneCountInString(got), strings.HasSuffix(got, truncatedMarker))
 	}
 }
+
+// A showcase question may start with "-". After "--" it is the question, not a flag, and it is
+// recorded even when the agent then fails — the workflow's hourly limit counts records
+// (security audit, wave 1: such a question used to exit 2 before writing anything).
+func TestDashQuestionAfterDoubleDashIsRecorded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "questions.json")
+	id := strings.Repeat("ab", 16)
+	var out, errOut bytes.Buffer
+	code := run([]string{"-questions", path, "-request-id", id, "-command", filepath.Join(t.TempDir(), "missing-server"), "--", "-привет"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("code=%d err=%s", code, errOut.String())
+	}
+	records, err := readQuestions(path)
+	if err != nil || len(records) != 1 || records[0].RequestID != id || records[0].Question != "-привет" || records[0].Error == "" {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+}

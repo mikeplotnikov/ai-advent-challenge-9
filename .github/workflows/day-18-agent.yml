@@ -143,10 +143,12 @@ jobs:
           # A showcase question (it carries a request_id) runs the server in guest mode: guests
           # may create up to three day-long watches and stop nothing.
           if [ -n "$REQUEST_ID" ]; then
-            bin/day18 -questions "$QUESTIONS" -request-id "$REQUEST_ID" -command "bin/day18-mcp -store $STORE -guest" "$QUESTION"
+            bin/day18 -questions "$QUESTIONS" -request-id "$REQUEST_ID" -command "bin/day18-mcp -store $STORE -guest" -- "$QUESTION"
           else
-            bin/day18 -questions "$QUESTIONS" -command "bin/day18-mcp -store $STORE" "$QUESTION"
+            bin/day18 -questions "$QUESTIONS" -command "bin/day18-mcp -store $STORE" -- "$QUESTION"
           fi
+          # "--" ends the flags: a question that starts with "-" is a question, not a flag
+          # (security audit, wave 1 — such a question used to exit before writing a record).
 
       - name: Digest if its slot is due (agent -tick)
         id: digest
@@ -155,6 +157,34 @@ jobs:
         env:
           DEEPSEEK_API_KEY_DAY18: ${{ secrets.DEEPSEEK_API_KEY_DAY18 }}
         run: bin/day18 -tick -digest-every 3h -window 24h -digests "$DIGESTS" -tools "$TOOLS" -command "bin/day18-mcp -store $STORE"
+
+      # Every showcase question must leave a record, whatever happened to the agent: the
+      # strict hourly limit above counts records, so a run that wrote none would not count.
+      - name: Make sure the showcase question is recorded
+        if: always() && steps.gate.outputs.run == 'true' && inputs.request_id != '' && steps.limit.outputs.full != 'true'
+        env:
+          QUESTION: ${{ inputs.question }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          OUTCOME: ${{ steps.question.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, json, os
+          path, rid = os.environ['QUESTIONS'], os.environ['REQUEST_ID']
+          records = json.load(open(path)) if os.path.exists(path) else []
+          if any(r.get('request_id') == rid for r in records):
+              print('запись вопроса есть'); raise SystemExit(0)
+          print('агент не записал вопрос — дописываю запись об ошибке, чтобы лимит её посчитал')
+          records.append({
+              'request_id': rid, 'at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'question': os.environ.get('QUESTION', ''), 'answer': '',
+              'error': f"агент не записал ответ (шаг вопроса: {os.environ.get('OUTCOME') or 'не выполнялся'})",
+              'model': '', 'model_calls': 0, 'tool_calls': [],
+              'tokens': {'prompt': 0, 'cached': 0, 'output': 0, 'per_call': []}, 'cost': 0, 'cost_known': True,
+          })
+          json.dump(records[-100:], open(path, 'w'), ensure_ascii=False, indent=2)
+          open(path, 'a').write('\n')
+          PY
 
       # Always commit what was collected, even when a step above failed: polls are data.
       - name: Commit the state
