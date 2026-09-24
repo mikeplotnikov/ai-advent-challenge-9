@@ -192,10 +192,14 @@ func (c *Client) GetRange(ctx context.Context, code, from, to string) (RangeRate
 		return RangeRates{}, err
 	}
 	if len(rows) == 0 {
-		return RangeRates{}, fmt.Errorf("ЦБ не публиковал курс %s в периоде %s—%s", normalized, from, to)
+		return RangeRates{}, fmt.Errorf("%s %s в периоде %s—%s", NoPublications, normalized, from, to)
 	}
 	return RangeRates{Currency: currency, DateFrom: from, DateTo: to, Source: "cbr.ru XML_dynamic", Rows: rows}, nil
 }
+
+// NoPublications opens the error for a period without a single CBR publication. It is
+// exported because day 19's benchmark recognises this error by it in the MCP tool text.
+const NoPublications = "ЦБ не публиковал курс"
 
 // Get validates the requested calendar date and obtains the applicable published rates.
 func (c *Client) Get(ctx context.Context, requested string) (Rates, error) {

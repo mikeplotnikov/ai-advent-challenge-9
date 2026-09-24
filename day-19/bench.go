@@ -133,7 +133,7 @@ func runBench(command, reports string, timeout time.Duration, stdout, stderr io.
 
 func directControlOK(question BenchQuestion, err error) bool {
 	if question.ExpectError {
-		return err != nil && strings.Contains(err.Error(), "не публиковал курс")
+		return err != nil && strings.Contains(err.Error(), cbr.NoPublications)
 	}
 	return err == nil
 }

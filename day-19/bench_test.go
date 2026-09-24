@@ -121,8 +121,13 @@ func TestEvaluateBenchRejectsEachBrokenSuccessCondition(t *testing.T) {
 
 func TestDirectControlRequiresTheExpectedNoPublicationError(t *testing.T) {
 	errorQuestion := BenchQuestion{ExpectError: true}
-	if !directControlOK(errorQuestion, errors.New("ЦБ РФ не публиковал курс за период")) {
-		t.Fatal("expected no-publication error was rejected")
+	// The real text the server returns for an empty period, taken through the MCP boundary.
+	serverErrors, err := dumpErrors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !directControlOK(errorQuestion, errors.New(serverErrors["no_publications"])) {
+		t.Fatalf("the server's own no-publication error was rejected: %q", serverErrors["no_publications"])
 	}
 	if directControlOK(errorQuestion, errors.New("network unavailable")) || directControlOK(errorQuestion, nil) {
 		t.Fatal("unrelated result passed the no-publication control")

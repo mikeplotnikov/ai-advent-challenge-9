@@ -74,11 +74,24 @@ func TestGetRangeDateRules(t *testing.T) {
 		{"2026-01-01", "2026-04-04", "93 дней"},
 		{"1997-12-31", "1998-01-01", "деноминации"},
 		{"2026-09-25", "2026-09-26", "ещё не устанавливал"},
+		{"2026-09-13", "2026-09-14", "ЦБ не публиковал курс USD в периоде 2026-09-13—2026-09-14"},
 	} {
 		_, err := client.GetRange(context.Background(), "USD", tc.from, tc.to)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s..%s err=%v", tc.from, tc.to, err)
 		}
+	}
+}
+
+func TestGetRangeRejectsAnUnknownCurrencyAndNamesTheKnownOnes(t *testing.T) {
+	daily := []byte(`<?xml version="1.0"?><ValCurs Date="24.09.2026"><Valute ID="R01235"><CharCode>USD</CharCode><Nominal>1</Nominal><Name>Dollar</Name><Value>84,3969</Value></Valute></ValCurs>`)
+	client := New(Options{Fetcher: FetchFunc(func(context.Context, string) ([]byte, error) { return daily, nil }), RangeFetcher: RangeFetchFunc(func(context.Context, string, string, string) ([]byte, error) {
+		t.Fatal("XML_dynamic must not be requested for an unknown currency")
+		return nil, nil
+	}), Now: func() time.Time { return time.Date(2026, 9, 24, 12, 0, 0, 0, Moscow) }})
+	_, err := client.GetRange(context.Background(), "xyz", "2026-09-10", "2026-09-24")
+	if err == nil || err.Error() != `неизвестный код валюты "XYZ"; доступны: USD` {
+		t.Fatalf("err=%v", err)
 	}
 }
 
