@@ -131,3 +131,17 @@ func TestQuestionsCapAndCorruptFileRemainUnchanged(t *testing.T) {
 		t.Fatalf("corrupt file changed: %q", after)
 	}
 }
+
+// Exactly 4000 characters are «not longer than 4000» and stay verbatim; one more is truncated
+// to 4000 with the marker (test review, wave 1: the boundary itself was untested).
+func TestToolResultTruncationBoundary(t *testing.T) {
+	exact := strings.Repeat("ж", maxToolResultRunes)
+	if got := truncateToolResult(exact); got != exact {
+		t.Fatalf("a result of exactly %d runes was changed", maxToolResultRunes)
+	}
+	over := exact + "ж"
+	got := truncateToolResult(over)
+	if !strings.HasSuffix(got, truncatedMarker) || utf8.RuneCountInString(got) != maxToolResultRunes {
+		t.Fatalf("over the limit: %d runes, suffix marker %v", utf8.RuneCountInString(got), strings.HasSuffix(got, truncatedMarker))
+	}
+}
