@@ -158,5 +158,43 @@
     },
     "cost": 0.00040193999999999994,
     "cost_known": true
+  },
+  {
+    "request_id": "c90a4872da1d288a99f2ef56fdf09334",
+    "at": "2026-09-24T06:57:36Z",
+    "question": "Покажи все наблюдения со временем последнего опроса",
+    "answer": "Наблюдения (время МСК, UTC+3):\n\n- **w1** — USD, EUR, CNY; период 60 мин; статус active; последний опрос 24.09.2026 09:51 МСК; следующий 10:00 МСК; опросов 5, сбоев 0.\n- **w2** — CNY, KZT; период 60 мин; статус active; последний опрос 24.09.2026 09:53 МСК; следующий 10:00 МСК; опросов 1, сбоев 0; истекает 25.09.2026 09:53 МСК.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 2,
+    "tool_calls": [
+      {
+        "step": 1,
+        "name": "list_watches",
+        "arguments": {},
+        "result": "{\"now\":\"2026-09-24T06:57:37Z\",\"watches\":[{\"codes\":[\"USD\",\"EUR\",\"CNY\"],\"created_at\":\"2026-09-23T21:19:47Z\",\"every_minutes\":60,\"expires_at\":\"\",\"guest\":false,\"id\":\"w1\",\"last_error\":\"\",\"last_poll_at\":\"2026-09-24T06:51:12Z\",\"next_slot_at\":\"2026-09-24T07:00:00Z\",\"polls_failed\":0,\"polls_total\":5,\"status\":\"active\",\"stopped_at\":\"\"},{\"codes\":[\"CNY\",\"KZT\"],\"created_at\":\"2026-09-24T06:53:52Z\",\"every_minutes\":60,\"expires_at\":\"2026-09-25T06:53:52Z\",\"guest\":true,\"id\":\"w2\",\"last_error\":\"\",\"last_poll_at\":\"2026-09-24T06:53:52Z\",\"next_slot_at\":\"2026-09-24T07:00:00Z\",\"polls_failed\":0,\"polls_total\":1,\"status\":\"active\",\"stopped_at\":\"\"}]}",
+        "is_error": false,
+        "rejected": ""
+      }
+    ],
+    "tokens": {
+      "prompt": 1881,
+      "cached": 768,
+      "output": 172,
+      "per_call": [
+        {
+          "prompt": 794,
+          "cached": 0,
+          "output": 22
+        },
+        {
+          "prompt": 1087,
+          "cached": 768,
+          "output": 150
+        }
+      ]
+    },
+    "cost": 0.000544908,
+    "cost_known": true
   }
 ]
