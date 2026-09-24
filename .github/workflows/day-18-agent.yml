@@ -90,7 +90,9 @@ jobs:
           if not rid:
               out.write('ask=true\n'); sys.exit(0)
           if not re.fullmatch(r'[0-9a-f]{32}', rid):
-              print('request_id не 32 hex — вопрос не задаётся'); out.write('ask=false\n'); out.write('full=true\n'); sys.exit(1)
+              # Only a manual dispatch can send this (the showcase makes its own ids). A record
+              # under an invalid id could never be found, so the run just fails loudly.
+              print('request_id не 32 hex — вопрос не задаётся'); out.write('ask=false\n'); sys.exit(1)
           path = os.environ['QUESTIONS']
           records = json.load(open(path)) if os.path.exists(path) else []
           now = datetime.datetime.now(datetime.timezone.utc)
@@ -105,8 +107,15 @@ jobs:
               'answer': '', 'error': 'лимит вопросов на час исчерпан', 'model': '', 'model_calls': 0, 'tool_calls': [],
               'tokens': {'prompt': 0, 'cached': 0, 'output': 0, 'per_call': []}, 'cost': 0, 'cost_known': True,
           })
-          json.dump(records[-100:], open(path, 'w'), ensure_ascii=False, indent=2)
-          open(path, 'a').write('\n')
+          # Atomic like the Go writer: a cut-off run must not leave a truncated file, which the
+          # agent would then refuse to touch. No lock needed — runs are serialized and the agent
+          # is not writing at this point.
+          tmp = path + '.tmp'
+          with open(tmp, 'w') as f:
+              json.dump(records[-100:], f, ensure_ascii=False, indent=2)
+              f.write('\n')
+              f.flush(); os.fsync(f.fileno())
+          os.replace(tmp, path)
           out.write('ask=false\n'); out.write('full=true\n')
           PY
 
@@ -161,7 +170,7 @@ jobs:
       # Every showcase question must leave a record, whatever happened to the agent: the
       # strict hourly limit above counts records, so a run that wrote none would not count.
       - name: Make sure the showcase question is recorded
-        if: always() && steps.gate.outputs.run == 'true' && inputs.request_id != '' && steps.limit.outputs.full != 'true'
+        if: always() && steps.gate.outputs.run == 'true' && inputs.request_id != '' && steps.limit.outcome == 'success' && steps.limit.outputs.full != 'true'
         env:
           QUESTION: ${{ inputs.question }}
           REQUEST_ID: ${{ inputs.request_id }}
@@ -182,8 +191,15 @@ jobs:
               'model': '', 'model_calls': 0, 'tool_calls': [],
               'tokens': {'prompt': 0, 'cached': 0, 'output': 0, 'per_call': []}, 'cost': 0, 'cost_known': True,
           })
-          json.dump(records[-100:], open(path, 'w'), ensure_ascii=False, indent=2)
-          open(path, 'a').write('\n')
+          # Atomic like the Go writer: a cut-off run must not leave a truncated file, which the
+          # agent would then refuse to touch. No lock needed — runs are serialized and the agent
+          # is not writing at this point.
+          tmp = path + '.tmp'
+          with open(tmp, 'w') as f:
+              json.dump(records[-100:], f, ensure_ascii=False, indent=2)
+              f.write('\n')
+              f.flush(); os.fsync(f.fileno())
+          os.replace(tmp, path)
           PY
 
       # Always commit what was collected, even when a step above failed: polls are data.
