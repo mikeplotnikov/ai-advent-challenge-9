@@ -1,0 +1,84 @@
+{
+  "at": "2026-09-24T06:51:15Z",
+  "server": {
+    "name": "cbr-watch",
+    "version": "1.0.0",
+    "protocol": "2026-07-28"
+  },
+  "tools": [
+    {
+      "name": "create_watch",
+      "description": "Создать периодическое наблюдение за официальными курсами ЦБ РФ",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "codes": {
+            "description": "Коды валют ISO 4217, от 1 до 10 различных кодов",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "every_minutes": {
+            "description": "Период опроса в минутах, целое число от 1 до 1440",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "codes",
+          "every_minutes"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_watch_summary",
+      "description": "Агрегированная сводка по наблюдению за окно",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "hours": {
+            "description": "Окно агрегации в целых часах от 1 до 720; по умолчанию 24",
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "watch_id": {
+            "description": "Идентификатор наблюдения; без него возвращаются все активные",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "list_watches",
+      "description": "Список наблюдений со статусом и последним опросом",
+      "inputSchema": {
+        "additionalProperties": false,
+        "type": "object"
+      }
+    },
+    {
+      "name": "stop_watch",
+      "description": "Остановить наблюдение; собранные данные сохраняются",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "watch_id": {
+            "description": "Идентификатор наблюдения, например w1",
+            "type": "string"
+          }
+        },
+        "required": [
+          "watch_id"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

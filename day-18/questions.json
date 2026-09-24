@@ -1,0 +1,40 @@
+[
+  {
+    "request_id": "cd481af9921e6af553367d6fb161095e",
+    "at": "2026-09-24T06:51:13Z",
+    "question": "Покажи все наблюдения",
+    "answer": "Наблюдения:\n\n**w1** — активно\n- Валюты: USD, EUR, CNY\n- Период опроса: каждые 60 минут\n- Создано: 23.09.2026 21:19 МСК\n- Последний опрос: 24.09.2026 09:51 МСК\n- Следующий опрос: 24.09.2026 10:00 МСК\n- Опросов: 5, сбоев: 0\n- Ошибок нет, срок не ограничен",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 2,
+    "tool_calls": [
+      {
+        "step": 1,
+        "name": "list_watches",
+        "arguments": {},
+        "result": "{\"now\":\"2026-09-24T06:51:14Z\",\"watches\":[{\"codes\":[\"USD\",\"EUR\",\"CNY\"],\"created_at\":\"2026-09-23T21:19:47Z\",\"every_minutes\":60,\"expires_at\":\"\",\"guest\":false,\"id\":\"w1\",\"last_error\":\"\",\"last_poll_at\":\"2026-09-24T06:51:12Z\",\"next_slot_at\":\"2026-09-24T07:00:00Z\",\"polls_failed\":0,\"polls_total\":5,\"status\":\"active\",\"stopped_at\":\"\"}]}",
+        "is_error": false,
+        "rejected": ""
+      }
+    ],
+    "tokens": {
+      "prompt": 1686,
+      "cached": 768,
+      "output": 146,
+      "per_call": [
+        {
+          "prompt": 759,
+          "cached": 0,
+          "output": 22
+        },
+        {
+          "prompt": 927,
+          "cached": 768,
+          "output": 124
+        }
+      ]
+    },
+    "cost": 0.000455208,
+    "cost_known": true
+  }
+]
