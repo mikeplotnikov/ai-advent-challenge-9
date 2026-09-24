@@ -194,6 +194,22 @@ func TestRunStopsAfterFiveToolTurns(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsPerRunModelCallLimit(t *testing.T) {
+	session, closeSession := realSession(t)
+	defer closeSession()
+	model := &fakeLLM{answers: []llm.Answer{
+		answer("", call("x1", "get_currency_rates", `{"date":"2026-09-01"}`)),
+		answer("", call("x2", "get_currency_rates", `{"date":"2026-09-01"}`)),
+	}}
+	_, err := Run(context.Background(), model, session, Input{ModelCallLimit: 2})
+	if err == nil || err.Error() != "модель не дала ответа за 2 обращений" {
+		t.Fatalf("err=%v", err)
+	}
+	if len(model.options) != 2 {
+		t.Fatalf("calls=%d", len(model.options))
+	}
+}
+
 func TestRunDirectTextAndNoTools(t *testing.T) {
 	session, closeSession := realSession(t)
 	defer closeSession()

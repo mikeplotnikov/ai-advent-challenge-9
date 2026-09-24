@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,8 +20,9 @@ import (
 )
 
 const (
-	DefaultURL = "https://www.cbr.ru/scripts/XML_daily.asp"
-	maxBody    = 1 << 20
+	DefaultURL        = "https://www.cbr.ru/scripts/XML_daily.asp"
+	DefaultDynamicURL = "https://www.cbr.ru/scripts/XML_dynamic.asp"
+	maxBody           = 1 << 20
 	// UserAgent names this client. cbr.ru answers 403 to Go's default
 	// "Go-http-client/1.1" while serving curl, an empty UA and this one with 200 —
 	// measured 2026-09-22 by the first live run, which got 403 where curl got 200.
@@ -51,19 +53,50 @@ type FetchFunc func(context.Context, string) ([]byte, error)
 
 func (f FetchFunc) Fetch(ctx context.Context, date string) ([]byte, error) { return f(ctx, date) }
 
+// RangeFetcher makes the XML_dynamic edge replaceable in deterministic tests.
+type RangeFetcher interface {
+	FetchRange(context.Context, string, string, string) ([]byte, error)
+}
+
+type RangeFetchFunc func(context.Context, string, string, string) ([]byte, error)
+
+func (f RangeFetchFunc) FetchRange(ctx context.Context, id, from, to string) ([]byte, error) {
+	return f(ctx, id, from, to)
+}
+
 // Options supplies deterministic seams for callers which need reproducible rates.
 type Options struct {
-	Fetcher Fetcher
-	Now     func() time.Time
+	Fetcher      Fetcher
+	RangeFetcher RangeFetcher
+	Now          func() time.Time
 }
 
 // Currency is one CBR currency as published in XML_daily.
 type Currency struct {
+	ID       string
 	Code     string
 	Name     string
 	Nominal  int
 	Value    float64
 	UnitRate float64
+}
+
+// RangeRate is one XML_dynamic publication. Monetary values are integer
+// millionths so every later calculation can use deterministic integer arithmetic.
+type RangeRate struct {
+	Date           string
+	Nominal        int64
+	ValueMicros    int64
+	UnitRateMicros int64
+}
+
+// RangeRates is one currency's official publications for an inclusive period.
+type RangeRates struct {
+	Currency Currency
+	DateFrom string
+	DateTo   string
+	Source   string
+	Rows     []RangeRate
 }
 
 // Rates is a normalized CBR response.
@@ -81,10 +114,11 @@ func (e *SourceError) Error() string { return e.Err.Error() }
 func (e *SourceError) Unwrap() error { return e.Err }
 
 type Client struct {
-	fetcher Fetcher
-	now     func() time.Time
-	mu      sync.Mutex
-	cache   map[string]cacheEntry
+	fetcher      Fetcher
+	rangeFetcher RangeFetcher
+	now          func() time.Time
+	mu           sync.Mutex
+	cache        map[string]cacheEntry
 }
 
 type cacheEntry struct {
@@ -97,11 +131,70 @@ func New(options Options) *Client {
 	if fetcher == nil {
 		fetcher = HTTPFetcher{URL: os.Getenv("CBR_URL"), Timeout: 15 * time.Second}
 	}
+	rangeFetcher := options.RangeFetcher
+	if rangeFetcher == nil {
+		rangeFetcher = HTTPRangeFetcher{URL: os.Getenv("CBR_DYNAMIC_URL"), Timeout: 15 * time.Second}
+	}
 	now := options.Now
 	if now == nil {
 		now = time.Now
 	}
-	return &Client{fetcher: fetcher, now: now, cache: make(map[string]cacheEntry)}
+	return &Client{fetcher: fetcher, rangeFetcher: rangeFetcher, now: now, cache: make(map[string]cacheEntry)}
+}
+
+// GetRange resolves the CBR internal currency id from XML_daily, then loads the
+// inclusive XML_dynamic period. Day 19 deliberately caps the period at 93 days.
+func (c *Client) GetRange(ctx context.Context, code, from, to string) (RangeRates, error) {
+	fromDate, err := c.validateDate(from)
+	if err != nil {
+		return RangeRates{}, err
+	}
+	toDate, err := c.validateDate(to)
+	if err != nil {
+		return RangeRates{}, err
+	}
+	if from == "" || to == "" {
+		return RangeRates{}, errors.New("date_from и date_to обязательны")
+	}
+	if fromDate.After(toDate) {
+		return RangeRates{}, errors.New("date_from должна быть не позже date_to")
+	}
+	if days := int(toDate.Sub(fromDate).Hours()/24) + 1; days > 93 {
+		return RangeRates{}, fmt.Errorf("период не должен быть длиннее 93 дней (получено %d)", days)
+	}
+
+	daily, err := c.Get(ctx, "")
+	if err != nil {
+		return RangeRates{}, err
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(code))
+	var currency Currency
+	for _, candidate := range daily.Currencies {
+		if candidate.Code == normalized {
+			currency = candidate
+			break
+		}
+	}
+	if currency.ID == "" {
+		codes := make([]string, 0, len(daily.Currencies))
+		for _, candidate := range daily.Currencies {
+			codes = append(codes, candidate.Code)
+		}
+		sort.Strings(codes)
+		return RangeRates{}, fmt.Errorf("неизвестный код валюты %q; доступны: %s", normalized, strings.Join(codes, ", "))
+	}
+	raw, err := c.rangeFetcher.FetchRange(ctx, currency.ID, from, to)
+	if err != nil {
+		return RangeRates{}, &SourceError{Err: err}
+	}
+	rows, err := parseRange(raw, currency.ID)
+	if err != nil {
+		return RangeRates{}, err
+	}
+	if len(rows) == 0 {
+		return RangeRates{}, fmt.Errorf("ЦБ не публиковал курс %s в периоде %s—%s", normalized, from, to)
+	}
+	return RangeRates{Currency: currency, DateFrom: from, DateTo: to, Source: "cbr.ru XML_dynamic", Rows: rows}, nil
 }
 
 // Get validates the requested calendar date and obtains the applicable published rates.
@@ -187,6 +280,57 @@ type HTTPFetcher struct {
 	Timeout time.Duration
 }
 
+// HTTPRangeFetcher is the production CBR XML_dynamic client. It intentionally
+// repeats HTTPFetcher's 1 MiB cap and User-Agent because cbr.ru rejects Go's
+// default User-Agent on this endpoint too.
+type HTTPRangeFetcher struct {
+	URL     string
+	Timeout time.Duration
+}
+
+func (f HTTPRangeFetcher) FetchRange(ctx context.Context, id, from, to string) ([]byte, error) {
+	base := f.URL
+	if base == "" {
+		base = DefaultDynamicURL
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("некорректный адрес ЦБ: %w", err)
+	}
+	fromDate, _ := time.Parse("2006-01-02", from)
+	toDate, _ := time.Parse("2006-01-02", to)
+	q := u.Query()
+	q.Set("date_req1", fromDate.Format("02/01/2006"))
+	q.Set("date_req2", toDate.Format("02/01/2006"))
+	q.Set("VAL_NM_RQ", id)
+	u.RawQuery = q.Encode()
+	timeout := f.Timeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("User-Agent", UserAgent)
+	response, err := (&http.Client{Timeout: timeout}).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, StatusError(response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxBody {
+		return nil, errors.New("ответ ЦБ больше 1 МиБ")
+	}
+	return body, nil
+}
+
 func (f HTTPFetcher) Fetch(ctx context.Context, requested string) ([]byte, error) {
 	base := f.URL
 	if base == "" {
@@ -236,10 +380,24 @@ type xmlDocument struct {
 }
 
 type xmlCurrency struct {
+	ID      string `xml:"ID,attr"`
 	Code    string `xml:"CharCode"`
 	Nominal string `xml:"Nominal"`
 	Name    string `xml:"Name"`
 	Value   string `xml:"Value"`
+}
+
+type xmlRangeDocument struct {
+	ID      string           `xml:"ID,attr"`
+	Records []xmlRangeRecord `xml:"Record"`
+}
+
+type xmlRangeRecord struct {
+	Date     string `xml:"Date,attr"`
+	ID       string `xml:"Id,attr"`
+	Nominal  string `xml:"Nominal"`
+	Value    string `xml:"Value"`
+	UnitRate string `xml:"VunitRate"`
 }
 
 func parse(raw []byte) (Rates, error) {
@@ -273,9 +431,115 @@ func parse(raw []byte) (Rates, error) {
 		if err != nil {
 			return Rates{}, &SourceError{Err: fmt.Errorf("некорректный курс %q в ответе ЦБ", item.Value)}
 		}
-		rates.Currencies = append(rates.Currencies, Currency{Code: strings.ToUpper(strings.TrimSpace(item.Code)), Name: strings.TrimSpace(item.Name), Nominal: nominal, Value: value, UnitRate: Round6(value / float64(nominal))})
+		rates.Currencies = append(rates.Currencies, Currency{ID: strings.TrimSpace(item.ID), Code: strings.ToUpper(strings.TrimSpace(item.Code)), Name: strings.TrimSpace(item.Name), Nominal: nominal, Value: value, UnitRate: Round6(value / float64(nominal))})
 	}
 	return rates, nil
+}
+
+func parseRange(raw []byte, expectedID string) ([]RangeRate, error) {
+	decoded := decodeWindows1251(raw)
+	if strings.Contains(decoded, "Error in parameters") {
+		return nil, errors.New("ЦБ отклонил запрос: Error in parameters")
+	}
+	if strings.HasPrefix(strings.TrimSpace(decoded), "<?xml") {
+		if end := strings.Index(decoded, "?>"); end >= 0 {
+			decoded = decoded[end+2:]
+		}
+	}
+	var document xmlRangeDocument
+	if err := xml.NewDecoder(bytes.NewReader([]byte(decoded))).Decode(&document); err != nil {
+		return nil, &SourceError{Err: fmt.Errorf("не удалось разобрать ответ ЦБ: %w", err)}
+	}
+	if id := strings.TrimSpace(document.ID); id != expectedID {
+		return nil, &SourceError{Err: fmt.Errorf("ЦБ вернул данные другой валюты: %s вместо %s", id, expectedID)}
+	}
+	rows := make([]RangeRate, 0, len(document.Records))
+	for _, item := range document.Records {
+		if id := strings.TrimSpace(item.ID); id != expectedID {
+			return nil, &SourceError{Err: fmt.Errorf("ЦБ вернул запись другой валюты: %s вместо %s", id, expectedID)}
+		}
+		date, err := time.Parse("02.01.2006", strings.TrimSpace(item.Date))
+		if err != nil {
+			return nil, &SourceError{Err: fmt.Errorf("некорректная дата в ответе ЦБ: %q", item.Date)}
+		}
+		nominal, err := strconv.ParseInt(strings.TrimSpace(item.Nominal), 10, 64)
+		if err != nil || nominal <= 0 {
+			return nil, &SourceError{Err: fmt.Errorf("некорректный номинал %q в ответе ЦБ", item.Nominal)}
+		}
+		value, err := decimalMicros(item.Value)
+		if err != nil {
+			return nil, &SourceError{Err: fmt.Errorf("некорректный курс %q в ответе ЦБ", item.Value)}
+		}
+		unit, err := decimalMicros(item.UnitRate)
+		if err != nil {
+			return nil, &SourceError{Err: fmt.Errorf("некорректный курс за единицу %q в ответе ЦБ", item.UnitRate)}
+		}
+		rows = append(rows, RangeRate{Date: date.Format("2006-01-02"), Nominal: nominal, ValueMicros: value, UnitRateMicros: unit})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Date < rows[j].Date })
+	return rows, nil
+}
+
+// decimalMicros parses a CBR decimal without binary floating point and rounds
+// a seventh decimal digit half away from zero. XML_dynamic currently publishes
+// positive rates, but the sign handling keeps the rule explicit and testable.
+func decimalMicros(raw string) (int64, error) {
+	value := strings.TrimSpace(strings.ReplaceAll(raw, ",", "."))
+	sign := int64(1)
+	if strings.HasPrefix(value, "-") {
+		sign, value = -1, strings.TrimPrefix(value, "-")
+	} else {
+		value = strings.TrimPrefix(value, "+")
+	}
+	exponent := int64(0)
+	if index := strings.IndexAny(value, "eE"); index >= 0 {
+		parsed, err := strconv.ParseInt(value[index+1:], 10, 32)
+		if err != nil {
+			return 0, errors.New("not a decimal")
+		}
+		exponent = parsed
+		value = value[:index]
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 || len(parts) == 0 || parts[0] == "" {
+		return 0, errors.New("not a decimal")
+	}
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1]
+	}
+	digits := parts[0] + fraction
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return 0, errors.New("not a decimal")
+		}
+	}
+	integer, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, errors.New("not a decimal")
+	}
+	shift := int64(6-len(fraction)) + exponent
+	if shift >= 0 {
+		for ; shift > 0; shift-- {
+			if integer > (1<<63-1)/10 {
+				return 0, errors.New("decimal overflow")
+			}
+			integer *= 10
+		}
+		return sign * integer, nil
+	}
+	denominator := int64(1)
+	for ; shift < 0; shift++ {
+		if denominator > (1<<63-1)/10 {
+			return 0, errors.New("decimal overflow")
+		}
+		denominator *= 10
+	}
+	if integer > (1<<63-1)-denominator/2 {
+		return 0, errors.New("decimal overflow")
+	}
+	rounded := (integer + denominator/2) / denominator
+	return sign * rounded, nil
 }
 
 func parseISODate(value string) time.Time {

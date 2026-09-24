@@ -85,6 +85,9 @@ type Server struct {
 type Input struct {
 	SystemPrompt, Question string
 	NoTools                bool
+	// ModelCallLimit overrides MaxModelCalls for one run. Zero preserves the
+	// shared five-call behavior used by days 17 and 18.
+	ModelCallLimit int
 }
 
 // Run lists the server tools once, then lets the provider choose calls until it writes text.
@@ -110,7 +113,11 @@ func Run(ctx context.Context, model LLM, session Session, in Input) (Trace, erro
 	}
 	messages := []llm.ToolMessage{{Role: "system", Content: in.SystemPrompt}, {Role: "user", Content: in.Question}}
 	zero := 0.0
-	for step := 0; step < MaxModelCalls; step++ {
+	limit := in.ModelCallLimit
+	if limit <= 0 {
+		limit = MaxModelCalls
+	}
+	for step := 0; step < limit; step++ {
 		at := time.Now()
 		opts := llm.Options{Temperature: &zero}
 		if !in.NoTools {
@@ -181,5 +188,5 @@ func Run(ctx context.Context, model LLM, session Session, in Input) (Trace, erro
 		}
 	}
 	trace.Totals.Duration = time.Since(started)
-	return trace, fmt.Errorf("модель не дала ответа за %d обращений", MaxModelCalls)
+	return trace, fmt.Errorf("модель не дала ответа за %d обращений", limit)
 }
