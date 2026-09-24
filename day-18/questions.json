@@ -80,5 +80,43 @@
     },
     "cost": 0.00043060799999999997,
     "cost_known": true
+  },
+  {
+    "request_id": "18779b85237b6bbe75504f49c666418b",
+    "at": "2026-09-24T06:54:40Z",
+    "question": "Покажи все наблюдения",
+    "answer": "Наблюдения:\n\n**w1** — активное\n- Валюты: USD, EUR, CNY\n- Период: каждые 60 мин\n- Создано: 23.09.2026 21:19 МСК\n- Последний опрос: 24.09.2026 06:51 МСК, следующий: 07:00 МСК\n- Опросов: 5, сбоев: 0, ошибок нет\n\n**w2** — активное (гостевое)\n- Валюты: CNY, KZT\n- Период: каждые 60 мин\n- Создано: 24.09.2026 06:53 МСК, истекает 25.09.2026 06:53 МСК\n- Последний опрос: 24.09.2026 06:53 МСК, следующий: 07:00 МСК\n- Опросов: 1, сбоев: 0, ошибок нет",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 2,
+    "tool_calls": [
+      {
+        "step": 1,
+        "name": "list_watches",
+        "arguments": {},
+        "result": "{\"now\":\"2026-09-24T06:54:41Z\",\"watches\":[{\"codes\":[\"USD\",\"EUR\",\"CNY\"],\"created_at\":\"2026-09-23T21:19:47Z\",\"every_minutes\":60,\"expires_at\":\"\",\"guest\":false,\"id\":\"w1\",\"last_error\":\"\",\"last_poll_at\":\"2026-09-24T06:51:12Z\",\"next_slot_at\":\"2026-09-24T07:00:00Z\",\"polls_failed\":0,\"polls_total\":5,\"status\":\"active\",\"stopped_at\":\"\"},{\"codes\":[\"CNY\",\"KZT\"],\"created_at\":\"2026-09-24T06:53:52Z\",\"every_minutes\":60,\"expires_at\":\"2026-09-25T06:53:52Z\",\"guest\":true,\"id\":\"w2\",\"last_error\":\"\",\"last_poll_at\":\"2026-09-24T06:53:52Z\",\"next_slot_at\":\"2026-09-24T07:00:00Z\",\"polls_failed\":0,\"polls_total\":1,\"status\":\"active\",\"stopped_at\":\"\"}]}",
+        "is_error": false,
+        "rejected": ""
+      }
+    ],
+    "tokens": {
+      "prompt": 1811,
+      "cached": 768,
+      "output": 248,
+      "per_call": [
+        {
+          "prompt": 759,
+          "cached": 0,
+          "output": 22
+        },
+        {
+          "prompt": 1052,
+          "cached": 768,
+          "output": 226
+        }
+      ]
+    },
+    "cost": 0.0006151080000000001,
+    "cost_known": true
   }
 ]
