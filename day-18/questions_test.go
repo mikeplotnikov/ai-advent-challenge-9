@@ -162,3 +162,12 @@ func TestDashQuestionAfterDoubleDashIsRecorded(t *testing.T) {
 		t.Fatalf("records=%+v err=%v", records, err)
 	}
 }
+
+// Tool results carry UTC timestamps; the live run of 24.09 showed the model calling them
+// «МСК» (06:53 instead of 09:53). The prompt names the zone and the conversion.
+func TestPromptNamesUTCInToolResults(t *testing.T) {
+	prompt := promptNow(time.Date(2026, 9, 24, 6, 53, 0, 0, time.UTC))
+	if !strings.Contains(prompt, "в UTC") || !strings.Contains(prompt, "UTC+3") || !strings.Contains(prompt, "24.09.2026 09:53 МСК") {
+		t.Fatalf("prompt: %s", prompt)
+	}
+}
