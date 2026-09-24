@@ -118,7 +118,7 @@ func TestToolsOutcomes(t *testing.T) {
 	if err := decode(created, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output.ID != "w1" || strings.Join(output.Codes, ",") != "USD,EUR" || output.PollsTotal != 1 {
+	if output.ID != "w1" || strings.Join(output.Codes, ",") != "USD,EUR" || output.PollsTotal != 1 || output.Guest || output.ExpiresAt != "" {
 		t.Fatalf("%+v", output)
 	}
 	repeated := make([]any, 11)
@@ -227,6 +227,96 @@ func TestToolsOutcomes(t *testing.T) {
 		if !out.IsError || !strings.Contains(mcpclient.ToolText(out), "от 1 до 720") {
 			t.Fatalf("hours=%d: %s", hours, mcpclient.ToolText(out))
 		}
+	}
+}
+
+func TestGuestModeLimitsDuplicatesAndRefusesStops(t *testing.T) {
+	now := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
+	store := watch.NewStore(filepath.Join(t.TempDir(), "store.json"))
+	poll := watch.Poll{At: now.Format(time.RFC3339), OK: true, RatesDate: "2026-09-24", Rates: map[string]float64{"USD": 80}}
+	owner, err := store.Create([]string{"USD"}, 60, now, poll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := openTestServer(t, Options{Store: store, CBR: cbr.Options{Fetcher: fixtureFetcher(t)}, Now: func() time.Time { return now }, Guest: true})
+	first := call(t, session, "create_watch", map[string]any{"codes": []any{"EUR", "CNY"}, "every_minutes": 60})
+	if first.IsError {
+		t.Fatal(mcpclient.ToolText(first))
+	}
+	var guest watch.WatchView
+	if err := decode(first, &guest); err != nil {
+		t.Fatal(err)
+	}
+	if !guest.Guest || guest.ExpiresAt != now.Add(24*time.Hour).Format(time.RFC3339) {
+		t.Fatalf("guest=%+v", guest)
+	}
+	listed := call(t, session, "list_watches", map[string]any{})
+	var listedWatches ListWatchesOutput
+	if listed.IsError || decode(listed, &listedWatches) != nil || len(listedWatches.Watches) != 2 || !listedWatches.Watches[1].Guest || listedWatches.Watches[1].ExpiresAt != guest.ExpiresAt {
+		t.Fatalf("listed=%s watches=%+v", mcpclient.ToolText(listed), listedWatches)
+	}
+	duplicate := call(t, session, "create_watch", map[string]any{"codes": []any{"CNY", "EUR"}, "every_minutes": 60})
+	var duplicateView watch.WatchView
+	if duplicate.IsError || decode(duplicate, &duplicateView) != nil || duplicateView.ID != guest.ID {
+		t.Fatalf("duplicate=%s view=%+v", mcpclient.ToolText(duplicate), duplicateView)
+	}
+	differentPeriod := call(t, session, "create_watch", map[string]any{"codes": []any{"EUR", "CNY"}, "every_minutes": 120})
+	var differentPeriodView watch.WatchView
+	if differentPeriod.IsError || decode(differentPeriod, &differentPeriodView) != nil || differentPeriodView.ID == guest.ID {
+		t.Fatalf("different period=%s view=%+v", mcpclient.ToolText(differentPeriod), differentPeriodView)
+	}
+	if result := call(t, session, "create_watch", map[string]any{"codes": []any{"GBP"}, "every_minutes": 60}); result.IsError {
+		t.Fatalf("create GBP: %s", mcpclient.ToolText(result))
+	}
+	fourth := call(t, session, "create_watch", map[string]any{"codes": []any{"JPY"}, "every_minutes": 60})
+	if !fourth.IsError || !strings.Contains(mcpclient.ToolText(fourth), "гостевых наблюдений уже 3") {
+		t.Fatalf("fourth=%s", mcpclient.ToolText(fourth))
+	}
+	for _, id := range []string{owner.ID, guest.ID} {
+		stopped := call(t, session, "stop_watch", map[string]any{"watch_id": id})
+		if !stopped.IsError || !strings.Contains(mcpclient.ToolText(stopped), "гость не останавливает наблюдения") {
+			t.Fatalf("stop %s: %s", id, mcpclient.ToolText(stopped))
+		}
+	}
+	state, err := store.Read()
+	if err != nil || len(state.Watches) != 4 {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	for _, current := range state.Watches {
+		if current.Status != "active" {
+			t.Fatalf("guest stop mutated %s: %+v", current.ID, current)
+		}
+	}
+
+	ownerSession := openTestServer(t, Options{Store: store, CBR: cbr.Options{Fetcher: fixtureFetcher(t)}, Now: func() time.Time { return now }})
+	if stopped := call(t, ownerSession, "stop_watch", map[string]any{"watch_id": guest.ID}); stopped.IsError {
+		t.Fatalf("owner could not stop guest watch: %s", mcpclient.ToolText(stopped))
+	}
+	replacement := call(t, session, "create_watch", map[string]any{"codes": []any{"CNY", "EUR"}, "every_minutes": 60})
+	var replacementView watch.WatchView
+	if replacement.IsError || decode(replacement, &replacementView) != nil || replacementView.ID == guest.ID {
+		t.Fatalf("stopped guest was reused or counted active: %s view=%+v", mcpclient.ToolText(replacement), replacementView)
+	}
+	summaryResult := call(t, session, "get_watch_summary", map[string]any{"watch_id": replacementView.ID, "hours": 24})
+	var summary watch.SummaryResponse
+	if summaryResult.IsError || decode(summaryResult, &summary) != nil || len(summary.Watches) != 1 || !summary.Watches[0].Guest || summary.Watches[0].ExpiresAt != replacementView.ExpiresAt {
+		t.Fatalf("guest summary=%s value=%+v", mcpclient.ToolText(summaryResult), summary)
+	}
+}
+
+func TestGuestModeKeepsGeneralActiveLimit(t *testing.T) {
+	now := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
+	store := watch.NewStore(filepath.Join(t.TempDir(), "store.json"))
+	poll := watch.Poll{At: now.Format(time.RFC3339), OK: true, RatesDate: "2026-09-24", Rates: map[string]float64{"USD": 80}}
+	for i := 0; i < watch.MaxActiveWatches; i++ {
+		if _, err := store.Create([]string{"USD"}, 60, now, poll); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := openTestServer(t, Options{Store: store, CBR: cbr.Options{Fetcher: fixtureFetcher(t)}, Now: func() time.Time { return now }, Guest: true})
+	result := call(t, session, "create_watch", map[string]any{"codes": []any{"EUR"}, "every_minutes": 60})
+	if !result.IsError || !strings.Contains(mcpclient.ToolText(result), "не больше 10 активных наблюдений") {
+		t.Fatalf("general limit: %s", mcpclient.ToolText(result))
 	}
 }
 

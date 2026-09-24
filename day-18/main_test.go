@@ -28,7 +28,7 @@ import (
 )
 
 func TestUsageExitCodes(t *testing.T) {
-	cases := [][]string{nil, {"-tick", "question"}, {"-digest-every", "30s", "-tick"}, {"-digest-every", "25h", "-tick"}, {"-window", "0h", "-tick"}, {"-window", "1h30m", "-tick"}, {"-window", "721h", "-tick"}, {"-wat"}, {"-report"}}
+	cases := [][]string{nil, {"-tick", "question"}, {"-digest-every", "30s", "-tick"}, {"-digest-every", "25h", "-tick"}, {"-window", "0h", "-tick"}, {"-window", "1h30m", "-tick"}, {"-window", "721h", "-tick"}, {"-wat"}, {"-report"}, {"-request-id", "not-hex", "question"}, {"-request-id", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "question"}, {"-request-id", "1111111111111111111111111111111", "question"}, {"-request-id", "1111111111111111111111111111111g", "question"}, {"-questions", "questions.json", "-tick"}, {"-tools", "tools.json", "question"}}
 	for _, args := range cases {
 		var out, err bytes.Buffer
 		if code := run(args, &out, &err); code != 2 || !strings.Contains(err.String(), "usage:") {
@@ -220,13 +220,126 @@ func TestProviderFailureExitOneWithoutAnswer(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "store.json")
 	activeStore(t, storePath, 81)
-	server := newHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "broken", 500) }))
+	server := newHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "Bearer test-key private body", 500) }))
 	defer server.Close()
 	t.Setenv("DEEPSEEK_API_URL", server.URL)
 	t.Setenv("DEEPSEEK_API_KEY_DAY18", "test-key")
+	questionsPath := filepath.Join(dir, "questions.json")
 	var out, errOut bytes.Buffer
-	if code := run([]string{"-command", binary + " -store " + storePath, "question"}, &out, &errOut); code != 1 || strings.Contains(out.String(), "[ответ]") || !strings.Contains(errOut.String(), "500") {
+	if code := run([]string{"-questions", questionsPath, "-request-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "-command", binary + " -store " + storePath, "question"}, &out, &errOut); code != 1 || strings.Contains(out.String(), "[ответ]") || !strings.Contains(errOut.String(), "500") {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errOut.String())
+	}
+	records, err := readQuestions(questionsPath)
+	if err != nil || len(records) != 1 || records[0].Error == "" || records[0].Answer != "" || records[0].RequestID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	raw, _ := os.ReadFile(questionsPath)
+	if bytes.Contains(raw, []byte("test-key")) || bytes.Contains(raw, []byte("Bearer")) || bytes.Contains(raw, []byte("private body")) {
+		t.Fatalf("provider secret/body leaked: %s", raw)
+	}
+}
+
+func TestQuestionRecordIntegrationAndRejectedCall(t *testing.T) {
+	binary := buildMCPServer(t)
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "store.json")
+	activeStore(t, storePath, 81)
+	questionsPath := filepath.Join(dir, "questions.json")
+	server, _ := setupProvider(t,
+		toolReply("get_watch_summary", `{"hours":24}`), textReply("готово"),
+		toolReply("missing_tool", `{}`), textReply("после отказа"),
+	)
+	defer server.Close()
+	command := binary + " -store " + storePath
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-questions", questionsPath, "-request-id", "11111111111111111111111111111111", "-command", command, "Покажи наблюдения"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("first code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"-questions", questionsPath, "-request-id", "22222222222222222222222222222222", "-command", command, "Вызови неизвестный инструмент"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("second code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	records, err := readQuestions(questionsPath)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	first := records[0]
+	if first.At == "" || first.Question != "Покажи наблюдения" || first.Answer != "готово" || first.Error != "" || first.Model == "" || first.ModelCalls != 2 || len(first.ToolCalls) != 1 || first.ToolCalls[0].Name != "get_watch_summary" || first.ToolCalls[0].Result == "" || len(first.Tokens.PerCall) != 2 || first.Tokens.Prompt != 180 || first.Tokens.Cached != 70 || first.Tokens.Output != 25 || !first.CostKnown || first.Cost <= 0 {
+		t.Fatalf("first=%+v", first)
+	}
+	if first.ToolCalls[0].Step != 1 || first.ToolCalls[0].Arguments["hours"] != float64(24) || first.ToolCalls[0].IsError || first.ToolCalls[0].Rejected != "" || first.Tokens.PerCall[0] != (TokenCall{100, 40, 5}) || first.Tokens.PerCall[1] != (TokenCall{80, 30, 20}) {
+		t.Fatalf("first trace details=%+v per_call=%+v", first.ToolCalls[0], first.Tokens.PerCall)
+	}
+	rejected := records[1]
+	if len(rejected.ToolCalls) != 1 || rejected.ToolCalls[0].Rejected == "" || rejected.ToolCalls[0].Result != "" {
+		t.Fatalf("rejected=%+v", rejected)
+	}
+	corrupt := []byte("not json")
+	if err := os.WriteFile(questionsPath, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"-questions", questionsPath, "-request-id", "33333333333333333333333333333333", "-command", command, "Этот ответ не должен затереть файл"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "файл не изменён") {
+		t.Fatalf("corrupt code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	after, _ := os.ReadFile(questionsPath)
+	if !bytes.Equal(after, corrupt) {
+		t.Fatalf("corrupt questions changed: %q", after)
+	}
+}
+
+func TestTickWritesToolsWhenDigestSlotAlreadyExists(t *testing.T) {
+	binary := buildMCPServer(t)
+	dir := t.TempDir()
+	digestsPath := filepath.Join(dir, "digests.json")
+	toolsPath := filepath.Join(dir, "tools.json")
+	storePath := filepath.Join(dir, "store.json")
+	now := time.Now().UTC()
+	if err := writeDigests(digestsPath, []Digest{{At: now.Format(time.RFC3339)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(toolsPath, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-tick", "-tools", toolsPath, "-store", storePath, "-digests", digestsPath, "-command", binary + " -store " + storePath}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), "уже есть") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	raw, err := os.ReadFile(toolsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot ToolsSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil || snapshot.At == "" || snapshot.Server.Name != "cbr-watch" || snapshot.Server.Version != "1.0.0" || snapshot.Server.Protocol == "" || len(snapshot.Tools) != 4 {
+		t.Fatalf("snapshot=%+v err=%v raw=%s", snapshot, err, raw)
+	}
+	wantTools := map[string]bool{"create_watch": false, "list_watches": false, "stop_watch": false, "get_watch_summary": false}
+	for _, tool := range snapshot.Tools {
+		if _, ok := wantTools[tool.Name]; !ok || tool.Description == "" || tool.InputSchema == nil {
+			t.Fatalf("incomplete tool metadata: %+v", tool)
+		}
+		schema, err := json.Marshal(tool.InputSchema)
+		if err != nil || !bytes.Contains(schema, []byte(`"type"`)) {
+			t.Fatalf("missing schema content for %s: %s err=%v", tool.Name, schema, err)
+		}
+		if tool.Name == "create_watch" && (!bytes.Contains(schema, []byte(`"codes"`)) || !bytes.Contains(schema, []byte(`"every_minutes"`))) {
+			t.Fatalf("create_watch schema lost parameters: %s", schema)
+		}
+		wantTools[tool.Name] = true
+	}
+	for name, seen := range wantTools {
+		if !seen {
+			t.Errorf("missing tool %s", name)
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tools.json.tmp-") {
+			t.Fatalf("temporary tools file remains: %s", entry.Name())
+		}
 	}
 }
 

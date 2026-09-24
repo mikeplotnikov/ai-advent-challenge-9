@@ -6,6 +6,7 @@ import "time"
 const (
 	Version          = 1
 	MaxActiveWatches = 10
+	MaxGuestWatches  = 3
 	MaxPollsPerWatch = 5000
 )
 
@@ -22,6 +23,8 @@ type Watch struct {
 	Status       string   `json:"status"`
 	CreatedAt    string   `json:"created_at"`
 	StoppedAt    string   `json:"stopped_at"`
+	Guest        bool     `json:"guest,omitempty"`
+	ExpiresAt    string   `json:"expires_at,omitempty"`
 	Polls        []Poll   `json:"polls"`
 }
 
@@ -41,6 +44,8 @@ type WatchView struct {
 	Status       string   `json:"status"`
 	CreatedAt    string   `json:"created_at"`
 	StoppedAt    string   `json:"stopped_at"`
+	Guest        bool     `json:"guest"`
+	ExpiresAt    string   `json:"expires_at"`
 	LastPollAt   string   `json:"last_poll_at"`
 	NextSlotAt   string   `json:"next_slot_at"`
 	PollsTotal   int      `json:"polls_total"`
@@ -59,6 +64,8 @@ type Summary struct {
 	Codes        []string          `json:"codes"`
 	EveryMinutes int               `json:"every_minutes"`
 	Status       string            `json:"status"`
+	Guest        bool              `json:"guest"`
+	ExpiresAt    string            `json:"expires_at"`
 	Hours        int               `json:"hours"`
 	From         string            `json:"from"`
 	To           string            `json:"to"`

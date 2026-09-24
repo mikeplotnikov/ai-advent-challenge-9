@@ -157,23 +157,83 @@ func (s *Store) saveUnlocked(state File) error {
 }
 
 func (s *Store) Create(codes []string, everyMinutes int, now time.Time, poll Poll) (Watch, error) {
+	created, _, err := s.create(codes, everyMinutes, now, poll, false)
+	return created, err
+}
+
+// CreateGuest creates a 24-hour guest watch, or returns the identical active
+// guest watch that already exists. The duplicate check and both limits are
+// enforced under the store lock.
+func (s *Store) CreateGuest(codes []string, everyMinutes int, now time.Time, poll Poll) (Watch, bool, error) {
+	return s.create(codes, everyMinutes, now, poll, true)
+}
+
+func (s *Store) create(codes []string, everyMinutes int, now time.Time, poll Poll, guest bool) (Watch, bool, error) {
 	var created Watch
+	existing := false
 	err := s.Update(func(state *File) error {
 		active := make([]string, 0)
+		activeGuests := 0
 		for _, current := range state.Watches {
 			if current.Status == "active" {
 				active = append(active, current.ID)
+				if current.Guest {
+					activeGuests++
+					if guest && current.EveryMinutes == everyMinutes && sameCodeSet(current.Codes, codes) {
+						created = current
+						existing = true
+						return nil
+					}
+				}
 			}
+		}
+		if guest && activeGuests >= MaxGuestWatches {
+			return fmt.Errorf("гостевых наблюдений уже 3; каждое живёт сутки")
 		}
 		if len(active) >= MaxActiveWatches {
 			return fmt.Errorf("не больше 10 активных наблюдений; активные: %s", join(active))
 		}
-		created = Watch{ID: "w" + strconv.Itoa(state.NextID), Codes: append([]string(nil), codes...), EveryMinutes: everyMinutes, Status: "active", CreatedAt: now.UTC().Format(time.RFC3339), Polls: []Poll{poll}}
+		created = Watch{ID: "w" + strconv.Itoa(state.NextID), Codes: append([]string(nil), codes...), EveryMinutes: everyMinutes, Status: "active", CreatedAt: now.UTC().Format(time.RFC3339), Guest: guest, Polls: []Poll{poll}}
+		if guest {
+			created.ExpiresAt = now.Add(24 * time.Hour).UTC().Format(time.RFC3339)
+		}
 		state.NextID++
 		state.Watches = append(state.Watches, created)
 		return nil
 	})
-	return created, err
+	return created, existing, err
+}
+
+// ActiveGuest returns an identical active guest watch without touching the
+// upstream. CreateGuest repeats this check under the write lock.
+func (s *Store) ActiveGuest(codes []string, everyMinutes int) (Watch, bool, error) {
+	state, err := s.Read()
+	if err != nil {
+		return Watch{}, false, err
+	}
+	for _, current := range state.Watches {
+		if current.Status == "active" && current.Guest && current.EveryMinutes == everyMinutes && sameCodeSet(current.Codes, codes) {
+			return current, true, nil
+		}
+	}
+	return Watch{}, false, nil
+}
+
+func sameCodeSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, code := range a {
+		counts[code]++
+	}
+	for _, code := range b {
+		counts[code]--
+		if counts[code] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func join(values []string) string {
@@ -250,4 +310,39 @@ func (s *Store) AppendPollIfDue(id string, now time.Time, poll Poll) (bool, bool
 		return nil
 	})
 	return appended, publication, err
+}
+
+// ExpireAndPurgeGuests stops expired active guest watches at their declared
+// expiry and removes guest watches after they have been stopped for 24 hours.
+func (s *Store) ExpireAndPurgeGuests(now time.Time) error {
+	return s.withLock(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		changed := false
+		kept := state.Watches[:0]
+		for i := range state.Watches {
+			current := state.Watches[i]
+			if current.Guest && current.Status == "active" {
+				if expires, ok := parseTime(current.ExpiresAt); ok && !expires.After(now) {
+					current.Status = "stopped"
+					current.StoppedAt = expires.UTC().Format(time.RFC3339)
+					changed = true
+				}
+			}
+			if current.Guest && current.Status == "stopped" {
+				if stopped, ok := parseTime(current.StoppedAt); ok && stopped.Add(24*time.Hour).Before(now) {
+					changed = true
+					continue
+				}
+			}
+			kept = append(kept, current)
+		}
+		if !changed {
+			return nil
+		}
+		state.Watches = kept
+		return s.saveUnlocked(state)
+	})
 }

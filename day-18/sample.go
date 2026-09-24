@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/cbr"
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/mcpclient"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/ratesmcp"
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/watch"
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/watchmcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func runSample(dir string, stderr io.Writer) int {
@@ -46,11 +49,14 @@ func writeSampleData(dir string, options cbr.Options) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	storePath, digestsPath := filepath.Join(dir, "store.json"), filepath.Join(dir, "digests.json")
-	_ = os.Remove(storePath)
-	_ = os.Remove(storePath + ".lock")
-	_ = os.Remove(digestsPath)
-	_ = os.Remove(digestsPath + ".lock")
+	storePath := filepath.Join(dir, "store.json")
+	digestsPath := filepath.Join(dir, "digests.json")
+	toolsPath := filepath.Join(dir, "tools.json")
+	questionsPath := filepath.Join(dir, "questions.json")
+	for _, path := range []string{storePath, digestsPath, toolsPath, questionsPath} {
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".lock")
+	}
 	store := watch.NewStore(storePath)
 	start := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 	codes := []string{"USD", "EUR", "CNY"}
@@ -58,7 +64,7 @@ func writeSampleData(dir string, options cbr.Options) error {
 	if err != nil {
 		return err
 	}
-	created, err := store.Create(codes, 60, start, poll)
+	created, _, err := store.CreateGuest(codes, 60, start, poll)
 	if err != nil {
 		return err
 	}
@@ -82,5 +88,38 @@ func writeSampleData(dir string, options cbr.Options) error {
 		}
 	}
 	digest := Digest{At: later.UTC().Format(time.RFC3339), SlotStart: watch.SlotStart(later, 3*time.Hour).Format(time.RFC3339), DigestEvery: "3h0m0s", WindowHours: 24, Text: text, Model: "sample-fixed", ModelCalls: 2, ToolCalls: []DigestToolCall{{Name: "get_watch_summary", Arguments: map[string]any{"hours": 24}, IsError: false}}, Summary: &summary, Tokens: DigestTokens{Prompt: 120, Cached: 40, Output: 30, PerCall: []TokenCall{{70, 20, 5}, {50, 20, 25}}}, Cost: 0.000123, CostKnown: true, Checks: DigestChecks{CalledSummary: true, QuotesLastRates: true}}
-	return writeDigests(digestsPath, []Digest{digest})
+	if err := writeDigests(digestsPath, []Digest{digest}); err != nil {
+		return err
+	}
+	if err := writeSampleTools(store, options, toolsPath, later); err != nil {
+		return err
+	}
+	questions := []QuestionRecord{
+		{
+			RequestID: "11111111111111111111111111111111", At: later.Add(time.Minute).Format(time.RFC3339),
+			Question: "Покажи все наблюдения", Answer: "Есть одно гостевое наблюдение w1.", Model: "sample-fixed", ModelCalls: 2,
+			ToolCalls: []QuestionToolCall{{Step: 1, Name: "list_watches", Arguments: map[string]any{}, Result: `{"watches":[{"id":"w1","guest":true}]}`, IsError: false, Rejected: ""}},
+			Tokens:    DigestTokens{Prompt: 90, Cached: 30, Output: 20, PerCall: []TokenCall{{50, 10, 5}, {40, 20, 15}}}, Cost: 0.000091, CostKnown: true,
+		},
+		{
+			RequestID: "22222222222222222222222222222222", At: later.Add(2 * time.Minute).Format(time.RFC3339),
+			Question: "Что с курсами?", Error: "пример ошибки агента", Model: "sample-fixed", ModelCalls: 1,
+			ToolCalls: []QuestionToolCall{}, Tokens: DigestTokens{Prompt: 40, Cached: 0, Output: 0, PerCall: []TokenCall{{40, 0, 0}}}, CostKnown: false,
+		},
+	}
+	return writeJSONAtomic(questionsPath, questions)
+}
+
+func writeSampleTools(store *watch.Store, options cbr.Options, path string, at time.Time) error {
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := watchmcp.NewServer(watchmcp.Options{Store: store, CBR: options})
+	go func() { _ = server.Run(ctx, serverTransport) }()
+	session, err := mcpclient.NewNamed("day-18-sample", "1").Open(ctx, mcpclient.Transport{MCP: clientTransport, Description: "in-memory"})
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	return writeTools(ctx, session, path, at)
 }

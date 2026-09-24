@@ -1,13 +1,17 @@
 package watch
 
 import (
+	"context"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/cbr"
 )
 
 func instant(value string) time.Time { parsed, _ := time.Parse(time.RFC3339, value); return parsed }
@@ -181,5 +185,79 @@ func TestAppendPollRechecksSlot(t *testing.T) {
 	appended, pub, err := store.AppendPollIfDue(created.ID, at.Add(time.Hour), Poll{At: at.Add(time.Hour).Format(time.RFC3339), OK: true, RatesDate: "2026-09-25", Rates: map[string]float64{"USD": 81}})
 	if err != nil || !appended || !pub {
 		t.Fatalf("next slot appended=%v pub=%v err=%v", appended, pub, err)
+	}
+}
+
+func TestGuestExpiryPurgeAndLegacyStore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "store.json")
+	store := NewStore(path)
+	createdAt := instant("2026-09-24T10:00:00Z")
+	poll := Poll{At: createdAt.Format(time.RFC3339), OK: true, RatesDate: "2026-09-24", Rates: map[string]float64{"USD": 80}}
+	guest, existing, err := store.CreateGuest([]string{"USD"}, 60, createdAt, poll)
+	if err != nil || existing || !guest.Guest || guest.ExpiresAt != createdAt.Add(24*time.Hour).Format(time.RFC3339) {
+		t.Fatalf("guest=%+v existing=%v err=%v", guest, existing, err)
+	}
+	repeated, existing, err := store.CreateGuest([]string{"USD"}, 60, createdAt.Add(time.Minute), poll)
+	if err != nil || !existing || repeated.ID != guest.ID {
+		t.Fatalf("repeated=%+v existing=%v err=%v", repeated, existing, err)
+	}
+	nonGuest, err := store.Create([]string{"EUR"}, 60, createdAt, poll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Stop(nonGuest.ID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	var fetches atomic.Int32
+	afterExpiry := createdAt.Add(24*time.Hour + time.Second)
+	scheduler := &Scheduler{
+		Store: store,
+		Now:   func() time.Time { return afterExpiry },
+		CBR: cbr.Options{Fetcher: cbr.FetchFunc(func(context.Context, string) ([]byte, error) {
+			fetches.Add(1)
+			return nil, nil
+		})},
+	}
+	if count, err := scheduler.RunOnce(context.Background()); err != nil || count != 0 || fetches.Load() != 0 {
+		t.Fatalf("count=%d fetches=%d err=%v", count, fetches.Load(), err)
+	}
+	state, err := store.Read()
+	if err != nil || len(state.Watches) != 2 || state.Watches[0].Status != "stopped" || state.Watches[0].StoppedAt != guest.ExpiresAt || len(state.Watches[0].Polls) != 1 {
+		t.Fatalf("expired state=%+v err=%v", state, err)
+	}
+	if err := store.ExpireAndPurgeGuests(afterExpiry.Add(24*time.Hour + time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.Read()
+	if err != nil || len(state.Watches) != 1 || state.Watches[0].ID != nonGuest.ID {
+		t.Fatalf("purged state=%+v err=%v", state, err)
+	}
+	lateStore := NewStore(filepath.Join(dir, "late.json"))
+	if _, _, err := lateStore.CreateGuest([]string{"USD"}, 60, createdAt, poll); err != nil {
+		t.Fatal(err)
+	}
+	lateNow := createdAt.Add(49 * time.Hour)
+	lateScheduler := &Scheduler{Store: lateStore, Now: func() time.Time { return lateNow }}
+	if count, err := lateScheduler.RunOnce(context.Background()); err != nil || count != 0 {
+		t.Fatalf("late scheduler count=%d err=%v", count, err)
+	}
+	lateState, err := lateStore.Read()
+	if err != nil || len(lateState.Watches) != 0 {
+		t.Fatalf("long-expired guest survived one pass: %+v err=%v", lateState, err)
+	}
+
+	legacyPath := filepath.Join(dir, "legacy.json")
+	legacy := []byte(`{"version":1,"next_id":2,"watches":[{"id":"w1","codes":["USD"],"every_minutes":60,"status":"active","created_at":"2026-09-24T10:00:00Z","stopped_at":"","polls":[]}]}`)
+	if err := os.WriteFile(legacyPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyStore := NewStore(legacyPath)
+	legacyState, err := legacyStore.Read()
+	if err != nil || len(legacyState.Watches) != 1 || legacyState.Watches[0].Guest || legacyState.Watches[0].ExpiresAt != "" {
+		t.Fatalf("legacy=%+v err=%v", legacyState, err)
+	}
+	if _, err := legacyStore.Stop("w1", createdAt); err != nil {
+		t.Fatalf("legacy store no longer works: %v", err)
 	}
 }

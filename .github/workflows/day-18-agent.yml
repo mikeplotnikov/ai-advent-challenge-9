@@ -16,6 +16,11 @@ on:
         required: false
         default: ''
         type: string
+      request_id:
+        description: 'Метка вопроса с витрины (32 hex). С ней сервер работает в гостевом режиме'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -35,6 +40,9 @@ jobs:
       STOP_AFTER: '2026-10-20T00:00:00Z'
       STORE: state/day-18/store.json
       DIGESTS: state/day-18/digests.json
+      QUESTIONS: state/day-18/questions.json
+      TOOLS: state/day-18/tools.json
+      QUESTIONS_PER_HOUR: '12'
     steps:
       - name: Stop date
         id: gate
@@ -63,42 +71,90 @@ jobs:
           fi
           mkdir -p state/day-18
 
-      - name: Set up Go
+      # The strict limit on showcase questions. Runs of this workflow never overlap (the
+      # concurrency group), so counting answered questions here is atomic — unlike the
+      # showcase function's pre-check, which a parallel burst can slip past. An over-limit run
+      # records a refusal and skips everything else: seconds, and no model call.
+      - name: Strict limit on showcase questions
+        id: limit
         if: steps.gate.outputs.run == 'true'
+        env:
+          QUESTION: ${{ inputs.question }}
+          REQUEST_ID: ${{ inputs.request_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, json, os, re, sys
+          out = open(os.environ['GITHUB_OUTPUT'], 'a')
+          rid = os.environ.get('REQUEST_ID', '')
+          if not rid:
+              out.write('ask=true\n'); sys.exit(0)
+          if not re.fullmatch(r'[0-9a-f]{32}', rid):
+              print('request_id не 32 hex — вопрос не задаётся'); out.write('ask=false\n'); out.write('full=true\n'); sys.exit(1)
+          path = os.environ['QUESTIONS']
+          records = json.load(open(path)) if os.path.exists(path) else []
+          now = datetime.datetime.now(datetime.timezone.utc)
+          hour_ago = now - datetime.timedelta(hours=1)
+          recent = [r for r in records if r.get('request_id') and datetime.datetime.fromisoformat(r['at'].replace('Z', '+00:00')) >= hour_ago]
+          limit = int(os.environ['QUESTIONS_PER_HOUR'])
+          if len(recent) < limit:
+              out.write('ask=true\n'); sys.exit(0)
+          print(f'вопросов с витрины за час: {len(recent)} из {limit} — лимит исчерпан, агент не запускается')
+          records.append({
+              'request_id': rid, 'at': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'question': os.environ.get('QUESTION', ''),
+              'answer': '', 'error': 'лимит вопросов на час исчерпан', 'model': '', 'model_calls': 0, 'tool_calls': [],
+              'tokens': {'prompt': 0, 'cached': 0, 'output': 0, 'per_call': []}, 'cost': 0, 'cost_known': True,
+          })
+          json.dump(records[-100:], open(path, 'w'), ensure_ascii=False, indent=2)
+          open(path, 'a').write('\n')
+          out.write('ask=false\n'); out.write('full=true\n')
+          PY
+
+      - name: Set up Go
+        if: steps.gate.outputs.run == 'true' && steps.limit.outputs.full != 'true'
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
       - name: Build the agent and the MCP server
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.limit.outputs.full != 'true'
         run: |
           go build -o bin/day18 ./day-18
           go build -o bin/day18-mcp ./day-18/mcp-server
 
       - name: Poll due watches (server -once)
         id: poll
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.limit.outputs.full != 'true'
         continue-on-error: true
         run: bin/day18-mcp -store "$STORE" -once
 
       - name: Ask the agent (dispatch with a question)
         id: question
-        if: steps.gate.outputs.run == 'true' && inputs.question != ''
+        if: steps.gate.outputs.run == 'true' && inputs.question != '' && steps.limit.outputs.ask == 'true'
         continue-on-error: true
         env:
-          # The question reaches the shell only as an environment variable, never pasted into
-          # the script text, so it cannot become shell syntax.
+          # Inputs reach the shell only as environment variables, never pasted into the script
+          # text, so they cannot become shell syntax.
           QUESTION: ${{ inputs.question }}
+          REQUEST_ID: ${{ inputs.request_id }}
           DEEPSEEK_API_KEY_DAY18: ${{ secrets.DEEPSEEK_API_KEY_DAY18 }}
-        run: bin/day18 -command "bin/day18-mcp -store $STORE" "$QUESTION"
+        run: |
+          set -euo pipefail
+          # A showcase question (it carries a request_id) runs the server in guest mode: guests
+          # may create up to three day-long watches and stop nothing.
+          if [ -n "$REQUEST_ID" ]; then
+            bin/day18 -questions "$QUESTIONS" -request-id "$REQUEST_ID" -command "bin/day18-mcp -store $STORE -guest" "$QUESTION"
+          else
+            bin/day18 -questions "$QUESTIONS" -command "bin/day18-mcp -store $STORE" "$QUESTION"
+          fi
 
       - name: Digest if its slot is due (agent -tick)
         id: digest
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.limit.outputs.full != 'true'
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY_DAY18: ${{ secrets.DEEPSEEK_API_KEY_DAY18 }}
-        run: bin/day18 -tick -digest-every 3h -window 24h -digests "$DIGESTS" -command "bin/day18-mcp -store $STORE"
+        run: bin/day18 -tick -digest-every 3h -window 24h -digests "$DIGESTS" -tools "$TOOLS" -command "bin/day18-mcp -store $STORE"
 
       # Always commit what was collected, even when a step above failed: polls are data.
       - name: Commit the state

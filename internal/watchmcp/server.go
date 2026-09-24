@@ -17,6 +17,7 @@ type Options struct {
 	Store *watch.Store
 	CBR   cbr.Options
 	Now   func() time.Time
+	Guest bool
 }
 
 type CreateWatchInput struct {
@@ -57,6 +58,15 @@ func NewServer(options Options) *mcp.Server {
 			return nil, watch.WatchView{}, fmt.Errorf("every_minutes должен быть целым числом от 1 до 1440")
 		}
 		at := now()
+		if options.Guest {
+			existing, ok, err := options.Store.ActiveGuest(codes, in.EveryMinutes)
+			if err != nil {
+				return nil, watch.WatchView{}, err
+			}
+			if ok {
+				return nil, watch.View(existing), nil
+			}
+		}
 		poll, rates, err := watch.FetchPoll(ctx, options.CBR, codes, at)
 		if err != nil {
 			return nil, watch.WatchView{}, fmt.Errorf("ЦБ недоступен, наблюдение не создано: %v", err)
@@ -64,7 +74,12 @@ func NewServer(options Options) *mcp.Server {
 		if len(poll.Missing) > 0 {
 			return nil, watch.WatchView{}, fmt.Errorf("коды не найдены в ответе ЦБ: %s; доступны: %s", strings.Join(poll.Missing, ", "), strings.Join(watch.AvailableCodes(rates), ", "))
 		}
-		created, err := options.Store.Create(codes, in.EveryMinutes, at, poll)
+		var created watch.Watch
+		if options.Guest {
+			created, _, err = options.Store.CreateGuest(codes, in.EveryMinutes, at, poll)
+		} else {
+			created, err = options.Store.Create(codes, in.EveryMinutes, at, poll)
+		}
 		if err != nil {
 			return nil, watch.WatchView{}, err
 		}
@@ -82,6 +97,9 @@ func NewServer(options Options) *mcp.Server {
 		return nil, result, nil
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "stop_watch", Description: "Остановить наблюдение; собранные данные сохраняются"}, func(_ context.Context, _ *mcp.CallToolRequest, in StopWatchInput) (*mcp.CallToolResult, watch.WatchView, error) {
+		if options.Guest {
+			return nil, watch.WatchView{}, fmt.Errorf("гость не останавливает наблюдения: гостевые живут сутки и останавливаются сами")
+		}
 		id := strings.TrimSpace(in.WatchID)
 		if id == "" {
 			return nil, watch.WatchView{}, fmt.Errorf("watch_id обязателен")

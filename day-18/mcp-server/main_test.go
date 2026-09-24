@@ -244,6 +244,37 @@ func TestThreeProcessesPreserveAllWatchesAndOnePollPerSlot(t *testing.T) {
 	}
 }
 
+func TestGuestCLIFlagEnforcesStopBoundary(t *testing.T) {
+	binary := buildServer(t)
+	path := filepath.Join(t.TempDir(), "store.json")
+	store := watch.NewStore(path)
+	at := time.Now().UTC().Add(time.Hour)
+	poll := watch.Poll{At: at.Format(time.RFC3339), OK: true, RatesDate: "2026-09-24", Rates: map[string]float64{"USD": 80}}
+	created, err := store.Create([]string{"USD"}, 1440, at, poll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "-store", path, "-guest")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v stderr=%s", err, stderr.String())
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "stop_watch", Arguments: map[string]any{"watch_id": created.ID}})
+	if err != nil || !result.IsError || !strings.Contains(mcpclient.ToolText(result), "гость не останавливает наблюдения") {
+		t.Fatalf("result=%+v err=%v stderr=%s", result, err, stderr.String())
+	}
+	state, err := store.Read()
+	if err != nil || len(state.Watches) != 1 || state.Watches[0].Status != "active" {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}
+
 type toolCallError struct{ text string }
 
 func (e *toolCallError) Error() string { return e.text }

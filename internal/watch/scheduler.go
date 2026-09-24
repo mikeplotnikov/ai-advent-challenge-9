@@ -58,6 +58,9 @@ func AvailableCodes(rates cbr.Rates) []string {
 
 func (s *Scheduler) RunOnce(ctx context.Context) (int, error) {
 	now := s.now()
+	if err := s.Store.ExpireAndPurgeGuests(now); err != nil {
+		return 0, err
+	}
 	due, err := s.Store.DueWatches(now)
 	if err != nil {
 		return 0, err

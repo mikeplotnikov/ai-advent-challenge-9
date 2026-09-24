@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +46,7 @@ func synchronizeWriter(w io.Writer) io.Writer {
 type cliOptions struct {
 	tick, daemon, report, schemaCost bool
 	sample, store, command, digests  string
+	questions, requestID, tools      string
 	digestEvery, window, timeout     time.Duration
 	until                            string
 	question                         string
@@ -100,18 +102,40 @@ func run(args []string, stdout, stderr io.Writer) int {
 	session, err := mcpclient.NewNamed("ai-advent-day-18-agent", "1").Open(ctx, transport)
 	if err != nil {
 		fmt.Fprintln(stderr, "MCP:", err)
+		if opts.question != "" {
+			recordQuestionFailure(opts, fmt.Errorf("MCP: %w", err), stderr)
+		}
 		return 1
 	}
 	defer session.Close()
 	if opts.tick {
+		if opts.tools != "" {
+			if err := writeTools(ctx, session, opts.tools, time.Now()); err != nil {
+				fmt.Fprintln(stderr, safeMultiline(err.Error()))
+				return 1
+			}
+		}
 		return runTick(ctx, session, &lazyModel{stderr: stderr}, opts.digests, opts.digestEvery, int(opts.window/time.Hour), stdout, stderr)
 	}
 	client, err := newModel(stderr)
 	if err != nil {
+		recordQuestionFailure(opts, err, stderr)
 		return 1
 	}
-	return runQuestion(ctx, session, client, opts.question, stdout, stderr)
+	return runQuestion(ctx, session, client, opts.question, opts.questions, opts.requestID, stdout, stderr)
 }
+
+func recordQuestionFailure(opts cliOptions, cause error, stderr io.Writer) {
+	if opts.questions == "" {
+		return
+	}
+	record := questionFromTrace(opts.requestID, time.Now(), opts.question, toolagent.Trace{}, cause)
+	if err := appendQuestion(opts.questions, record); err != nil {
+		fmt.Fprintln(stderr, safeMultiline(err.Error()))
+	}
+}
+
+var requestIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func parseFlags(args []string, stderr io.Writer) (cliOptions, int) {
 	var opts cliOptions
@@ -125,6 +149,9 @@ func parseFlags(args []string, stderr io.Writer) (cliOptions, int) {
 	fs.StringVar(&opts.store, "store", "day-18/state/store.json", "хранилище наблюдений")
 	fs.StringVar(&opts.command, "command", "", "команда MCP-сервера")
 	fs.StringVar(&opts.digests, "digests", "day-18/state/digests.json", "файл сводок")
+	fs.StringVar(&opts.questions, "questions", "", "файл записей вопросов")
+	fs.StringVar(&opts.requestID, "request-id", "", "идентификатор записи вопроса")
+	fs.StringVar(&opts.tools, "tools", "", "файл списка инструментов для -tick")
 	fs.DurationVar(&opts.digestEvery, "digest-every", 3*time.Hour, "период сводок")
 	fs.DurationVar(&opts.window, "window", 24*time.Hour, "окно сводки")
 	fs.StringVar(&opts.until, "until", "", "правая граница отчёта RFC3339")
@@ -148,7 +175,11 @@ func parseFlags(args []string, stderr io.Writer) (cliOptions, int) {
 		}
 	}
 	validWindow := opts.window >= time.Hour && opts.window <= 720*time.Hour && opts.window%time.Hour == 0
-	if modes != 1 || opts.digestEvery < time.Minute || opts.digestEvery > 24*time.Hour || !validWindow || opts.timeout <= 0 || (!opts.report && opts.until != "") || (opts.report && opts.until == "") {
+	questionMode := opts.question != ""
+	questionFlagsValid := (opts.questions == "" && opts.requestID == "") || questionMode
+	toolsValid := opts.tools == "" || opts.tick
+	requestIDValid := opts.requestID == "" || requestIDPattern.MatchString(opts.requestID)
+	if modes != 1 || opts.digestEvery < time.Minute || opts.digestEvery > 24*time.Hour || !validWindow || opts.timeout <= 0 || (!opts.report && opts.until != "") || (opts.report && opts.until == "") || !questionFlagsValid || !toolsValid || !requestIDValid {
 		usage(stderr)
 		return opts, 2
 	}
@@ -206,15 +237,23 @@ func promptNow(now time.Time) string {
 	return strings.Replace(systemPrompt, "{now}", now.In(cbr.Moscow).Format("02.01.2006 15:04 МСК"), 1)
 }
 
-func runQuestion(ctx context.Context, session *mcpclient.Session, model toolagent.LLM, question string, stdout, stderr io.Writer) int {
+func runQuestion(ctx context.Context, session *mcpclient.Session, model toolagent.LLM, question, questionsPath, requestID string, stdout, stderr io.Writer) int {
+	at := time.Now()
 	fmt.Fprintf(stdout, "[MCP] сервер %s %s · протокол %s · транспорт %s\n", mcpclient.SafeForTerminal(session.ServerName), mcpclient.SafeForTerminal(session.ServerVersion), mcpclient.SafeForTerminal(session.ProtocolVersion), session.Transport.Description)
-	trace, err := toolagent.Run(ctx, model, session, toolagent.Input{SystemPrompt: promptNow(time.Now()), Question: question})
+	trace, err := toolagent.Run(ctx, model, session, toolagent.Input{SystemPrompt: promptNow(at), Question: question})
 	trace.Server = toolagent.Server{Name: session.ServerName, Version: session.ServerVersion, Protocol: session.ProtocolVersion, Transport: session.Transport.Description}
 	printTrace(stdout, trace)
 	if trace.FinalAnswer != "" {
 		fmt.Fprintf(stdout, "[ответ]\n%s\n", safeMultiline(trace.FinalAnswer))
 	}
 	printSummary(stderr, trace)
+	if questionsPath != "" {
+		record := questionFromTrace(requestID, at, question, trace, err)
+		if writeErr := appendQuestion(questionsPath, record); writeErr != nil {
+			fmt.Fprintln(stderr, safeMultiline(writeErr.Error()))
+			return 1
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, safeMultiline(err.Error()))
 		return 1

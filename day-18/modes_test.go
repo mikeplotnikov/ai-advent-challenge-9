@@ -228,12 +228,56 @@ func TestSampleIsDeterministic(t *testing.T) {
 	if err := writeSampleData(second, sampleOptions(t)); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"store.json", "digests.json"} {
-		one, _ := os.ReadFile(filepath.Join(first, name))
-		two, _ := os.ReadFile(filepath.Join(second, name))
+	for _, name := range []string{"store.json", "digests.json", "tools.json", "questions.json"} {
+		one, err := os.ReadFile(filepath.Join(first, name))
+		if err != nil {
+			t.Fatalf("first %s: %v", name, err)
+		}
+		two, err := os.ReadFile(filepath.Join(second, name))
+		if err != nil {
+			t.Fatalf("second %s: %v", name, err)
+		}
 		if !bytes.Equal(one, two) {
 			t.Errorf("%s differs", name)
 		}
+	}
+}
+
+func TestSampleContainsGuestToolsAndQuestionOutcomes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sample")
+	if err := writeSampleData(dir, sampleOptions(t)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := watch.NewStore(filepath.Join(dir, "store.json")).Read()
+	if err != nil || len(state.Watches) != 1 || !state.Watches[0].Guest || state.Watches[0].ExpiresAt == "" {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	created, _ := time.Parse(time.RFC3339, state.Watches[0].CreatedAt)
+	expires, _ := time.Parse(time.RFC3339, state.Watches[0].ExpiresAt)
+	if expires.Sub(created) != 24*time.Hour {
+		t.Fatalf("created=%s expires=%s", created, expires)
+	}
+	digests, err := readDigests(filepath.Join(dir, "digests.json"))
+	if err != nil || len(digests) != 1 {
+		t.Fatalf("digests=%+v err=%v", digests, err)
+	}
+	toolsRaw, err := os.ReadFile(filepath.Join(dir, "tools.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools ToolsSnapshot
+	if err := json.Unmarshal(toolsRaw, &tools); err != nil || tools.Server.Name != "cbr-watch" || len(tools.Tools) != 4 {
+		t.Fatalf("tools=%+v err=%v", tools, err)
+	}
+	records, err := readQuestions(filepath.Join(dir, "questions.json"))
+	if err != nil || len(records) != 2 {
+		t.Fatalf("records=%+v err=%v", records, err)
+	}
+	if records[0].Answer == "" || records[0].Error != "" || len(records[0].ToolCalls) == 0 || len(records[0].Tokens.PerCall) == 0 {
+		t.Fatalf("successful record=%+v", records[0])
+	}
+	if records[1].Error == "" || records[1].Answer != "" {
+		t.Fatalf("error record=%+v", records[1])
 	}
 }
 
@@ -247,7 +291,7 @@ func TestSampleMatchesTheShowcaseCopy(t *testing.T) {
 	if _, err := os.Stat(copyDir); err != nil {
 		t.Skipf("копии витрины нет рядом (%v)", err)
 	}
-	for _, name := range []string{"store.json", "digests.json"} {
+	for _, name := range []string{"store.json", "digests.json", "tools.json", "questions.json"} {
 		got, _ := os.ReadFile(filepath.Join(generated, name))
 		want, err := os.ReadFile(filepath.Join(copyDir, name))
 		if err != nil {

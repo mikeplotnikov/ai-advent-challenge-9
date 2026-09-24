@@ -9,7 +9,7 @@ import (
 )
 
 func View(current Watch) WatchView {
-	view := WatchView{ID: current.ID, Codes: append([]string(nil), current.Codes...), EveryMinutes: current.EveryMinutes, Status: current.Status, CreatedAt: current.CreatedAt, StoppedAt: current.StoppedAt, PollsTotal: len(current.Polls)}
+	view := WatchView{ID: current.ID, Codes: append([]string(nil), current.Codes...), EveryMinutes: current.EveryMinutes, Status: current.Status, CreatedAt: current.CreatedAt, StoppedAt: current.StoppedAt, Guest: current.Guest, ExpiresAt: current.ExpiresAt, PollsTotal: len(current.Polls)}
 	for _, poll := range current.Polls {
 		if !poll.OK {
 			view.PollsFailed++
@@ -54,7 +54,7 @@ func Summaries(state File, watchID string, hours int, now time.Time) (SummaryRes
 
 func Aggregate(current Watch, hours int, now time.Time) Summary {
 	from := now.Add(-time.Duration(hours) * time.Hour)
-	result := Summary{WatchID: current.ID, Codes: append([]string(nil), current.Codes...), EveryMinutes: current.EveryMinutes, Status: current.Status, Hours: hours, From: from.UTC().Format(time.RFC3339), To: now.UTC().Format(time.RFC3339), Publications: []Publication{}, Currencies: []CurrencySummary{}, MissingCodes: []string{}}
+	result := Summary{WatchID: current.ID, Codes: append([]string(nil), current.Codes...), EveryMinutes: current.EveryMinutes, Status: current.Status, Guest: current.Guest, ExpiresAt: current.ExpiresAt, Hours: hours, From: from.UTC().Format(time.RFC3339), To: now.UTC().Format(time.RFC3339), Publications: []Publication{}, Currencies: []CurrencySummary{}, MissingCodes: []string{}}
 	type publicationData struct {
 		first time.Time
 		last  time.Time
