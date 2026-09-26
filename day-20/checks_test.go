@@ -109,6 +109,46 @@ func TestOrderAndProvenanceGoldenTraces(t *testing.T) {
 	}
 }
 
+func TestOrderRuleBRejectsUnprovidedDateWithoutCurrentDate(t *testing.T) {
+	trace := toolagent.Trace{ToolCalls: []toolagent.ToolCall{{
+		Step: 1, Name: "rates__convert_currency", Arguments: map[string]any{"date": "2026-09-25"},
+	}}}
+	checks := evaluateChecks("курс на сегодня", trace, nil, nil)
+	if checks.OrderOK || len(checks.OrderViolations) != 1 ||
+		!strings.Contains(checks.OrderViolations[0], "rates__convert_currency") {
+		t.Fatalf("checks=%+v", checks)
+	}
+}
+
+func TestOrderRulesAnchorOnFirstSuccessfulCurrentDate(t *testing.T) {
+	clocks := []toolagent.ToolCall{
+		{Step: 1, Name: "clock__current_date", ResultText: `{"date":"2026-09-25"}`},
+		{Step: 3, Name: "clock__current_date", ResultText: `{"date":"2026-09-25"}`},
+	}
+	t.Run("rule_b", func(t *testing.T) {
+		trace := toolagent.Trace{ToolCalls: []toolagent.ToolCall{clocks[0], {
+			Step: 2, Name: "rates__convert_currency", Arguments: map[string]any{"date": "2026-09-25"},
+		}, clocks[1]}}
+		checks := evaluateChecks("курс на сегодня", trace, nil, nil)
+		if !checks.OrderOK || !checks.ProvenanceStrict || len(checks.OrderViolations) != 0 {
+			t.Fatalf("checks=%+v", checks)
+		}
+	})
+	t.Run("rule_c", func(t *testing.T) {
+		trace := toolagent.Trace{
+			Tools: []toolagent.Tool{{Name: "rates__convert_currency",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"date":{"type":"string"}}}`)}},
+			ToolCalls: []toolagent.ToolCall{clocks[0], {
+				Step: 2, Name: "rates__convert_currency", Arguments: map[string]any{"amount": 1},
+			}, clocks[1]},
+		}
+		checks := evaluateChecks("курс на сегодня", trace, nil, nil)
+		if !checks.OrderOK || len(checks.OrderViolations) != 0 {
+			t.Fatalf("checks=%+v", checks)
+		}
+	})
+}
+
 func TestRoutedOKRejectsForeignServer(t *testing.T) {
 	servers := []mcprouter.Server{{Alias: "rates", ToolNames: []string{"rates__convert_currency"}}}
 	checks := evaluateChecks("", toolagent.Trace{}, servers, []mcprouter.JournalEntry{{

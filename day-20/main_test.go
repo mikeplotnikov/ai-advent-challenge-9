@@ -117,6 +117,42 @@ func TestCLIIntegrationL1AndSave_AC11_AC13(t *testing.T) {
 	provider.AssertContract(t)
 }
 
+func TestCLIListPreservesRegistryAndToolOrderWithoutModel_AC1(t *testing.T) {
+	provider := newScriptedProvider(t, "unused")
+	defer provider.Close()
+	t.Setenv("DEEPSEEK_API_URL", provider.URL())
+	t.Setenv("DEEPSEEK_API_KEY_DAY20", "must-not-be-used")
+	registry := writeTestRegistry(t, t.TempDir(), testBins["rates"])
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-servers", registry, "-list"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
+	}
+	if provider.Calls() != 0 {
+		t.Fatalf("model requests=%d", provider.Calls())
+	}
+	if count := strings.Count(stdout.String(), "\n  "); count != 7 {
+		t.Fatalf("listed tool lines=%d, want 7:\n%s", count, stdout.String())
+	}
+	assertTextOrder(t, stdout.String(), []string{"[MCP] clock ", "[MCP] rates ", "[MCP] pipeline "})
+	assertTextOrder(t, stdout.String(), []string{
+		"  clock__current_date ", "  clock__shift_date ",
+		"  rates__convert_currency ", "  rates__get_currency_rates ",
+		"  pipeline__fetch_rates ", "  pipeline__save_report ", "  pipeline__summarize_rates ",
+	})
+}
+
+func assertTextOrder(t *testing.T, text string, values []string) {
+	t.Helper()
+	position := -1
+	for _, value := range values {
+		next := strings.Index(text[position+1:], value)
+		if next < 0 {
+			t.Fatalf("missing %q after byte %d:\n%s", value, position, text)
+		}
+		position += next + 1
+	}
+}
+
 func TestCLIDirectUsesThreeServersAndSavesReport_AC10(t *testing.T) {
 	cbrServer := fakeDay20CBR(t)
 	defer cbrServer.Close()

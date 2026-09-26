@@ -44,6 +44,67 @@ func TestDumpIsDeterministicAndComplete(t *testing.T) {
 	}
 }
 
+func TestDumpRefusalsAndSequencesComeFromExecution(t *testing.T) {
+	var raw bytes.Buffer
+	if err := writeDump(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var dump dumpDefinitions
+	if err := json.Unmarshal(raw.Bytes(), &dump); err != nil {
+		t.Fatal(err)
+	}
+	router, closes, err := openDumpRouter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = router.Close()
+		for _, closeFn := range closes {
+			closeFn()
+		}
+	}()
+	wantRefusals, wantSequences, err := deriveDumpRefusals(router)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameJSON(t, "refusalTexts", dump.RefusalTexts, wantRefusals)
+	assertSameJSON(t, "sequences", dump.Sequences, wantSequences)
+	const wantNote = "Текст после «недоступен: » приходит от транспорта и отличается между средами выполнения."
+	if dump.RefusalNote != wantNote {
+		t.Fatalf("refusalNote=%q", dump.RefusalNote)
+	}
+}
+
+func TestDumpRefusalsAreNotHandTyped(t *testing.T) {
+	source, err := os.ReadFile("dump.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("deadText :="),
+		[]byte(`"ОШИБКА ИНСТРУМЕНТА: сервер rates`),
+	} {
+		if bytes.Contains(source, forbidden) {
+			t.Fatalf("dump.go hand-types a model-visible refusal: %s", forbidden)
+		}
+	}
+}
+
+func assertSameJSON(t *testing.T, name string, got, want any) {
+	t.Helper()
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotJSON, wantJSON) {
+		t.Fatalf("%s mismatch\n got: %s\nwant: %s", name, gotJSON, wantJSON)
+	}
+}
+
 func TestDumpMatchesTheCopyTheShowcaseChecksAgainst(t *testing.T) {
 	const copyPath = "../../uchebnik-ai-advent/challeng/test/day20-definitions.json"
 	committed, err := os.ReadFile(copyPath)

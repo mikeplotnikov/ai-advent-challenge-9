@@ -138,6 +138,24 @@ func TestClassifierUsesJournalForFailuresAndExclusions(t *testing.T) {
 	}
 }
 
+func TestBenchCountersAreExact_AC14(t *testing.T) {
+	wrapped := Day20Trace{
+		Trace: toolagent.Trace{ToolCalls: []toolagent.ToolCall{
+			{Name: "extra__one"}, {Name: "extra__two"}, {Name: "extra__three"},
+			{Name: "missing__tool", Rejected: "инструмент не существует"},
+		}},
+		Journal: []mcprouter.JournalEntry{
+			{Outcome: "timeout"}, {Outcome: "unavailable"}, {Outcome: "limit"}, {Outcome: "dead"},
+		},
+		Checks: Checks{OrderOK: true, RoutedOK: true, ProvenanceStrict: true},
+	}
+	verdict := evaluateBench(BenchScenario{}, wrapped)
+	if verdict.ServerFailures != 2 || verdict.RejectedCalls != 3 || verdict.ExtraCalls != 4 {
+		t.Fatalf("serverFailures=%d rejectedCalls=%d extraCalls=%d verdict=%+v",
+			verdict.ServerFailures, verdict.RejectedCalls, verdict.ExtraCalls, verdict)
+	}
+}
+
 func TestBenchClassifierMutationMatrix_AC14(t *testing.T) {
 	scenario, wrapped := validL1ClassifierFixture()
 	valid := evaluateBench(scenario, wrapped)

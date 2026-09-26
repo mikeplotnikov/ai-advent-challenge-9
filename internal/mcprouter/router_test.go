@@ -105,6 +105,27 @@ func TestLimitRejectsSeventeenthWithoutServerContact(t *testing.T) {
 	}
 }
 
+func TestUnknownMergedToolIsRPCErrorWithoutServerContact(t *testing.T) {
+	session := fakeToolSession("ok")
+	router, err := NewForSessions([]SessionDescriptor{{
+		Alias: "a", ServerInfo: ServerInfo{Name: "a", Version: "1"}, Transport: "stdio", Session: session,
+	}}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer router.Close()
+	result, err := router.CallTool(context.Background(), "a__missing", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `инструмент "a__missing" не зарегистрирован в маршрутизаторе`
+	journal := router.Journal()
+	if !result.IsError || mcpclient.ToolText(result) != want || len(journal) != 1 ||
+		journal[0].Outcome != "rpc_error" || journal[0].Text != want || session.calls != 0 {
+		t.Fatalf("result=%#v calls=%d journal=%#v", result, session.calls, journal)
+	}
+}
+
 func TestOutcomeClassesAndDeadServer(t *testing.T) {
 	t.Run("tool_error", func(t *testing.T) {
 		s := fakeToolSession("x")

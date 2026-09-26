@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -366,13 +365,4 @@ func redactJSONValue(value any, secrets []string) any {
 	default:
 		return value
 	}
-}
-
-func sortedKeys(values map[string]bool) []string {
-	result := make([]string, 0, len(values))
-	for key := range values {
-		result = append(result, key)
-	}
-	sort.Strings(result)
-	return result
 }

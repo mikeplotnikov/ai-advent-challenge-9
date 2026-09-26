@@ -62,6 +62,19 @@ func TestClockGoldensAndErrors(t *testing.T) {
 	}
 }
 
+func TestShiftDateLowerBoundary(t *testing.T) {
+	session, closeFn := openClock(t, Options{})
+	defer closeFn()
+	accepted := callClock(t, session, "shift_date", map[string]any{"date": "2026-09-25", "days": -3660})
+	if accepted.IsError {
+		t.Fatalf("-3660 rejected: %s", mcpclient.ToolText(accepted))
+	}
+	rejected := callClock(t, session, "shift_date", map[string]any{"date": "2026-09-25", "days": -3661})
+	if !rejected.IsError || !strings.Contains(mcpclient.ToolText(rejected), "диапазоне от -3660 до 3660") {
+		t.Fatalf("-3661 result: isError=%v text=%s", rejected.IsError, mcpclient.ToolText(rejected))
+	}
+}
+
 func openClock(t *testing.T, options Options) (*mcpclient.Session, func()) {
 	t.Helper()
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
