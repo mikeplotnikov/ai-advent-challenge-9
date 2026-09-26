@@ -53,8 +53,38 @@ go run ./day-20 -dump
 
 ## Трасса живого прогона
 
-Живой засчитанный прогон L1 и его дословная трасса добавляются сюда оркестратором после отдельного
-платного запуска. Реализация не подставляет демонстрационные числа вместо результата DeepSeek/ЦБ.
+26.09.2026, 18:02 МСК (время из `clock`), коммит `dd2223d`, вопрос L1, `deepseek-v4-flash`, temperature 0. Строки со схемами
+семи инструментов (`-list`) опущены, остальное — дословно.
+
+```text
+$ go run ./day-20 "Сколько сегодня стоят 1000 долларов в евро по курсу ЦБ и как менялся евро за последние 14 дней? Сохрани отчёт."
+[MCP] clock → day20-clock 1.0.0 · stdio · 2 инструмента
+[MCP] rates → cbr-rates 1.0.0 · stdio · 2 инструмента
+[MCP] pipeline → cbr-pipeline 1.0.0 · stdio · 3 инструмента
+[модель · шаг 1 → clock] clock__current_date {}
+[результат] {"date":"2026-09-26","time":"18:02","timezone":"Europe/Moscow (UTC+3)","weekday":"суббота"}
+[модель · шаг 2 → clock] clock__shift_date {"date": "2026-09-26", "days": -13}
+[результат] {"date":"2026-09-13","weekday":"воскресенье"}
+[модель · шаг 2 → rates] rates__convert_currency {"amount": 1000, "from": "USD", "to": "EUR", "date": "2026-09-26"}
+[результат] {"amount":1000,"from":"USD","note":"","rate":0.879739,"rates_date":"2026-09-26","requested_date":"2026-09-26","result":879.7393,"source":"cbr.ru XML_daily","to":"EUR"}
+[модель · шаг 3 → pipeline] pipeline__fetch_rates {"currency": "EUR", "date_from": "2026-09-13", "date_to": "2026-09-26"}
+[результат] dataset_id: ds_a5ee16e73a36 dataset_sha256: a5ee16e73a3616d3b43a4518addc684eb775c188482ccd4309d534f8710022c4 currency: EUR name: Евро period: 2026-09-13—2026-09-26 count: 10 first: 2026-09-15 97.762600 last: 2026-09-26 95.870900
+[модель · шаг 4 → pipeline] pipeline__summarize_rates {"dataset_id": "ds_a5ee16e73a36"}
+[результат] summary_id: sm_94d7836c4feb summary_sha256: 94d7836c4feba8a09e5797e26487027893ed1c9b0020d5a383671266e29a6f02 dataset_sha256: a5ee16e73a3616d3b43a4518addc684eb775c188482ccd4309d534f8710022c4 count: 10 first: 2026-09-15 97.762600 last: 2026-09-26 95.870900 min: 2026-09-26 95.870900 max: 2026-09-15 97.762600 mean: 96.882260 change_abs: -1.891700 change_pct: -1.934994
+[модель · шаг 5 → pipeline] pipeline__save_report {"summary_id": "sm_94d7836c4feb"}
+[результат] name: EUR_2026-09-13_2026-09-26_94d7836c4feb.md path: day-20/reports/EUR_2026-09-13_2026-09-26_94d7836c4feb.md bytes: 2705 report_sha256: 44a00eb92e633d15669f5ba6c57764057274b20ee36367a47ba9e1b5a7ed26f7 dataset_sha256: a5ee16e73a3616d3b43a4518addc684eb775c188482ccd4309d534f8710022c4 summary_sha256: 94d7836c4feba8a09e5797e26487027893ed1c9b0020d5a383671266e29a6f02
+[проверки] routedOK=true orderOK=true provenanceStrict=true rejected=0
+[ответ]
+**1000 USD = 879,74 EUR** по курсу ЦБ на 26.09.2026 (курс 0,879739).
+
+**Евро за последние 14 дней (13–26.09.2026, 10 публикаций):**
+- Начало: 97,7626 ₽ (15.09), конец: 95,8709 ₽ (26.09)
+- Минимум: 95,8709 ₽ (26.09), максимум: 97,7626 ₽ (15.09), среднее: 96,8823 ₽
+- Изменение: −1,8917 ₽ (−1,93%) — евро ослаб к рублю.
+
+Отчёт сохранён: `EUR_2026-09-13_2026-09-26_94d7836c4feb.md` (day-20/reports/).
+[day-20: 6 инструментов · 6 обращений · 11859 ток. вход · 571 выход · $0.000597 · 6.37 s]
+```
 
 ## Что видно в трассе
 
@@ -91,7 +121,56 @@ Timeout даёт `ОШИБКА ИНСТРУМЕНТА: сервер <алиас>
 <!-- metrics:start -->
 | Метрика | Результат | 95% ДИ Уилсона |
 |---|---:|---:|
-| ещё не запускалось | — | — |
+| serversExact | 54/54 | 93.4%–100.0% |
+| serversExact (L) | 18/18 | 82.4%–100.0% |
+| serversExact (T) | 12/12 | 75.8%–100.0% |
+| serversExact (P) | 12/12 | 75.8%–100.0% |
+| serversExact (S) | 12/12 | 75.8%–100.0% |
+| requiredTools | 54/54 | 93.4%–100.0% |
+| requiredTools (L) | 18/18 | 82.4%–100.0% |
+| requiredTools (T) | 12/12 | 75.8%–100.0% |
+| requiredTools (P) | 12/12 | 75.8%–100.0% |
+| requiredTools (S) | 12/12 | 75.8%–100.0% |
+| argsExact | 54/54 | 93.4%–100.0% |
+| argsExact (L) | 18/18 | 82.4%–100.0% |
+| argsExact (T) | 12/12 | 75.8%–100.0% |
+| argsExact (P) | 12/12 | 75.8%–100.0% |
+| argsExact (S) | 12/12 | 75.8%–100.0% |
+| handoffExact | 54/54 | 93.4%–100.0% |
+| handoffExact (L) | 18/18 | 82.4%–100.0% |
+| handoffExact (T) | 12/12 | 75.8%–100.0% |
+| handoffExact (P) | 12/12 | 75.8%–100.0% |
+| handoffExact (S) | 12/12 | 75.8%–100.0% |
+| orderOK | 54/54 | 93.4%–100.0% |
+| orderOK (L) | 18/18 | 82.4%–100.0% |
+| orderOK (T) | 12/12 | 75.8%–100.0% |
+| orderOK (P) | 12/12 | 75.8%–100.0% |
+| orderOK (S) | 12/12 | 75.8%–100.0% |
+| routedOK | 54/54 | 93.4%–100.0% |
+| routedOK (L) | 18/18 | 82.4%–100.0% |
+| routedOK (T) | 12/12 | 75.8%–100.0% |
+| routedOK (P) | 12/12 | 75.8%–100.0% |
+| routedOK (S) | 12/12 | 75.8%–100.0% |
+| provenanceStrict | 51/54 | 84.9%–98.1% |
+| provenanceStrict (L) | 18/18 | 82.4%–100.0% |
+| provenanceStrict (T) | 12/12 | 75.8%–100.0% |
+| provenanceStrict (P) | 9/12 | 46.8%–91.1% |
+| provenanceStrict (S) | 12/12 | 75.8%–100.0% |
+| answerOK | 54/54 | 93.4%–100.0% |
+| answerOK (L) | 18/18 | 82.4%–100.0% |
+| answerOK (T) | 12/12 | 75.8%–100.0% |
+| answerOK (P) | 12/12 | 75.8%–100.0% |
+| answerOK (S) | 12/12 | 75.8%–100.0% |
+| flowOK | 54/54 | 93.4%–100.0% |
+| flowOK (L) | 18/18 | 82.4%–100.0% |
+| flowOK (T) | 12/12 | 75.8%–100.0% |
+| flowOK (P) | 12/12 | 75.8%–100.0% |
+| flowOK (S) | 12/12 | 75.8%–100.0% |
+| directControl | 54/54 | 93.4%–100.0% |
+| directControl (L) | 18/18 | 82.4%–100.0% |
+| directControl (T) | 12/12 | 75.8%–100.0% |
+| directControl (P) | 12/12 | 75.8%–100.0% |
+| directControl (S) | 12/12 | 75.8%–100.0% |
 <!-- metrics:end -->
 
 ## Цена схем
