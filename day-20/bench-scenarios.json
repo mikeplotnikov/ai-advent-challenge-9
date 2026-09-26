@@ -1,0 +1,20 @@
+[
+  {"id":"L1","group":"L","question":"Сколько сегодня стоят 1000 долларов в евро по курсу ЦБ и как менялся евро за последние 14 дней? Сохрани отчёт.","servers":["clock","rates","pipeline"],"conversions":[{"amount":1000,"from":"USD","to":"EUR","date":"today"}],"pipelines":[{"currency":"EUR","period":"last-14"}]},
+  {"id":"L2","group":"L","question":"Переведи 500 евро в рубли по сегодняшнему курсу и сохрани отчёт по евро за последние 10 дней.","servers":["clock","rates","pipeline"],"conversions":[{"amount":500,"from":"EUR","to":"RUB","date":"today"}],"pipelines":[{"currency":"EUR","period":"last-10"}]},
+  {"id":"L3","group":"L","question":"Какой сегодня курс юаня? И сделай файл с динамикой юаня за последние 7 дней.","servers":["clock","rates","pipeline"],"rates":[{"currency":"CNY","date":"today"}],"pipelines":[{"currency":"CNY","period":"last-7"}]},
+  {"id":"L4","group":"L","question":"Сравни доллар и евро за последние 7 дней: сохрани отчёт по каждой валюте и скажи, сколько сегодня стоят 100 долларов в евро.","servers":["clock","rates","pipeline"],"conversions":[{"amount":100,"from":"USD","to":"EUR","date":"today"}],"pipelines":[{"currency":"USD","period":"last-7"},{"currency":"EUR","period":"last-7"}]},
+  {"id":"L5","group":"L","question":"Сколько рублей стоили 200 долларов неделю назад и сколько сегодня? Сохрани отчёт по доллару за последние 8 дней.","servers":["clock","rates","pipeline"],"conversions":[{"amount":200,"from":"USD","to":"RUB","date":"today-7"},{"amount":200,"from":"USD","to":"RUB","date":"today"}],"pipelines":[{"currency":"USD","period":"last-8"}]},
+  {"id":"L6","group":"L","question":"Сделай отчёты по юаню и доллару за последние 5 дней и пересчитай 10000 юаней в доллары по сегодняшнему курсу.","servers":["clock","rates","pipeline"],"conversions":[{"amount":10000,"from":"CNY","to":"USD","date":"today"}],"pipelines":[{"currency":"CNY","period":"last-5"},{"currency":"USD","period":"last-5"}]},
+  {"id":"T1","group":"T","question":"Какой был курс доллара ЦБ неделю назад?","servers":["clock","rates"],"rates":[{"currency":"USD","date":"today-7"}]},
+  {"id":"T2","group":"T","question":"Сколько сегодня стоят 100 долларов в юанях?","servers":["clock","rates"],"conversions":[{"amount":100,"from":"USD","to":"CNY","date":"today"}]},
+  {"id":"T3","group":"T","question":"Сколько стоили 300 евро в рублях вчера?","servers":["clock","rates"],"conversions":[{"amount":300,"from":"EUR","to":"RUB","date":"today-1"}]},
+  {"id":"T4","group":"T","question":"Какой сегодня официальный курс евро?","servers":["clock","rates"],"rates":[{"currency":"EUR","date":"today"}]},
+  {"id":"P1","group":"P","question":"Сводка по евро за последние 10 дней, сохрани отчёт.","servers":["clock","pipeline"],"pipelines":[{"currency":"EUR","period":"last-10"}]},
+  {"id":"P2","group":"P","question":"Сохрани отчёт по доллару за последние 30 дней.","servers":["clock","pipeline"],"pipelines":[{"currency":"USD","period":"last-30"}]},
+  {"id":"P3","group":"P","question":"Динамика юаня с начала месяца по сегодня — нужен файл.","servers":["clock","pipeline"],"pipelines":[{"currency":"CNY","period":"month-to-today"}]},
+  {"id":"P4","group":"P","question":"Отчёт по доллару за две недели до сегодняшнего дня включительно.","servers":["clock","pipeline"],"pipelines":[{"currency":"USD","period":"last-14"}]},
+  {"id":"S1","group":"S","question":"Какое сегодня число и день недели?","servers":["clock"],"dateOnly":true},
+  {"id":"S2","group":"S","question":"Сколько будет 250 евро в рублях по курсу ЦБ на 2026-09-01?","servers":["rates"],"conversions":[{"amount":250,"from":"EUR","to":"RUB","date":"2026-09-01"}]},
+  {"id":"S3","group":"S","question":"Какой был курс юаня ЦБ на 15.09.2026?","servers":["rates"],"rates":[{"currency":"CNY","date":"2026-09-15"}]},
+  {"id":"S4","group":"S","question":"Сделай отчёт по доллару за 2026-09-01 — 2026-09-10 и сохрани его.","servers":["pipeline"],"pipelines":[{"currency":"USD","period":"2026-09-01..2026-09-10"}]}
+]

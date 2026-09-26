@@ -1,0 +1,5 @@
+{"mcpServers": {
+  "clock":    {"command": "go", "args": ["run", "./day-20/clock-server"]},
+  "rates":    {"command": "go", "args": ["run", "./day-17/mcp-server"]},
+  "pipeline": {"command": "go", "args": ["run", "./day-19/mcp-server", "-reports", "day-20/reports"]}
+}}
