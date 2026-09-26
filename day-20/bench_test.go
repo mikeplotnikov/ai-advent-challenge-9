@@ -156,6 +156,45 @@ func TestBenchCountersAreExact_AC14(t *testing.T) {
 	}
 }
 
+func TestBenchResultsFormatsExclusionsAndDisclosesPromptCalibration(t *testing.T) {
+	const wantDisclosure = "Промпт уточнён по сценариям L1, S3 и S4 этого же замера (decisions.md дня 20), поэтому замер — не отложенная выборка."
+	if benchPromptDisclosure != wantDisclosure {
+		t.Fatalf("bench disclosure changed\n got: %q\nwant: %q", benchPromptDisclosure, wantDisclosure)
+	}
+	path := filepath.Join(t.TempDir(), "RESULTS.md")
+	report := BenchReport{Revision: "rev", Started: "2026-09-26T12:00:00+03:00", Today: benchToday,
+		Runs: []BenchRun{{Verdict: BenchVerdict{}}}}
+	if err := writeBenchResults(path, report); err != nil {
+		t.Fatal(err)
+	}
+	results, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := "# День 20 — результаты\n\n" + wantDisclosure + "\n\nДата:"
+	if !strings.HasPrefix(string(results), wantPrefix) ||
+		!strings.Contains(string(results), "Исключения: нет. Обращения к модели:") {
+		t.Fatalf("empty exclusions or disclosure missing:\n%s", results)
+	}
+
+	report.Runs = []BenchRun{
+		{Verdict: BenchVerdict{Excluded: "unavailable"}},
+		{Verdict: BenchVerdict{Excluded: "failedControl"}},
+		{Verdict: BenchVerdict{Excluded: "unavailable"}},
+	}
+	if err := writeBenchResults(path, report); err != nil {
+		t.Fatal(err)
+	}
+	results, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(results), "Исключения: failedControl — 1, unavailable — 2. Обращения к модели:") ||
+		strings.Contains(string(results), "map[") {
+		t.Fatalf("non-empty exclusions are not stable prose:\n%s", results)
+	}
+}
+
 func TestBenchClassifierMutationMatrix_AC14(t *testing.T) {
 	scenario, wrapped := validL1ClassifierFixture()
 	valid := evaluateBench(scenario, wrapped)
@@ -405,7 +444,8 @@ func TestBenchOrchestrationReusesAndRestartsRegistry_AC15(t *testing.T) {
 	for _, want := range []string{
 		"fixture-revision", "2026-09-26T12:00:00+03:00", "95% ДИ Уилсона",
 		"| flowOK | 2/2 | 34.2%–100.0% |", "| flowOK (S) | 2/2 | 34.2%–100.0% |", "| directControl | 2/4",
-		"failedControl:1", "unavailable:1", "Обращения к модели: 8; токены: вход 80, выход 24; " +
+		benchPromptDisclosure, "Исключения: failedControl — 1, unavailable — 1.",
+		"Обращения к модели: 8; токены: вход 80, выход 24; " +
 			fmt.Sprintf("цена: $%.6f.", expectedCost),
 	} {
 		if !strings.Contains(string(results), want) {

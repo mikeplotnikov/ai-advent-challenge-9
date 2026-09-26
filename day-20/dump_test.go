@@ -44,6 +44,13 @@ func TestDumpIsDeterministicAndComplete(t *testing.T) {
 	}
 }
 
+func TestSystemPromptUsesConditionalDateRule(t *testing.T) {
+	const want = "Ты агент с инструментами нескольких MCP-серверов. Имя инструмента имеет вид <сервер>__<инструмент>; если описание или ошибка называет инструмент коротко, вызывай его с префиксом того же сервера. Сегодняшнюю дату ты не знаешь — узнай её инструментом. Если вопрос о сегодняшнем дне или о периоде относительно сегодня, сначала узнай дату и только потом вызывай инструменты, которым она нужна, передавая её явно; даты, названные в вопросе, бери из вопроса. Курсы валют бери только из инструментов, не из памяти. Вызывай только те инструменты, которые нужны для вопроса. Отвечай по-русски и коротко; если сохранил отчёт, назови имя файла; если какой-то шаг не удался, скажи об этом."
+	if systemPrompt != want {
+		t.Fatalf("system prompt changed\n got: %q\nwant: %q", systemPrompt, want)
+	}
+}
+
 func TestDumpRefusalsAndSequencesComeFromExecution(t *testing.T) {
 	var raw bytes.Buffer
 	if err := writeDump(&raw); err != nil {
@@ -53,19 +60,39 @@ func TestDumpRefusalsAndSequencesComeFromExecution(t *testing.T) {
 	if err := json.Unmarshal(raw.Bytes(), &dump); err != nil {
 		t.Fatal(err)
 	}
-	router, closes, err := openDumpRouter()
-	if err != nil {
-		t.Fatal(err)
+	const (
+		limitText   = "лимит вызовов инструментов на запрос исчерпан (16)"
+		serverText  = "сервер rates недоступен: EOF"
+		timeoutText = "сервер rates не ответил за 45 с"
+		unknownText = "инструмент \"unknown\" не существует; доступны: clock__current_date, clock__shift_date, pipeline__fetch_rates, pipeline__save_report, pipeline__summarize_rates, rates__convert_currency, rates__get_currency_rates"
+	)
+	wantRefusals := map[string]string{
+		"dead":        "ОШИБКА ИНСТРУМЕНТА: " + serverText,
+		"limit":       "ОШИБКА ИНСТРУМЕНТА: " + limitText,
+		"timeout":     "ОШИБКА ИНСТРУМЕНТА: " + timeoutText,
+		"unavailable": "ОШИБКА ИНСТРУМЕНТА: " + serverText,
+		"unknown":     unknownText,
 	}
-	defer func() {
-		_ = router.Close()
-		for _, closeFn := range closes {
-			closeFn()
-		}
-	}()
-	wantRefusals, wantSequences, err := deriveDumpRefusals(router)
-	if err != nil {
-		t.Fatal(err)
+	wantSequences := map[string]any{
+		"limit": []map[string]any{
+			{"outcome": "ok", "seq": 1}, {"outcome": "ok", "seq": 2},
+			{"outcome": "ok", "seq": 3}, {"outcome": "ok", "seq": 4},
+			{"outcome": "ok", "seq": 5}, {"outcome": "ok", "seq": 6},
+			{"outcome": "ok", "seq": 7}, {"outcome": "ok", "seq": 8},
+			{"outcome": "ok", "seq": 9}, {"outcome": "ok", "seq": 10},
+			{"outcome": "ok", "seq": 11}, {"outcome": "ok", "seq": 12},
+			{"outcome": "ok", "seq": 13}, {"outcome": "ok", "seq": 14},
+			{"outcome": "ok", "seq": 15}, {"outcome": "ok", "seq": 16},
+			{"outcome": "limit", "seq": 17, "text": limitText},
+		},
+		"deadServer": []map[string]any{
+			{"outcome": "unavailable", "seq": 1, "text": serverText},
+			{"outcome": "dead", "seq": 2, "text": serverText},
+		},
+		"unknownAfterLimit": []map[string]string{
+			{"outcome": "limit", "text": limitText},
+			{"outcome": "rejected", "text": unknownText},
+		},
 	}
 	assertSameJSON(t, "refusalTexts", dump.RefusalTexts, wantRefusals)
 	assertSameJSON(t, "sequences", dump.Sequences, wantSequences)
@@ -82,10 +109,18 @@ func TestDumpRefusalsAreNotHandTyped(t *testing.T) {
 	}
 	for _, forbidden := range [][]byte{
 		[]byte("deadText :="),
-		[]byte(`"ОШИБКА ИНСТРУМЕНТА: сервер rates`),
+		[]byte(`"ОШИБКА ИНСТРУМЕНТА:`),
 	} {
 		if bytes.Contains(source, forbidden) {
 			t.Fatalf("dump.go hand-types a model-visible refusal: %s", forbidden)
+		}
+	}
+	for _, required := range [][]byte{
+		[]byte(`"unavailable": deadMessages[0],`),
+		[]byte(`"dead":        deadMessages[1],`),
+	} {
+		if !bytes.Contains(source, required) {
+			t.Fatalf("dump.go lost the executed refusal mapping: %s", required)
 		}
 	}
 }

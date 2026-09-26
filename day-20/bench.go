@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,8 +27,9 @@ import (
 var benchFS embed.FS
 
 const (
-	benchToday   = "2026-09-25"
-	benchRepeats = 3
+	benchToday            = "2026-09-25"
+	benchRepeats          = 3
+	benchPromptDisclosure = "Промпт уточнён по сценариям L1, S3 и S4 этого же замера (decisions.md дня 20), поэтому замер — не отложенная выборка."
 )
 
 type ExpectedConversion struct {
@@ -680,7 +682,8 @@ func writeBenchResults(path string, report BenchReport) error {
 		{"directControl", func(v BenchVerdict) bool { return v.DirectControl }},
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# День 20 — результаты\n\nДата: %s · коммит: `%s` · today: %s.\n\n", report.Started, report.Revision, report.Today)
+	fmt.Fprintf(&b, "# День 20 — результаты\n\n%s\n\nДата: %s · коммит: `%s` · today: %s.\n\n",
+		benchPromptDisclosure, report.Started, report.Revision, report.Today)
 	b.WriteString("<!-- metrics:start -->\n| Метрика | Результат | 95% ДИ Уилсона |\n|---|---:|---:|\n")
 	for _, metric := range metrics {
 		passed, total := 0, 0
@@ -737,8 +740,14 @@ func writeBenchResults(path string, report BenchReport) error {
 			lServers += len(reached)
 		}
 	}
-	fmt.Fprintf(&b, "\nИсключения: `%v`. Обращения к модели: %d; токены: вход %d, выход %d; ",
-		exclusions, modelCalls, promptTokens, outputTokens)
+	b.WriteString("\nИсключения: ")
+	if len(exclusions) == 0 {
+		b.WriteString("нет. ")
+	} else {
+		fmt.Fprintf(&b, "%s. ", formatExclusions(exclusions))
+	}
+	fmt.Fprintf(&b, "Обращения к модели: %d; токены: вход %d, выход %d; ",
+		modelCalls, promptTokens, outputTokens)
 	if costKnown {
 		fmt.Fprintf(&b, "цена: $%.6f.\n", cost)
 	} else {
@@ -748,7 +757,32 @@ func writeBenchResults(path string, report BenchReport) error {
 		fmt.Fprintf(&b, "Группа L: в среднем %.2f вызова и %.2f сервера на прогон.\n",
 			float64(lCalls)/float64(lRuns), float64(lServers)/float64(lRuns))
 	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if schemaSection := betweenMarkers(string(existing), "<!-- schema-cost:start -->", "<!-- schema-cost:end -->"); schemaSection != "" {
+		if !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+		b.WriteString(schemaSection)
+		b.WriteByte('\n')
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func formatExclusions(exclusions map[string]int) string {
+	reasons := make([]string, 0, len(exclusions))
+	for reason := range exclusions {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		parts = append(parts, fmt.Sprintf("%s — %d", reason, exclusions[reason]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func syncReadmeResultsTable(readmePath, resultsPath string) error {
