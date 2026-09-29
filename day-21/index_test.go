@@ -114,3 +114,21 @@ func TestBuildIndexCountsNormalizedVectors(t *testing.T) {
 		t.Fatalf("шапка или чанк: %+v %+v", index.Header, index.Chunks[0])
 	}
 }
+
+type shiftingEmbedder struct{ calls int }
+
+func (e *shiftingEmbedder) Embed(context.Context, string, string) ([]float64, int, bool, error) {
+	e.calls++
+	if e.calls == 1 {
+		return []float64{1, 0}, 3, false, nil
+	}
+	return []float64{1, 0, 0}, 3, false, nil
+}
+
+func TestBuildIndexRejectsDimensionChangeNamingTheChunk(t *testing.T) {
+	document := Document{Source: "x.md", Title: "x.md", Runes: []rune(strings.Repeat("слово ", 700))}
+	_, err := buildIndex(context.Background(), "fixed", []Document{document}, "abc", "bge-m3", &shiftingEmbedder{}, &strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "fixed:x.md:1") || !strings.Contains(err.Error(), "размерность") {
+		t.Fatalf("ожидалась ошибка размерности с chunk_id второго чанка, получено %v", err)
+	}
+}

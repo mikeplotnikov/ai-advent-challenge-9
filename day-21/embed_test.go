@@ -61,6 +61,7 @@ func TestOllamaReadableFailures(t *testing.T) {
 		{"контекст", `{"error":"the input length exceeds the context length"}`, "fixed:x:7", 400},
 		{"модель", `{"error":"model 'bge-m3' not found, try pulling it first"}`, "ollama pull bge-m3", 404},
 		{"два вектора", `{"embeddings":[[1,0],[0,1]],"prompt_eval_count":2}`, "2 векторов", 200},
+		{"управляющие символы", "{\"error\":\"bad\\u001b]0;title\\u0007end\"}", "bad?]0;title?end", 500},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

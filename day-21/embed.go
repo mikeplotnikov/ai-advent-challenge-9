@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Embedder interface {
@@ -65,6 +66,7 @@ func (c *OllamaClient) Embed(ctx context.Context, chunkID, input string) ([]floa
 	if message == "" && response.StatusCode != http.StatusOK {
 		message = strings.TrimSpace(string(body))
 	}
+	message = terminalSafe(message, 300)
 	lower := strings.ToLower(message)
 	if strings.Contains(lower, "exceeds the context length") || strings.Contains(lower, "context length") && strings.Contains(lower, "exceed") {
 		return nil, 0, false, fmt.Errorf("вход %s длиннее контекста модели: %s", chunkID, message)
@@ -100,4 +102,23 @@ func (c *OllamaClient) Embed(ctx context.Context, chunkID, input string) ([]floa
 		}
 	}
 	return vector, decoded.PromptEvalCount, normalized, nil
+}
+
+// terminalSafe keeps text from the Ollama response printable: the -ollama flag may point at a
+// remote host, and control characters in its reply would otherwise reach the user's terminal.
+func terminalSafe(text string, limit int) string {
+	var builder strings.Builder
+	count := 0
+	for _, r := range text {
+		if count == limit {
+			builder.WriteString("…")
+			break
+		}
+		if unicode.IsControl(r) {
+			r = '?'
+		}
+		builder.WriteRune(r)
+		count++
+	}
+	return builder.String()
 }
