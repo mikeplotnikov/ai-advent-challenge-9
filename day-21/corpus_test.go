@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -180,5 +181,40 @@ func TestRealCorpusStructuralFacts(t *testing.T) {
 	}
 	if !foundDay15Preamble {
 		t.Fatal("89-рунный preamble day-15/RESULTS.md не стал отдельным structure-чанком")
+	}
+}
+
+func TestLoadCorpusRejectsUnsafeDuplicateAndDriftedEntries(t *testing.T) {
+	body := []byte("# X\nтекст")
+	digest := sha256.Sum256(body)
+	good := ManifestFile{Path: "x.md", Runes: len([]rune(string(body))), SHA256: hex.EncodeToString(digest[:])}
+	cases := []struct {
+		name  string
+		files []ManifestFile
+		want  string
+	}{
+		{"выход за каталог", []ManifestFile{{Path: "../x.md", Runes: good.Runes, SHA256: good.SHA256}}, "небезопасный путь"},
+		{"абсолютный путь", []ManifestFile{{Path: "/etc/x.md", Runes: good.Runes, SHA256: good.SHA256}}, "небезопасный путь"},
+		{"повтор", []ManifestFile{good, good}, "повтор пути"},
+		{"sha256", []ManifestFile{{Path: "x.md", Runes: good.Runes, SHA256: strings.Repeat("0", 64)}}, "sha256"},
+		{"число рун", []ManifestFile{{Path: "x.md", Runes: good.Runes + 1, SHA256: good.SHA256}}, "число рун"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "x.md"), body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(Manifest{SourceCommit: "test", Files: tc.files})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, manifestName), raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := loadCorpus(dir); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ошибка=%v, ожидалась строка %q", err, tc.want)
+			}
+		})
 	}
 }

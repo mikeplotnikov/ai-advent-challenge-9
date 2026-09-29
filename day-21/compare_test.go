@@ -191,3 +191,14 @@ func TestChunkDiagnosticHelpersUseActualValues(t *testing.T) {
 		t.Fatalf("cut evidence=%d", got)
 	}
 }
+
+func TestBoundaryDirectlyBeforeHeadingIsNotInsideParagraph(t *testing.T) {
+	document := testDocument("h.md", "строка абзаца\n## Раздел\nтекст")
+	end := len([]rune("строка абзаца\n"))
+	if boundaryInsideParagraph(document.Runes, end) {
+		t.Fatalf("граница перед заголовком без пустой строки посчитана как граница внутри абзаца")
+	}
+	if !boundaryInsideParagraph(document.Runes, len([]rune("строка"))) {
+		t.Fatalf("граница посреди строки должна считаться внутри абзаца")
+	}
+}
