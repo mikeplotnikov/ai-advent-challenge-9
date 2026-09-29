@@ -14,7 +14,7 @@ import (
 )
 
 func TestCLIModesAreMutuallyExclusiveAndRequired(t *testing.T) {
-	for _, args := range [][]string{{}, {"-index", "-compare"}, {"-index", "лишнее"}, {"-search", ""}} {
+	for _, args := range [][]string{{}, {"-index", "-compare"}, {"-dump", "-index"}, {"-index", "лишнее"}, {"-search", ""}} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code != 2 {
 			t.Errorf("%v: code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())

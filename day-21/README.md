@@ -26,8 +26,13 @@ go run ./day-21 -search "как считается цена вызова DeepSee
 go run ./day-21 -search "вопрос" -strategy structure -ollama http://127.0.0.1:11434
 ```
 
-`-index`, `-compare` и `-search` взаимоисключающие. Общий таймаут задаётся флагом `-timeout`
+`-index`, `-compare`, `-dump` и `-search` взаимоисключающие. Общий таймаут задаётся флагом `-timeout`
 (по умолчанию 10 минут). Каталог `day-21/index/` генерируется локально и не коммитится.
+
+### Выгрузка для витрины
+
+`go run ./day-21 -dump` создаёт `day-21/showcase.json` для страницы
+[challeng.mikeproject.dev/day-21/](https://challeng.mikeproject.dev/day-21/).
 
 ## Почему `bge-m3`
 
@@ -133,4 +138,3 @@ DeepSeek не предоставляет embeddings API, поэтому фикт
 | q38 | `day-19/README.md` | 1 | 1 |
 | q39 | `day-20/README.md` | 4 | 5 |
 | q40 | `day-20/RESULTS.md` | 1 | 6 |
-

@@ -24,6 +24,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	indexMode := fs.Bool("index", false, "построить оба индекса")
 	compareMode := fs.Bool("compare", false, "сравнить индексы на замороженных вопросах")
+	dumpMode := fs.Bool("dump", false, "выгрузить данные для витрины")
 	searchText := fs.String("search", "", "найти релевантные чанки для вопроса")
 	strategy := fs.String("strategy", "both", "стратегия поиска: fixed, structure или both")
 	topK := fs.Int("k", 5, "число результатов поиска")
@@ -40,13 +41,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	modes := 0
-	for _, active := range []bool{*indexMode, *compareMode, searchMode} {
+	for _, active := range []bool{*indexMode, *compareMode, *dumpMode, searchMode} {
 		if active {
 			modes++
 		}
 	}
 	if modes != 1 {
-		fmt.Fprintln(stderr, "выберите ровно один режим: -index, -compare или -search \"вопрос\"")
+		fmt.Fprintln(stderr, "выберите ровно один режим: -index, -compare, -dump или -search \"вопрос\"")
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -147,6 +148,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "сравнение записано: %s и %s\n", resultsPath, comparePath)
+		return 0
+
+	case *dumpMode:
+		fixed, structure, fixedPath, structurePath, err := loadCompatibleIndexes(indexDir, *model, manifestSHA)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		questionsPath := projectPath(defaultQuestionsPath)
+		questions, questionsSHA, err := loadQuestions(questionsPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := validateQuestions(questions, documents); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		comparison, err := readComparison(projectPath(defaultComparePath))
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := validateComparison(comparison, *model, manifestSHA, questionsSHA, questions); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		showcasePath := projectPath(defaultShowcasePath)
+		if err := writeShowcase(ctx, showcasePath, *model, manifestSHA, questionsSHA, manifest, documents, questions, fixed, structure, comparison, fixedPath, structurePath, client, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "витрина выгружена: %s\n", showcasePath)
 		return 0
 
 	case searchMode:

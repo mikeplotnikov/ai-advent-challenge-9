@@ -39,6 +39,12 @@ type Comparison struct {
 	Questions       []QuestionResult `json:"questions"`
 }
 
+type ResultTables struct {
+	Chunks  [][]string `json:"chunks"`
+	Search  [][]string `json:"search"`
+	McNemar [][]string `json:"mcnemar"`
+}
+
 func evaluate(index Index, questions []Question, vectors [][]float64) (RetrievalMetrics, error) {
 	if len(questions) != len(vectors) {
 		return RetrievalMetrics{}, fmt.Errorf("вопросов %d, векторов %d", len(questions), len(vectors))
@@ -129,6 +135,7 @@ func writeJSONAtomic(path string, value any) error {
 }
 
 func writeResults(path string, comparison Comparison, manifest Manifest, documents []Document, questions []Question, fixedIndex, structureIndex Index, fixedMetrics, structureMetrics RetrievalMetrics, fixedPath, structurePath string) error {
+	tables, significant, paired := buildResultTables(questions, documents, fixedIndex, structureIndex, fixedMetrics, structureMetrics, fixedPath, structurePath)
 	var builder strings.Builder
 	fmt.Fprintln(&builder, "<!-- Сгенерировано `go run ./day-21 -compare`. Руками не править. -->")
 	fmt.Fprintln(&builder)
@@ -145,34 +152,24 @@ func writeResults(path string, comparison Comparison, manifest Manifest, documen
 	fmt.Fprintf(&builder, "Вопросы: sha256 %s\n\n", comparison.QuestionsSHA256)
 
 	fmt.Fprintln(&builder, "## Чанки")
-	fmt.Fprintln(&builder, "| Стратегия | Чанков | Токены min / медиана / p95 / max | Граница внутри абзаца | Дополнительно | Размер индекса | Время эмбеддинга |")
+	fmt.Fprintln(&builder, markdownTableRow(tables.Chunks[0]))
 	fmt.Fprintln(&builder, "|---|---:|---:|---:|---|---:|---:|")
-	fixedExtra := fmt.Sprintf("spans > 1: %d/%d; разрезано цитат: %d/40", countMultiSpan(fixedIndex.Chunks), len(fixedIndex.Chunks), countCutEvidence(questions, fixedIndex.Chunks, documents))
-	structureExtra := fmt.Sprintf("разделов поделено: %d; чанков < 50 токенов: %d", splitSectionCount(structureIndex.Chunks), countShortChunks(structureIndex.Chunks))
-	fmt.Fprintf(&builder, "| fixed | %d | %s | %s | %s | %s | %s |\n", len(fixedIndex.Chunks), tokenSummary(fixedIndex.Chunks), boundaryShare(fixedIndex.Chunks, documents), fixedExtra, fileSize(fixedPath), durationMS(fixedIndex.Header.EmbeddingDurationMS))
-	fmt.Fprintf(&builder, "| structure | %d | %s | %s | %s | %s | %s |\n\n", len(structureIndex.Chunks), tokenSummary(structureIndex.Chunks), boundaryShare(structureIndex.Chunks, documents), structureExtra, fileSize(structurePath), durationMS(structureIndex.Header.EmbeddingDurationMS))
+	for _, row := range tables.Chunks[1:] {
+		fmt.Fprintln(&builder, markdownTableRow(row))
+	}
+	fmt.Fprintln(&builder)
 
 	fmt.Fprintln(&builder, "## Поиск")
-	fmt.Fprintln(&builder, "| Стратегия | hit@1 | hit@3 | hit@5 | MRR@10 (95% bootstrap) |")
+	fmt.Fprintln(&builder, markdownTableRow(tables.Search[0]))
 	fmt.Fprintln(&builder, "|---|---:|---:|---:|---:|")
-	fmt.Fprintf(&builder, "| fixed | %s | %s | %s | %s |\n", hitShare(fixedMetrics.Hits[1], len(questions)), hitShare(fixedMetrics.Hits[3], len(questions)), hitShare(fixedMetrics.Hits[5], len(questions)), mrrSummary(fixedMetrics.Ranks))
-	fmt.Fprintf(&builder, "| structure | %s | %s | %s | %s |\n\n", hitShare(structureMetrics.Hits[1], len(questions)), hitShare(structureMetrics.Hits[3], len(questions)), hitShare(structureMetrics.Hits[5], len(questions)), mrrSummary(structureMetrics.Ranks))
-	pValues := make([]float64, 3)
-	tables := make([][4]int, 3)
-	for i, k := range []int{1, 3, 5} {
-		tables[i] = pairedTable(fixedMetrics.Ranks, structureMetrics.Ranks, k)
-		pValues[i] = stats.McNemarExact(tables[i][1], tables[i][2])
+	for _, row := range tables.Search[1:] {
+		fmt.Fprintln(&builder, markdownTableRow(row))
 	}
-	significant := stats.Holm(pValues, 0.05)
-	fmt.Fprintln(&builder, "| k | Обе попали | Только fixed (b) | Только structure (c) | Обе мимо | p Макнемара | Холм α=0,05 |")
+	fmt.Fprintln(&builder)
+	fmt.Fprintln(&builder, markdownTableRow(tables.McNemar[0]))
 	fmt.Fprintln(&builder, "|---:|---:|---:|---:|---:|---:|---|")
-	for i, k := range []int{1, 3, 5} {
-		verdict := "разница не показана"
-		if significant[i] {
-			verdict = "разница показана"
-		}
-		table := tables[i]
-		fmt.Fprintf(&builder, "| %d | %d | %d | %d | %d | %.6f | %s |\n", k, table[0], table[1], table[2], table[3], pValues[i], verdict)
+	for _, row := range tables.McNemar[1:] {
+		fmt.Fprintln(&builder, markdownTableRow(row))
 	}
 	fmt.Fprintln(&builder)
 	fmt.Fprintln(&builder, "По построению набора каждая цитата помещается в чанк обеих стратегий, поэтому сравнивается ранжирование, а не способность вместить ответ.")
@@ -188,13 +185,51 @@ func writeResults(path string, comparison Comparison, manifest Manifest, documen
 	for i, k := range []int{1, 3, 5} {
 		if !significant[i] {
 			fmt.Fprintf(&builder, "- hit@%d: стратегии не различимы на 40 вопросах после поправки Холма.\n", k)
-		} else if tables[i][1] > tables[i][2] {
+		} else if paired[i][1] > paired[i][2] {
 			fmt.Fprintf(&builder, "- hit@%d: fixed выше; разница показана тестом Макнемара после поправки Холма.\n", k)
 		} else {
 			fmt.Fprintf(&builder, "- hit@%d: structure выше; разница показана тестом Макнемара после поправки Холма.\n", k)
 		}
 	}
 	return writeTextAtomic(path, builder.String())
+}
+
+func buildResultTables(questions []Question, documents []Document, fixedIndex, structureIndex Index, fixedMetrics, structureMetrics RetrievalMetrics, fixedPath, structurePath string) (ResultTables, []bool, [][4]int) {
+	fixedExtra := fmt.Sprintf("spans > 1: %d/%d; разрезано цитат: %d/40", countMultiSpan(fixedIndex.Chunks), len(fixedIndex.Chunks), countCutEvidence(questions, fixedIndex.Chunks, documents))
+	structureExtra := fmt.Sprintf("разделов поделено: %d; чанков < 50 токенов: %d", splitSectionCount(structureIndex.Chunks), countShortChunks(structureIndex.Chunks))
+	tables := ResultTables{
+		Chunks: [][]string{
+			{"Стратегия", "Чанков", "Токены min / медиана / p95 / max", "Граница внутри абзаца", "Дополнительно", "Размер индекса", "Время эмбеддинга"},
+			{"fixed", fmt.Sprint(len(fixedIndex.Chunks)), tokenSummary(fixedIndex.Chunks), boundaryShare(fixedIndex.Chunks, documents), fixedExtra, fileSize(fixedPath), durationMS(fixedIndex.Header.EmbeddingDurationMS)},
+			{"structure", fmt.Sprint(len(structureIndex.Chunks)), tokenSummary(structureIndex.Chunks), boundaryShare(structureIndex.Chunks, documents), structureExtra, fileSize(structurePath), durationMS(structureIndex.Header.EmbeddingDurationMS)},
+		},
+		Search: [][]string{
+			{"Стратегия", "hit@1", "hit@3", "hit@5", "MRR@10 (95% bootstrap)"},
+			{"fixed", hitShare(fixedMetrics.Hits[1], len(questions)), hitShare(fixedMetrics.Hits[3], len(questions)), hitShare(fixedMetrics.Hits[5], len(questions)), mrrSummary(fixedMetrics.Ranks)},
+			{"structure", hitShare(structureMetrics.Hits[1], len(questions)), hitShare(structureMetrics.Hits[3], len(questions)), hitShare(structureMetrics.Hits[5], len(questions)), mrrSummary(structureMetrics.Ranks)},
+		},
+		McNemar: [][]string{{"k", "Обе попали", "Только fixed (b)", "Только structure (c)", "Обе мимо", "p Макнемара", "Холм α=0,05"}},
+	}
+	pValues := make([]float64, 3)
+	paired := make([][4]int, 3)
+	for i, k := range []int{1, 3, 5} {
+		paired[i] = pairedTable(fixedMetrics.Ranks, structureMetrics.Ranks, k)
+		pValues[i] = stats.McNemarExact(paired[i][1], paired[i][2])
+	}
+	significant := stats.Holm(pValues, 0.05)
+	for i, k := range []int{1, 3, 5} {
+		verdict := "разница не показана"
+		if significant[i] {
+			verdict = "разница показана"
+		}
+		table := paired[i]
+		tables.McNemar = append(tables.McNemar, []string{fmt.Sprint(k), fmt.Sprint(table[0]), fmt.Sprint(table[1]), fmt.Sprint(table[2]), fmt.Sprint(table[3]), fmt.Sprintf("%.6f", pValues[i]), verdict})
+	}
+	return tables, significant, paired
+}
+
+func markdownTableRow(cells []string) string {
+	return "| " + strings.Join(cells, " | ") + " |"
 }
 
 func writeTextAtomic(path, text string) error {
