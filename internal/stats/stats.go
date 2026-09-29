@@ -56,6 +56,25 @@ func FisherTwoSided(a, b, c, d int) float64 {
 	return math.Min(1, total)
 }
 
+// McNemarExact returns the exact two-sided p-value for paired binary outcomes.
+// Only the discordant pairs b and c carry information about a difference.
+func McNemarExact(b, c int) float64 {
+	if b < 0 || c < 0 {
+		return math.NaN()
+	}
+	n := b + c
+	if n == 0 {
+		return 1
+	}
+	limit := min(b, c)
+	logDenominator := float64(n) * math.Log(2)
+	tail := 0.0
+	for i := 0; i <= limit; i++ {
+		tail += math.Exp(logChoose(n, i) - logDenominator)
+	}
+	return math.Min(1, 2*tail)
+}
+
 func logChoose(n, k int) float64 {
 	if k < 0 || k > n {
 		return math.Inf(-1)

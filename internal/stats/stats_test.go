@@ -35,6 +35,27 @@ func TestFisherIsSymmetric(t *testing.T) {
 	}
 }
 
+func TestMcNemarExact(t *testing.T) {
+	cases := []struct {
+		name string
+		b, c int
+		want float64
+	}{
+		{"пять против нуля", 5, 0, 0.0625},
+		{"ноль против пяти", 0, 5, 0.0625},
+		{"четыре против одного", 4, 1, 0.375},
+		{"нет расхождений", 0, 0, 1},
+		{"равные расхождения", 3, 3, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := McNemarExact(tc.b, tc.c); math.Abs(got-tc.want) > 1e-12 {
+				t.Fatalf("McNemarExact(%d, %d) = %.12f, ожидалось %.12f", tc.b, tc.c, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWilsonBracketsTheRate(t *testing.T) {
 	cases := []struct{ s, n int }{{6, 10}, {9, 10}, {10, 10}, {0, 10}, {18, 30}}
 	for _, c := range cases {

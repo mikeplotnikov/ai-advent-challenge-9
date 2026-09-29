@@ -1,0 +1,150 @@
+{
+  "source_commit": "99298a3",
+  "files": [
+    {
+      "path": "README.md",
+      "runes": 12059,
+      "sha256": "d7fad8dccd361dfaf676d165dbf0eab62faacd978967935764d66ec3bf291daf"
+    },
+    {
+      "path": "day-03/RESULTS.md",
+      "runes": 19694,
+      "sha256": "283fd3c03c3a99f8dcba7bd5b57500a6503a569e45fed9b809324f4ed1a9b6b7"
+    },
+    {
+      "path": "day-04/RESULTS.md",
+      "runes": 8444,
+      "sha256": "fe6882465e222402427a4b260dacd0dccc6cf0eecc03a6dda516afbeaa571810"
+    },
+    {
+      "path": "day-05/RESULTS.md",
+      "runes": 7755,
+      "sha256": "36d7330d61508e4fea1179608af1c2004c7011d33bb8993d07e731927b7a034a"
+    },
+    {
+      "path": "day-05/measured.md",
+      "runes": 13754,
+      "sha256": "8ca8d12687a0e6671fb72e94c6a051ad5b40c5bbabab76908ae1f461a3311fb2"
+    },
+    {
+      "path": "day-06/RESULTS.md",
+      "runes": 10741,
+      "sha256": "7b29d0a9b3fb71399498a4fce998c6a4c69bc0ef26c41c91bf016ea832d01601"
+    },
+    {
+      "path": "day-07/RESULTS.md",
+      "runes": 11758,
+      "sha256": "8bc4fc43e5c8daae605ee075ba19e567267e2f3b9e64e85820d440e98c0f4e1a"
+    },
+    {
+      "path": "day-08/RESULTS.md",
+      "runes": 12855,
+      "sha256": "815d6ce54cc188744e3e21f2d6a52e596132b9186c4c46f792633284312d8d44"
+    },
+    {
+      "path": "day-09/README.md",
+      "runes": 2018,
+      "sha256": "881002f2dcd5e3f3019a71417d5e9765cfa371903d1c66e574be1baf3799c8c2"
+    },
+    {
+      "path": "day-09/RESULTS.md",
+      "runes": 2179,
+      "sha256": "d40a04dde47b731a8fc04f2ad3fc3541b628fbd44ad79e2aeb26ab1b8600b8c5"
+    },
+    {
+      "path": "day-10/README.md",
+      "runes": 2414,
+      "sha256": "7a2d01684f5394c4ac660072338a8e30aaae919c5a9b3f3af67aff410842db54"
+    },
+    {
+      "path": "day-11/README.md",
+      "runes": 6012,
+      "sha256": "091b9b3d5191f5a02fcb3a2d054af71de5fbcae17370b0851808b6680e2805b1"
+    },
+    {
+      "path": "day-11/RESULTS.md",
+      "runes": 7020,
+      "sha256": "0b26d728ccd40b59b942725c2cd9eb33a61baec27b24fb5008e4ae71b87f495e"
+    },
+    {
+      "path": "day-12/README.md",
+      "runes": 8063,
+      "sha256": "26f2100cb5bd8bb2c1f3f6cefdbc642bf5184b31a911bc10c674620a4e8d06d0"
+    },
+    {
+      "path": "day-12/RESULTS.md",
+      "runes": 17210,
+      "sha256": "7a94b46ddeed3b4db6eb75bd669d51225e1fe4a881cd4b7814a97c3c9a29de8b"
+    },
+    {
+      "path": "day-13/README.md",
+      "runes": 11109,
+      "sha256": "e4739dbfd3a8a5c5670a4184216ae453384e555abb71ed2d7f2b58a5fb4da240"
+    },
+    {
+      "path": "day-13/RESULTS.md",
+      "runes": 22693,
+      "sha256": "6cdf46059ebc269aa3718075b12e1886cf49c17c7e2730be4415ec9294981f5f"
+    },
+    {
+      "path": "day-14/README.md",
+      "runes": 3412,
+      "sha256": "d347aafb87d760337df51eb7b60634c5bd1c2ebd5c6acca8188bee69eb13a405"
+    },
+    {
+      "path": "day-14/RESULTS.md",
+      "runes": 11367,
+      "sha256": "6c1c14724921de1dbd28003f760b99dbd7f9092ed8dc07a13b6cd3b425dd32a8"
+    },
+    {
+      "path": "day-15/README.md",
+      "runes": 8986,
+      "sha256": "cfac3cad1706a0d15d2569254e40606461dbdbc54708594b7a137259f5941b60"
+    },
+    {
+      "path": "day-15/RESULTS.md",
+      "runes": 17425,
+      "sha256": "8b540eea853a73c8f2f912c9619e05ec09587e767349be623c252d2db791a73f"
+    },
+    {
+      "path": "day-16/README.md",
+      "runes": 4464,
+      "sha256": "da84600b49f4920500b2e05fc726a72580330a64d4ef5c3a6ca4e8c76bf157f2"
+    },
+    {
+      "path": "day-17/README.md",
+      "runes": 7627,
+      "sha256": "415c71a2de86a469940e963e98a40ed9d55864f1db6f2357f5466a90f27a1fb6"
+    },
+    {
+      "path": "day-17/RESULTS.md",
+      "runes": 1054,
+      "sha256": "c4b160233c5a552ebc4827663d94960ce5eecd71809c72c254137a57c54b8d52"
+    },
+    {
+      "path": "day-18/README.md",
+      "runes": 7253,
+      "sha256": "4cbcb8e7ad92e8bf3e12dd89df51b87c3bd8f9731e4cd7539d7861d0a16ce1be"
+    },
+    {
+      "path": "day-19/README.md",
+      "runes": 6559,
+      "sha256": "4a715ea75a3d02594a1f41ec3a9eaec8ed8846ad25fd02d1315b019c4c40ebaf"
+    },
+    {
+      "path": "day-19/RESULTS.md",
+      "runes": 623,
+      "sha256": "e31f5ec27fd86ea49f078cdb9f701bd1d90ee4c71aeb76a3669807da800a9e32"
+    },
+    {
+      "path": "day-20/README.md",
+      "runes": 9932,
+      "sha256": "5424f936becf78cac712726b2e666e4abd8db0d88ca704d603193fc247b3188e"
+    },
+    {
+      "path": "day-20/RESULTS.md",
+      "runes": 2946,
+      "sha256": "998434b09a4619fa2129a00f3d2414d461bfb3fdbe5b6f783350f22c3e229fa6"
+    }
+  ]
+}
