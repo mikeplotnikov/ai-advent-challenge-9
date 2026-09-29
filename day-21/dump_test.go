@@ -21,7 +21,15 @@ func TestDumpModeWritesShowcaseWithoutLiveOllama(t *testing.T) {
 	originalClient := httpClientNoFixedTimeout
 	originalRevision := showcaseRevision
 	showcaseRevision = func() string { return "abc1234" }
-	httpClientNoFixedTimeout = *handlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var embedded []string
+	httpClientNoFixedTimeout = *handlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Input string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("тело запроса к Ollama: %v", err)
+		}
+		embedded = append(embedded, request.Input)
 		_, _ = io.WriteString(w, `{"embeddings":[[1,0,0,0,0,0,0,0]],"prompt_eval_count":7}`)
 	}))
 	defer func() {
@@ -63,6 +71,14 @@ func TestDumpModeWritesShowcaseWithoutLiveOllama(t *testing.T) {
 	structure, err := readIndex(filepath.Join("index", "structure.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(embedded) != len(questions) {
+		t.Fatalf("в Ollama ушло %d текстов, вопросов %d", len(embedded), len(questions))
+	}
+	for i, question := range questions {
+		if embedded[i] != question.Question {
+			t.Fatalf("%s: в Ollama ушёл текст %q, а не текст вопроса", question.ID, embedded[i])
+		}
 	}
 	assertShowcaseSources(t, showcase, "abc1234", documents, manifest, manifestSHA, questions, questionsSHA, comparison, fixed, structure)
 	vector := []float64{1, 0, 0, 0, 0, 0, 0, 0}
