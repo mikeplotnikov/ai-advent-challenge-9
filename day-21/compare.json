@@ -1,0 +1,240 @@
+{
+  "revision": "306e4f8",
+  "started": "2026-09-29T10:34:10+04:00",
+  "model": "bge-m3",
+  "manifest_sha256": "90e4cd3deba5cd11594b62623f6bdbad4e39e1795e1c4f3cb56355da65f6d5ac",
+  "questions_sha256": "d19454e8866c00c56d0cda54d84b596e2ecdd15ad88c75666a8103ca9a15f124",
+  "questions": [
+    {
+      "id": "q01",
+      "source": "README.md",
+      "fixed_rank": 1,
+      "structure_rank": 3
+    },
+    {
+      "id": "q02",
+      "source": "README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q03",
+      "source": "README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q04",
+      "source": "day-03/RESULTS.md",
+      "fixed_rank": 1
+    },
+    {
+      "id": "q05",
+      "source": "day-03/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q06",
+      "source": "day-03/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q07",
+      "source": "day-04/RESULTS.md",
+      "fixed_rank": 8,
+      "structure_rank": 1
+    },
+    {
+      "id": "q08",
+      "source": "day-04/RESULTS.md",
+      "fixed_rank": 10,
+      "structure_rank": 6
+    },
+    {
+      "id": "q09",
+      "source": "day-05/RESULTS.md",
+      "fixed_rank": 2,
+      "structure_rank": 2
+    },
+    {
+      "id": "q10",
+      "source": "day-05/RESULTS.md",
+      "fixed_rank": 3,
+      "structure_rank": 2
+    },
+    {
+      "id": "q11",
+      "source": "day-05/measured.md",
+      "fixed_rank": 4
+    },
+    {
+      "id": "q12",
+      "source": "day-05/measured.md",
+      "fixed_rank": 4,
+      "structure_rank": 1
+    },
+    {
+      "id": "q13",
+      "source": "day-06/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q14",
+      "source": "day-06/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 2
+    },
+    {
+      "id": "q15",
+      "source": "day-07/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q16",
+      "source": "day-08/RESULTS.md",
+      "fixed_rank": 8,
+      "structure_rank": 1
+    },
+    {
+      "id": "q17",
+      "source": "day-08/RESULTS.md"
+    },
+    {
+      "id": "q18",
+      "source": "day-09/RESULTS.md",
+      "fixed_rank": 2,
+      "structure_rank": 3
+    },
+    {
+      "id": "q19",
+      "source": "day-11/README.md",
+      "structure_rank": 2
+    },
+    {
+      "id": "q20",
+      "source": "day-11/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q21",
+      "source": "day-12/README.md",
+      "fixed_rank": 2,
+      "structure_rank": 1
+    },
+    {
+      "id": "q22",
+      "source": "day-12/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q23",
+      "source": "day-13/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q24",
+      "source": "day-13/README.md",
+      "structure_rank": 5
+    },
+    {
+      "id": "q25",
+      "source": "day-13/RESULTS.md",
+      "fixed_rank": 3,
+      "structure_rank": 2
+    },
+    {
+      "id": "q26",
+      "source": "day-13/RESULTS.md",
+      "fixed_rank": 2
+    },
+    {
+      "id": "q27",
+      "source": "day-14/README.md"
+    },
+    {
+      "id": "q28",
+      "source": "day-14/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q29",
+      "source": "day-14/README.md",
+      "fixed_rank": 8,
+      "structure_rank": 1
+    },
+    {
+      "id": "q30",
+      "source": "day-15/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 2
+    },
+    {
+      "id": "q31",
+      "source": "day-15/RESULTS.md",
+      "fixed_rank": 9,
+      "structure_rank": 3
+    },
+    {
+      "id": "q32",
+      "source": "day-15/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 3
+    },
+    {
+      "id": "q33",
+      "source": "day-16/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q34",
+      "source": "day-16/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q35",
+      "source": "day-17/README.md",
+      "fixed_rank": 8,
+      "structure_rank": 3
+    },
+    {
+      "id": "q36",
+      "source": "day-17/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q37",
+      "source": "day-18/README.md",
+      "fixed_rank": 2,
+      "structure_rank": 1
+    },
+    {
+      "id": "q38",
+      "source": "day-19/README.md",
+      "fixed_rank": 1,
+      "structure_rank": 1
+    },
+    {
+      "id": "q39",
+      "source": "day-20/README.md",
+      "fixed_rank": 4,
+      "structure_rank": 5
+    },
+    {
+      "id": "q40",
+      "source": "day-20/RESULTS.md",
+      "fixed_rank": 1,
+      "structure_rank": 6
+    }
+  ]
+}
