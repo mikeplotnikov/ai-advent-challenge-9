@@ -100,7 +100,7 @@ func TestReportStatisticsFromSyntheticRun(t *testing.T) {
 		t.Fatalf("outcomes=%v", got)
 	}
 	search := report["Поиск"]
-	if len(search) != 9 || !equalRows(search[len(search)-1:], [][]string{{"Итого (N = 7)", "evidence hit@5 7/7", "7/7", "7/7"}}) {
+	if len(search) != 9 || !equalRows(search[len(search)-1:], [][]string{{"Итого (N = 7)", "—", "7/7", "7/7"}}) {
 		t.Fatalf("search=%v", search)
 	}
 	wantEconomy := [][]string{{"Режим", "Вход", "Выход", "Кэш", "Цена", "Медиана времени"}, {"norag", "300", "60", "0", "$0.030000", "12 ms"}, {"rag", "600", "90", "0", "$0.060000", "22 ms"}}
@@ -114,6 +114,63 @@ func TestReportStatisticsFromSyntheticRun(t *testing.T) {
 	if got := report["По вопросам"]; len(got) != 11 || got[1][4] != "1" || got[1][5] != "wrong, wrong, wrong" || got[1][6] != "correct, correct, correct" {
 		t.Fatalf("per-question table=%v", got)
 	}
+}
+
+func TestReportShowsReverseMcNemarEffect(t *testing.T) {
+	run := Run{}
+	for i := 0; i < 6; i++ {
+		run.Questions = append(run.Questions, QuestionRun{
+			NoRAG: successfulCalls(2),
+			RAG:   successfulCalls(0),
+		})
+	}
+	row := buildReportData(run).Sections["Макнемар"][1]
+	if row[1] != "0" || row[2] != "6" || row[3] != "0.0313" || row[4] != "показано обратное: без RAG лучше при α = 0,05" {
+		t.Fatalf("McNemar row=%v", row)
+	}
+}
+
+func TestReportSuccessTableUsesMajority(t *testing.T) {
+	run := Run{Questions: []QuestionRun{{
+		Question: Question{Kind: "general"},
+		NoRAG:    successfulCalls(1),
+		RAG:      successfulCalls(2),
+	}}}
+	rows := buildReportData(run).Sections["Успех по вопросам"]
+	if got := rows[1]; got[1] != "0/1 (0.00–0.79)" || got[2] != "1/1 (0.21–1.00)" {
+		t.Fatalf("all questions row=%v", got)
+	}
+}
+
+func TestSearchHitIncludesRankK(t *testing.T) {
+	run := Run{Meta: RunHeader{K: 5}, Questions: []QuestionRun{
+		{
+			Question: Question{ID: "rank-k", Kind: "in_base"},
+			Chunks:   []FoundChunk{{Rank: 5, EvidenceHit: true}},
+		},
+		{
+			Question: Question{ID: "missing", Kind: "in_base"},
+			Chunks:   []FoundChunk{{Rank: 1}, {Rank: 5}},
+		},
+	}}
+	rows := buildReportData(run).Sections["Поиск"]
+	want := [][]string{
+		{"Вопрос", "Evidence rank", "Evidence hit@5", "Source hit@5"},
+		{"rank-k", "5", "да", "нет"},
+		{"missing", "—", "нет", "нет"},
+		{"Итого (N = 7)", "—", "1/2", "0/2"},
+	}
+	if !equalRows(rows, want) {
+		t.Fatalf("search=%v want=%v", rows, want)
+	}
+}
+
+func successfulCalls(n int) []Call {
+	calls := make([]Call, 3)
+	for i := 0; i < n; i++ {
+		calls[i].Score.Success = true
+	}
+	return calls
 }
 
 func equalRows(a, b [][]string) bool {
@@ -152,7 +209,7 @@ func TestReportRejectsQuestionHashDivergence(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = writeReport(runPath, questionsPath, filepath.Join(dir, "RESULTS.md"), filepath.Join(dir, "showcase.json"))
-	if err == nil || !strings.Contains(err.Error(), "questions.json") {
+	if err == nil || !strings.Contains(err.Error(), "sha256 questions.json разошёлся") {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -168,6 +225,70 @@ func TestReportRejectsPromptHashDivergence(t *testing.T) {
 	err := writeReport(runPath, "eval/questions.json", filepath.Join(dir, "RESULTS.md"), filepath.Join(dir, "showcase.json"))
 	if err == nil || !strings.Contains(err.Error(), "промптов") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestReportModeRejectsHashDivergence(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		diverge    func(*Run, string) error
+		wantStderr string
+	}{
+		{
+			name: "questions",
+			diverge: func(_ *Run, questionsPath string) error {
+				raw, err := os.ReadFile(questionsPath)
+				if err != nil {
+					return err
+				}
+				return os.WriteFile(questionsPath, append(raw, '\n'), 0600)
+			},
+			wantStderr: "sha256 questions.json разошёлся",
+		},
+		{
+			name: "prompts",
+			diverge: func(run *Run, _ string) error {
+				run.Meta.PromptsSHA256 = "wrong"
+				return nil
+			},
+			wantStderr: "промптов",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			questionsPath := filepath.Join(dir, "questions.json")
+			raw, err := os.ReadFile("eval/questions.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(questionsPath, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			runValue := syntheticRun(t, questionsPath)
+			if err := test.diverge(&runValue, questionsPath); err != nil {
+				t.Fatal(err)
+			}
+			runPath := filepath.Join(dir, "run.json")
+			resultsPath := filepath.Join(dir, "RESULTS.md")
+			showcasePath := filepath.Join(dir, "showcase.json")
+			if err := writeRun(runPath, runValue); err != nil {
+				t.Fatal(err)
+			}
+			oldRun, oldQuestions, oldResults, oldShowcase := defaultRun, defaultQuestions, defaultResults, defaultShowcase
+			defaultRun, defaultQuestions, defaultResults, defaultShowcase = runPath, questionsPath, resultsPath, showcasePath
+			t.Cleanup(func() {
+				defaultRun, defaultQuestions, defaultResults, defaultShowcase = oldRun, oldQuestions, oldResults, oldShowcase
+			})
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"-report"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), test.wantStderr) {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			for _, path := range []string{resultsPath, showcasePath} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("%s was written: %v", path, err)
+				}
+			}
+		})
 	}
 }
 

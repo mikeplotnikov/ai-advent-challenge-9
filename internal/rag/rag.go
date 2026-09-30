@@ -242,14 +242,6 @@ func ProjectPath(path string) string {
 			return filepath.Clean(filepath.Join(base, path))
 		}
 	}
-	for _, prefix := range []string{"day-21/", "day-22/"} {
-		trimmed := strings.TrimPrefix(path, prefix)
-		if trimmed != path {
-			if _, err := os.Stat(trimmed); err == nil {
-				return trimmed
-			}
-		}
-	}
 	return path
 }
 
@@ -328,6 +320,23 @@ func TerminalSafe(text string, limit int) string {
 			break
 		}
 		if unicode.IsControl(r) {
+			r = '?'
+		}
+		builder.WriteRune(r)
+		count++
+	}
+	return builder.String()
+}
+
+func TerminalSafeMultiline(text string, limit int) string {
+	var builder strings.Builder
+	count := 0
+	for _, r := range text {
+		if count == limit {
+			builder.WriteString("…")
+			break
+		}
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			r = '?'
 		}
 		builder.WriteRune(r)

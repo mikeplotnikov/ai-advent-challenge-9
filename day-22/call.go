@@ -73,7 +73,7 @@ func printPrompt(w io.Writer, mode string, messages []llm.Message) {
 
 func printCall(w io.Writer, call Call) {
 	if call.Error != "" {
-		fmt.Fprintf(w, "[%s] ошибка: %s\n", call.Mode, rag.TerminalSafe(call.Error, 1000))
+		fmt.Fprintf(w, "[%s] ошибка: %s\n", call.Mode, rag.TerminalSafeMultiline(call.Error, 1000))
 		return
 	}
 	answer := call.Response
@@ -81,7 +81,7 @@ func printCall(w io.Writer, call Call) {
 		answer = "(пустой ответ)"
 	}
 	fmt.Fprintf(w, "[%s]\n%s\nтокены: %d вход / %d выход (кэш: %d) · цена: ", call.Mode,
-		rag.TerminalSafe(answer, len([]rune(answer))), call.Usage.PromptTokens, call.Usage.CompletionTokens, call.Usage.PromptCacheHitTokens)
+		rag.TerminalSafeMultiline(answer, len([]rune(answer))), call.Usage.PromptTokens, call.Usage.CompletionTokens, call.Usage.PromptCacheHitTokens)
 	if call.CostKnown {
 		fmt.Fprintf(w, "$%.6f", call.CostUSD)
 	} else {

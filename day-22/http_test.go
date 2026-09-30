@@ -18,6 +18,12 @@ import (
 	"github.com/mikeplotnikov/ai-advent-challenge-9/internal/rag"
 )
 
+type testRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func modelResponse(content string) string {
 	return `{"id":"x","model":"deepseek-flash","choices":[{"message":{"role":"assistant","content":` + quoteJSON(content) + `},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":10}}`
 }
@@ -196,8 +202,47 @@ func TestBothKeepsSuccessfulAnswerWhenOtherModeFails(t *testing.T) {
 	defer func() { loadSearchFn = old }()
 	var stdout, stderr bytes.Buffer
 	code := runAsk(context.Background(), testClient(server), "unused", "q", "both", 5, false, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stdout.String(), "ошибка") || !strings.Contains(stdout.String(), "rag? survives?next") || strings.ContainsRune(stdout.String(), '\x1b') {
+	if code != 1 || !strings.Contains(stdout.String(), "ошибка") || !strings.Contains(stdout.String(), "rag? survives\nnext") || strings.ContainsRune(stdout.String(), '\x1b') {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestPrintCallPreservesLineBreaksAndRemovesControls(t *testing.T) {
+	for _, call := range []Call{
+		{Mode: "rag", Response: "first\n\x1b[31msecond"},
+		{Mode: "rag", Error: "first\n\x1b[31msecond"},
+	} {
+		var output bytes.Buffer
+		printCall(&output, call)
+		if !strings.Contains(output.String(), "first\n?[31msecond") {
+			t.Fatalf("line break was not preserved: %q", output.String())
+		}
+		if strings.ContainsRune(output.String(), '\x1b') {
+			t.Fatalf("ESC reached terminal output: %q", output.String())
+		}
+	}
+}
+
+func TestChunkPreviewCollapsesWhitespaceBeforeSanitizing(t *testing.T) {
+	oldSearch := loadSearchFn
+	loadSearchFn = func(context.Context, string, string, int) ([]FoundChunk, rag.IndexHeader, string, error) {
+		return []FoundChunk{{Rank: 1, Source: "a.md", Section: "A", ChunkID: "c", Text: "## Заголовок\n\nТекст\tс   разными\u2003пробелами\r\nКонец"}}, rag.IndexHeader{}, "", nil
+	}
+	t.Cleanup(func() { loadSearchFn = oldSearch })
+	client := &llm.Client{
+		APIKey: "test",
+		Model:  modelName,
+		URL:    "http://deepseek.invalid",
+		HTTP: &http.Client{Transport: testRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(modelResponse("ok")))}, nil
+		})},
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runAsk(context.Background(), client, "unused", "q", "rag", 5, false, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "## Заголовок Текст с разными пробелами Конец") || strings.ContainsRune(stdout.String(), '?') {
+		t.Fatalf("preview=%q", stdout.String())
 	}
 }
 
@@ -211,6 +256,58 @@ func TestCLIValidationHappensBeforeCalls(t *testing.T) {
 		if code := run(args, &out, &err); code != 2 {
 			t.Fatalf("%v code=%d stderr=%q", args, code, err.String())
 		}
+	}
+}
+
+func TestKInclusiveBounds(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("DEEPSEEK_API_KEY_DAY22", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	for _, test := range []struct {
+		k        string
+		wantCode int
+		wantKey  bool
+	}{
+		{"1", 1, true},
+		{"10", 1, true},
+		{"0", 2, false},
+		{"11", 2, false},
+	} {
+		t.Run("k="+test.k, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"-ask", "q", "-mode", "norag", "-k", test.k}, &stdout, &stderr)
+			if code != test.wantCode || strings.Contains(stderr.String(), "DEEPSEEK_API_KEY_DAY22") != test.wantKey {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestZeroModesAreRejectedBeforeCalls(t *testing.T) {
+	var calls atomic.Int32
+	oldSearch := loadSearchFn
+	loadSearchFn = func(context.Context, string, string, int) ([]FoundChunk, rag.IndexHeader, string, error) {
+		calls.Add(1)
+		return nil, rag.IndexHeader{}, "", errors.New("unexpected call")
+	}
+	t.Cleanup(func() { loadSearchFn = oldSearch })
+	t.Setenv("DEEPSEEK_API_KEY_DAY22", "test")
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{"empty", nil},
+		{"k-only", []string{"-k", "5"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "выберите ровно один режим") {
+				t.Fatalf("args=%v code=%d stderr=%q", test.args, code, stderr.String())
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("network phase reached %d times", calls.Load())
 	}
 }
 
@@ -263,18 +360,19 @@ func TestEvalExistingRunMakesNoCall(t *testing.T) {
 	}
 }
 
-func TestEvalLockPreventsConcurrentRunBeforeCalls(t *testing.T) {
+func TestEvalIgnoresStaleLock(t *testing.T) {
 	dir := t.TempDir()
+	t.Chdir(dir)
 	old := defaultRun
 	defaultRun = filepath.Join(dir, "run.json")
-	defer func() { defaultRun = old }()
+	t.Cleanup(func() { defaultRun = old })
 	if err := os.WriteFile(defaultRun+".lock", nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DEEPSEEK_API_KEY_DAY22", "")
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	var out, stderr bytes.Buffer
-	if code := run([]string{"-eval"}, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "замер уже выполняется") {
+	if code := run([]string{"-eval"}, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "DEEPSEEK_API_KEY_DAY22") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }
@@ -309,9 +407,6 @@ func TestEvalSecondFailureWritesNothing(t *testing.T) {
 		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("%s exists", path)
 		}
-	}
-	if _, statErr := os.Stat(defaultRun + ".lock"); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("eval lock remains: %v", statErr)
 	}
 }
 

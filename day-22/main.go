@@ -94,15 +94,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "проверить run.json:", err)
 			return 1
 		}
-		lock, err := acquireEvalLock(runPath)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		defer func() {
-			_ = lock.Close()
-			_ = os.Remove(lock.Name())
-		}()
 	}
 
 	llm.LoadDotEnv(".env")
@@ -135,18 +126,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return runAsk(ctx, client, *ollamaURL, *ask, *mode, *topK, *showPrompt, stdout, stderr)
 }
 
-func acquireEvalLock(runPath string) (*os.File, error) {
-	lockPath := runPath + ".lock"
-	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err == nil {
-		return lock, nil
-	}
-	if os.IsExist(err) {
-		return nil, fmt.Errorf("замер уже выполняется; если предыдущий процесс аварийно завершился, удалите %s вручную", lockPath)
-	}
-	return nil, fmt.Errorf("создать блокировку замера %s: %w", lockPath, err)
-}
-
 func runAsk(ctx context.Context, client *llm.Client, ollamaURL, question, mode string, k int, showPrompt bool, stdout, stderr io.Writer) int {
 	var chunks []FoundChunk
 	if mode == "rag" || mode == "both" {
@@ -158,7 +137,7 @@ func runAsk(ctx context.Context, client *llm.Client, ollamaURL, question, mode s
 		}
 		fmt.Fprintln(stdout, "[найденные чанки]")
 		for _, chunk := range chunks {
-			preview := rag.TerminalSafe(chunk.Text, 240)
+			preview := rag.TerminalSafe(strings.Join(strings.Fields(chunk.Text), " "), 240)
 			fmt.Fprintf(stdout, "%d. %.4f · %s · %s · %s\n%s\n", chunk.Rank, chunk.Similarity,
 				rag.TerminalSafe(chunk.ChunkID, 300), rag.TerminalSafe(chunk.Source, 300), rag.TerminalSafe(chunk.Section, 300), preview)
 		}

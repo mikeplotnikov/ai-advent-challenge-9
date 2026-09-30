@@ -88,3 +88,22 @@ func TestMajorityAndMcNemar(t *testing.T) {
 		t.Fatalf("McNemar row=%v", row)
 	}
 }
+
+func TestMajorityRequiresTwoOfThree(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		successes int
+		want      bool
+	}{
+		{"one", 1, false},
+		{"two", 2, true},
+		{"zero", 0, false},
+		{"three", 3, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := majority(successfulCalls(test.successes)); got != test.want {
+				t.Fatalf("majority(%d/3)=%v want %v", test.successes, got, test.want)
+			}
+		})
+	}
+}

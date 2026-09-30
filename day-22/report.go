@@ -89,9 +89,11 @@ func buildReportData(run Run) reportData {
 	verdict := "не показано на N = 10"
 	if p < 0.05 && b > c {
 		verdict = "показано при α = 0,05"
+	} else if p < 0.05 && c > b {
+		verdict = "показано обратное: без RAG лучше при α = 0,05"
 	}
 	needed := "—"
-	if verdict != "показано при α = 0,05" {
+	if verdict == "не показано на N = 10" {
 		needed = neededDiscordance(b, c, len(run.Questions))
 	}
 	sections["Макнемар"] = [][]string{
@@ -140,7 +142,7 @@ func buildReportData(run Run) reportData {
 		}
 		searchRows = append(searchRows, []string{question.Question.ID, rankCell(rank), yesNo(rank > 0 && rank <= run.Meta.K), yesNo(source)})
 	}
-	searchRows = append(searchRows, []string{"Итого (N = 7)", fmt.Sprintf("evidence hit@5 %d/%d", evidenceHits, searchN), fmt.Sprintf("%d/%d", evidenceHits, searchN), fmt.Sprintf("%d/%d", sourceHits, searchN)})
+	searchRows = append(searchRows, []string{"Итого (N = 7)", "—", fmt.Sprintf("%d/%d", evidenceHits, searchN), fmt.Sprintf("%d/%d", sourceHits, searchN)})
 	sections["Поиск"] = searchRows
 
 	citationRows := [][]string{{"Метрика", "Значение"}}

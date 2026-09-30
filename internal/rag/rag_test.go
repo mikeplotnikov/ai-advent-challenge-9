@@ -112,6 +112,12 @@ func TestTerminalSafeReplacesControlCharacters(t *testing.T) {
 	}
 }
 
+func TestTerminalSafeMultilinePreservesNewlinesAndTabs(t *testing.T) {
+	if got := TerminalSafeMultiline("a\n\tb\r\x1b\u0085c", 20); got != "a\n\tb???c" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestRankChunksAndEvidence(t *testing.T) {
 	index := validIndex()
 	index.Header.ChunkCount = 2
