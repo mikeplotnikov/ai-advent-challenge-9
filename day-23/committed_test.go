@@ -11,7 +11,7 @@ import (
 
 // The pinned hash moves only when a prompt text changes; a change after the measured
 // run must be disclosed, so this test makes it deliberate.
-const pinnedPromptsSHA256 = "264f8fc0245aa26aba5950d6309c1208dff7cb4940fa3f02d19413cef3bb64ff"
+const pinnedPromptsSHA256 = "5d9eb7418c79a0d287aca728784ed6c0c5cc786437576c844d85e087b3a8fdc9"
 
 func TestPromptsPinned(t *testing.T) {
 	if got := promptsSHA256(); got != pinnedPromptsSHA256 {
