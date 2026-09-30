@@ -214,6 +214,9 @@ func buildSections(run Run) map[string][][]string {
 	outcomes := [][]string{append([]string{"Исход"}, modeHeader...)}
 	for _, outcome := range []string{"correct", "partial", "unknown", "wrong", "declined", "fabricated", "empty", "filtered_out"} {
 		row := []string{outcome}
+		if outcome == "filtered_out" {
+			row = []string{"из них без вызова модели (filtered_out)"}
+		}
 		for _, mode := range allModes {
 			count := 0
 			for _, question := range run.Questions {
@@ -309,7 +312,7 @@ func renderResults(run Run, sections map[string][][]string) []byte {
 	}
 	out.WriteString("## Ограничения\n\n")
 	out.WriteString("Порог косинуса выбран по данным дня 21 — тем же вопросам, на которых идёт замер: это настройка, а не проверка на отложенной выборке. ")
-	out.WriteString("Вопросов без ответа в базе два; x01 отсекается одним порогом косинуса, реранкер на таком вопросе проверяет только x02. ")
+	fmt.Fprintf(&out, "Вопросов без ответа в базе %d; чем отсечён каждый в каждом режиме — таблица «%s». ", len(sections[secNegatives])-1, secNegatives)
 	out.WriteString("Сужение контекста показано описательно (чанки, токены), не проверено тестом. Одна модель, R = 1 (в дне 22 три повтора при temperature 0 совпали во всех 20 строках); факты ответа проверяются шаблонами.\n")
 	return []byte(out.String())
 }
