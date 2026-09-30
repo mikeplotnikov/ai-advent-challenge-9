@@ -311,6 +311,13 @@ func (c *OllamaClient) Embed(ctx context.Context, chunkID, input string) ([]floa
 	return vector, decoded.PromptEvalCount, normalized, nil
 }
 
+// unsafeForTerminal reports runes that can change how a terminal lays text out:
+// C0/C1 controls, and format or separator runes above Latin-1 (bidi overrides,
+// zero-width characters, U+2028/U+2029) that unicode.IsControl does not cover.
+func unsafeForTerminal(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+}
+
 func TerminalSafe(text string, limit int) string {
 	var builder strings.Builder
 	count := 0
@@ -319,7 +326,7 @@ func TerminalSafe(text string, limit int) string {
 			builder.WriteString("…")
 			break
 		}
-		if unicode.IsControl(r) {
+		if unsafeForTerminal(r) {
 			r = '?'
 		}
 		builder.WriteRune(r)
@@ -336,7 +343,7 @@ func TerminalSafeMultiline(text string, limit int) string {
 			builder.WriteString("…")
 			break
 		}
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		if unsafeForTerminal(r) && r != '\n' && r != '\t' {
 			r = '?'
 		}
 		builder.WriteRune(r)

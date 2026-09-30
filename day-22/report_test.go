@@ -125,7 +125,7 @@ func TestReportShowsReverseMcNemarEffect(t *testing.T) {
 		})
 	}
 	row := buildReportData(run).Sections["Макнемар"][1]
-	if row[1] != "0" || row[2] != "6" || row[3] != "0.0313" || row[4] != "показано обратное: без RAG лучше при α = 0,05" {
+	if row[1] != "0" || row[2] != "6" || row[3] != "0.0313" || row[4] != "показано обратное: без RAG лучше при α = 0,05" || row[5] != "—" {
 		t.Fatalf("McNemar row=%v", row)
 	}
 }

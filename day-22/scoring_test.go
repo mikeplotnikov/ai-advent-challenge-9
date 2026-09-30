@@ -84,7 +84,7 @@ func TestMajorityAndMcNemar(t *testing.T) {
 		})
 	}
 	row := buildReportData(run).Sections["Макнемар"][1]
-	if row[1] != "6" || row[2] != "0" || row[3] != "0.0313" {
+	if row[1] != "6" || row[2] != "0" || row[3] != "0.0313" || row[4] != "показано при α = 0,05" || row[5] != "—" {
 		t.Fatalf("McNemar row=%v", row)
 	}
 }

@@ -118,6 +118,18 @@ func TestTerminalSafeMultilinePreservesNewlinesAndTabs(t *testing.T) {
 	}
 }
 
+func TestTerminalSafeReplacesFormatAndSeparatorRunes(t *testing.T) {
+	input := "a\u202eb\u2066c\u200bd\u2028e\u2029f"
+	for name, got := range map[string]string{
+		"single":    TerminalSafe(input, 40),
+		"multiline": TerminalSafeMultiline(input, 40),
+	} {
+		if got != "a?b?c?d?e?f" {
+			t.Fatalf("%s: got %q", name, got)
+		}
+	}
+}
+
 func TestRankChunksAndEvidence(t *testing.T) {
 	index := validIndex()
 	index.Header.ChunkCount = 2
