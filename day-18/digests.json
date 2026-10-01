@@ -5143,5 +5143,146 @@
       "called_summary": false,
       "quotes_last_rates": false
     }
+  },
+  {
+    "at": "2026-10-01T23:56:04Z",
+    "slot_start": "2026-10-01T21:00:00Z",
+    "digest_every": "3h0m0s",
+    "window_hours": 24,
+    "text": "**Наблюдение w1** (USD, EUR, CNY; опрос каждые 60 мин, активно). Окно: 30.09 23:56 — 01.10 23:56 UTC (02.10 02:56 МСК).\n\n| Валюта | Последний курс | Дата курса | Δ за окно | Δ % |\n|---|---|---|---|---|\n| USD | 83,2454 ₽ | 02.10.2026 | −0,3134 ₽ | −0,38 % |\n| EUR | 94,5252 ₽ | 02.10.2026 | −0,3558 ₽ | −0,38 % |\n| CNY | 12,4028 ₽ | 02.10.2026 | −0,0704 ₽ | −0,56 % |\n\nОпросы: 4 успешных, 0 сбоев (последний — 02:56 МСК). Новых публикаций: 2 (курсы на 01.10 и 02.10). Все три валюты снизились к рублю.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 3,
+    "tool_calls": [
+      {
+        "name": "list_watches",
+        "arguments": {},
+        "is_error": false
+      },
+      {
+        "name": "get_watch_summary",
+        "arguments": {
+          "hours": 24,
+          "watch_id": "w1"
+        },
+        "is_error": false
+      }
+    ],
+    "summary": {
+      "now": "2026-10-01T23:56:06Z",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "codes": [
+            "USD",
+            "EUR",
+            "CNY"
+          ],
+          "every_minutes": 60,
+          "status": "active",
+          "guest": false,
+          "expires_at": "",
+          "hours": 24,
+          "from": "2026-09-30T23:56:06Z",
+          "to": "2026-10-01T23:56:06Z",
+          "polls": {
+            "total": 4,
+            "ok": 4,
+            "failed": 0,
+            "last_at": "2026-10-01T23:56:02Z",
+            "last_error": ""
+          },
+          "publications": [
+            {
+              "rates_date": "2026-10-01",
+              "first_seen_at": "2026-10-01T06:03:35Z"
+            },
+            {
+              "rates_date": "2026-10-02",
+              "first_seen_at": "2026-10-01T19:35:32Z"
+            }
+          ],
+          "currencies": [
+            {
+              "code": "USD",
+              "first": {
+                "rates_date": "2026-10-01",
+                "unit_rate": 83.5588
+              },
+              "last": {
+                "rates_date": "2026-10-02",
+                "unit_rate": 83.2454
+              },
+              "min": 83.2454,
+              "max": 83.5588,
+              "avg": 83.4021,
+              "change": -0.3134,
+              "change_pct": -0.3751
+            },
+            {
+              "code": "EUR",
+              "first": {
+                "rates_date": "2026-10-01",
+                "unit_rate": 94.881
+              },
+              "last": {
+                "rates_date": "2026-10-02",
+                "unit_rate": 94.5252
+              },
+              "min": 94.5252,
+              "max": 94.881,
+              "avg": 94.7031,
+              "change": -0.3558,
+              "change_pct": -0.375
+            },
+            {
+              "code": "CNY",
+              "first": {
+                "rates_date": "2026-10-01",
+                "unit_rate": 12.4732
+              },
+              "last": {
+                "rates_date": "2026-10-02",
+                "unit_rate": 12.4028
+              },
+              "min": 12.4028,
+              "max": 12.4732,
+              "avg": 12.438,
+              "change": -0.0704,
+              "change_pct": -0.5644
+            }
+          ],
+          "missing_codes": []
+        }
+      ]
+    },
+    "tokens": {
+      "prompt": 3264,
+      "cached": 1792,
+      "output": 331,
+      "per_call": [
+        {
+          "prompt": 800,
+          "cached": 0,
+          "output": 29
+        },
+        {
+          "prompt": 968,
+          "cached": 768,
+          "output": 58
+        },
+        {
+          "prompt": 1496,
+          "cached": 1024,
+          "output": 244
+        }
+      ]
+    },
+    "cost": 0.000424776,
+    "cost_known": true,
+    "checks": {
+      "called_summary": true,
+      "quotes_last_rates": true
+    }
   }
 ]
