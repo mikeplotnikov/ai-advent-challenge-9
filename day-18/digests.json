@@ -5119,5 +5119,29 @@
       "called_summary": true,
       "quotes_last_rates": true
     }
+  },
+  {
+    "at": "2026-10-01T19:35:33Z",
+    "slot_start": "2026-10-01T18:00:00Z",
+    "digest_every": "3h0m0s",
+    "window_hours": 24,
+    "text": "",
+    "error": "context deadline exceeded",
+    "model": "",
+    "model_calls": 0,
+    "tool_calls": [],
+    "summary": null,
+    "tokens": {
+      "prompt": 0,
+      "cached": 0,
+      "output": 0,
+      "per_call": []
+    },
+    "cost": 0,
+    "cost_known": true,
+    "checks": {
+      "called_summary": false,
+      "quotes_last_rates": false
+    }
   }
 ]
