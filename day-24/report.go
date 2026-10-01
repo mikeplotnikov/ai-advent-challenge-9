@@ -87,7 +87,14 @@ func buildReport(r Run, sha string, review map[string]Semantic) (Showcase, strin
 	}
 	text := fmt.Sprintf("# День 24 — сохранённый прогон\n\nRun SHA256: %s\n\nКод: %s. Модель: %s. R=1, вопросов: %d. Вызовов: %d. Стоимость: %s.\n\nИсточники: %d/%d содержательных ответов. Цитаты: %d/%d содержательных ответов. Отказы: %d/%d; потеря ответа in_base: %d/7.\n\n%s\nЭталонные факты — ограниченная проверка регулярными выражениями дня 22; она не оценивает весь смысл. Совпадение цитаты — дословный substring и проверка тройки source/section/chunk_id, а не доказательство поддержки каждого утверждения. Смысловая оценка — независимое экспертное суждение. Один прогон одной модели не доказывает отсутствие галлюцинаций. Уточнения чата ведущего за 01.10 не проверены.\n", sha, r.Meta.Commit, r.Meta.RequestedModel, len(r.Questions), r.Meta.ModelCalls, cost, data.Results["source_pass"], data.Results["substantive"], data.Results["quote_pass"], data.Results["substantive"], data.Results["unknown"], len(r.Questions), data.Results["in_base_unknown"], table.String())
 	for _, q := range data.Questions {
-		text += fmt.Sprintf("\n## %s\n\n%s\n\n%s\n\nУточнение: %s\n\nПричина отказа: %s\n\nСмысловая оценка: %s — %s\n", q.Question.ID, q.Question.Question, q.Answer.Answer, q.Answer.Clarification, q.Checks.RefusalReason, q.Semantic.Verdict, q.Semantic.Reason)
+		clarification, refusal := q.Answer.Clarification, q.Checks.RefusalReason
+		if strings.TrimSpace(clarification) == "" {
+			clarification = "—"
+		}
+		if strings.TrimSpace(refusal) == "" {
+			refusal = "—"
+		}
+		text += fmt.Sprintf("\n## %s\n\n%s\n\n%s\n\nУточнение: %s\n\nПричина отказа: %s\n\nСмысловая оценка: %s — %s\n", q.Question.ID, q.Question.Question, q.Answer.Answer, clarification, refusal, q.Semantic.Verdict, q.Semantic.Reason)
 		for _, s := range q.Answer.Sources {
 			text += fmt.Sprintf("\nИсточник: %s · %s · %s\n\n> %s\n", s.Source, s.Section, s.ChunkID, strings.ReplaceAll(s.Quote, "\n", "\n> "))
 		}
