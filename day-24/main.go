@@ -114,6 +114,7 @@ func runCLI(args []string, out, errout io.Writer) int {
 		}
 		if e != nil {
 			fmt.Fprintln(errout, rag.TerminalSafe(e.Error(), 2000))
+			printConsumedCosts(errout, r.Questions)
 			return 1
 		}
 		fmt.Fprintf(out, "run.json сохранён: %d вызовов, $%.8f\n", r.Meta.ModelCalls, r.Meta.TotalCostUSD)
@@ -122,10 +123,30 @@ func runCLI(args []string, out, errout io.Writer) int {
 	q, e := measureQuestion(ctx, client, s, Question{ID: "ask", Kind: "ask", Question: *ask}, p)
 	if e != nil {
 		fmt.Fprintln(errout, rag.TerminalSafe(e.Error(), 2000))
+		printConsumedCosts(errout, []QuestionRun{q})
 		return 1
 	}
 	printQuestion(out, q, p)
 	return 0
+}
+func printConsumedCosts(w io.Writer, questions []QuestionRun) {
+	var usage llm.Usage
+	attempts := 0
+	cost := 0.0
+	known := true
+	for _, q := range questions {
+		for _, call := range questionCalls(q) {
+			attempts += len(call.Attempts)
+			addUsage(&usage, call.Usage)
+			cost += call.CostUSD
+			known = known && call.CostKnown
+		}
+	}
+	price := "неизвестна"
+	if known {
+		price = fmt.Sprintf("$%.8f", cost)
+	}
+	fmt.Fprintf(w, "Затраты до ошибки: попыток %d; вход %d / выход %d / всего %d токенов; цена %s\n", attempts, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, price)
 }
 func printQuestion(w io.Writer, q QuestionRun, p Params) {
 	safe := func(s string) string { return rag.TerminalSafeMultiline(s, 10000) }

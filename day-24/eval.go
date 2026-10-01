@@ -144,10 +144,11 @@ func runEvaluation(ctx context.Context, client *llm.Client, s Searcher, w io.Wri
 	for i, q := range qs {
 		fmt.Fprintf(w, "%d/%d %s\n", i+1, len(qs), q.ID)
 		item, e := measureQuestion(ctx, client, s, q, evalParams)
+		r.Questions = append(r.Questions, item)
 		if e != nil {
+			totalRun(&r)
 			return r, fmt.Errorf("%s: %w", q.ID, e)
 		}
-		r.Questions = append(r.Questions, item)
 	}
 	totalRun(&r)
 	return r, nil
