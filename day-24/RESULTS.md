@@ -1,24 +1,3 @@
-# День 24 — цитаты и источники
-
-Продолжение дня 23: rewrite → bge-m3 → top-10 → cosine ≥ 0.45 → DeepSeek rerank ≥ 2 → top-3 → JSON-ответ. Требуются точные источники и дословные цитаты; отсутствие контекста вызывает локальный отказ без генерации. Ответ модели проверяется строго, один повтор при ошибке.
-
-Команды из корня репозитория:
-
-```sh
-go run ./day-24 -ask 'Что меняет temperature?'
-go run ./day-24 -ask 'Что меняет temperature?' -cos 0.5 -min-score 2 -k-before 10 -k-after 3
-go run ./day-24 -eval
-go run ./day-24 -report
-go test ./day-24 -count=1
-go vet ./day-24
-```
-
-Живые команды требуют Ollama bge-m3, существующий индекс дня 21 и ключ DEEPSEEK_API_KEY_DAY24 (либо DEEPSEEK_API_KEY) через штатный загрузчик настроек. Значения ключей не выводятся. -eval выполняет ровно 10 замороженных вопросов дня 22, не перезаписывает run.json. Повторный замер требует перенести исходный day-24/run.json, run.json.sha256 и semantic-review.json в архив вручную. -report работает без сети, проверяет хеши данных, промптов и кода; строит RESULTS.md, showcase.json и этот README.
-
-Независимый проверяющий читает run.json, все ответы и цитаты. semantic-review.json имеет форму {run_sha256: SHA256 исходного run.json, questions: [{id, verdict, reason}]}; ровно 10 уникальных id, verdict supported/unsupported/unknown, непустая reason. Если файла нет, оценки pending.
-
-<!-- GENERATED RESULTS -->
-
 # День 24 — сохранённый прогон
 
 Run SHA256: 956ca6e23407d6bd00fdb7e33aa09bfae58d7bce92f82f47fc013d5326980e02
