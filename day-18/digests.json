@@ -5707,5 +5707,146 @@
       "called_summary": true,
       "quotes_last_rates": true
     }
+  },
+  {
+    "at": "2026-10-02T23:01:04Z",
+    "slot_start": "2026-10-02T21:00:00Z",
+    "digest_every": "3h0m0s",
+    "window_hours": 24,
+    "text": "**Наблюдение w1** (USD, EUR, CNY; опрос каждые 60 мин; активно). Окно: 02.10 02:01 — 03.10 02:01 МСК.\n\n- **USD**: последний курс 83,4839 ₽ на 03.10.2026; изменение +0,2385 ₽ (+0,29%).\n- **EUR**: последний курс 94,3201 ₽ на 03.10.2026; изменение −0,2051 ₽ (−0,22%).\n- **CNY**: последний курс 12,4328 ₽ на 03.10.2026; изменение +0,0300 ₽ (+0,24%).\n\nОпросы: 5 успешных, 0 сбоев. Новых публикаций: 2 (курсы на 02.10 и 03.10). Последний опрос — 03.10 02:01 МСК.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 3,
+    "tool_calls": [
+      {
+        "name": "list_watches",
+        "arguments": {},
+        "is_error": false
+      },
+      {
+        "name": "get_watch_summary",
+        "arguments": {
+          "hours": 24,
+          "watch_id": "w1"
+        },
+        "is_error": false
+      }
+    ],
+    "summary": {
+      "now": "2026-10-02T23:01:06Z",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "codes": [
+            "USD",
+            "EUR",
+            "CNY"
+          ],
+          "every_minutes": 60,
+          "status": "active",
+          "guest": false,
+          "expires_at": "",
+          "hours": 24,
+          "from": "2026-10-01T23:01:06Z",
+          "to": "2026-10-02T23:01:06Z",
+          "polls": {
+            "total": 5,
+            "ok": 5,
+            "failed": 0,
+            "last_at": "2026-10-02T23:01:03Z",
+            "last_error": ""
+          },
+          "publications": [
+            {
+              "rates_date": "2026-10-02",
+              "first_seen_at": "2026-10-01T23:56:02Z"
+            },
+            {
+              "rates_date": "2026-10-03",
+              "first_seen_at": "2026-10-02T18:28:41Z"
+            }
+          ],
+          "currencies": [
+            {
+              "code": "USD",
+              "first": {
+                "rates_date": "2026-10-02",
+                "unit_rate": 83.2454
+              },
+              "last": {
+                "rates_date": "2026-10-03",
+                "unit_rate": 83.4839
+              },
+              "min": 83.2454,
+              "max": 83.4839,
+              "avg": 83.36465,
+              "change": 0.2385,
+              "change_pct": 0.2865
+            },
+            {
+              "code": "EUR",
+              "first": {
+                "rates_date": "2026-10-02",
+                "unit_rate": 94.5252
+              },
+              "last": {
+                "rates_date": "2026-10-03",
+                "unit_rate": 94.3201
+              },
+              "min": 94.3201,
+              "max": 94.5252,
+              "avg": 94.42265,
+              "change": -0.2051,
+              "change_pct": -0.217
+            },
+            {
+              "code": "CNY",
+              "first": {
+                "rates_date": "2026-10-02",
+                "unit_rate": 12.4028
+              },
+              "last": {
+                "rates_date": "2026-10-03",
+                "unit_rate": 12.4328
+              },
+              "min": 12.4028,
+              "max": 12.4328,
+              "avg": 12.4178,
+              "change": 0.03,
+              "change_pct": 0.2419
+            }
+          ],
+          "missing_codes": []
+        }
+      ]
+    },
+    "tokens": {
+      "prompt": 3262,
+      "cached": 1792,
+      "output": 301,
+      "per_call": [
+        {
+          "prompt": 800,
+          "cached": 0,
+          "output": 29
+        },
+        {
+          "prompt": 968,
+          "cached": 768,
+          "output": 58
+        },
+        {
+          "prompt": 1494,
+          "cached": 1024,
+          "output": 214
+        }
+      ]
+    },
+    "cost": 0.000406476,
+    "cost_known": true,
+    "checks": {
+      "called_summary": true,
+      "quotes_last_rates": true
+    }
   }
 ]
