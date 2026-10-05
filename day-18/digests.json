@@ -7507,5 +7507,146 @@
       "called_summary": true,
       "quotes_last_rates": true
     }
+  },
+  {
+    "at": "2026-10-05T22:42:43Z",
+    "slot_start": "2026-10-05T21:00:00Z",
+    "digest_every": "3h0m0s",
+    "window_hours": 24,
+    "text": "**Наблюдение w1** (USD, EUR, CNY; опрос раз в 60 мин, активно). Окно: 04.10 01:42 — 05.10 22:42 МСК.\n\n- **USD**: последний курс 84,9309 ₽ на 06.10.2026; изменение +1,447 ₽ (+1,73%). Средний 84,2074; мин 83,4839 (03.10), макс 84,9309.\n- **EUR**: последний курс 95,3349 ₽ на 06.10.2026; изменение +1,0148 ₽ (+1,08%). Средний 94,8275; мин 94,3201 (03.10), макс 95,3349.\n- **CNY**: последний курс 12,6491 ₽ на 06.10.2026; изменение +0,2163 ₽ (+1,74%). Средний 12,5410; мин 12,4328 (03.10), макс 12,6491.\n\nОпросы: 4 успешных, 0 сбоев (последний — 05.10 22:42 МСК). Новых публикаций: 2 (курсы на 03.10 и 06.10). Пропущенных кодов нет.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 3,
+    "tool_calls": [
+      {
+        "name": "list_watches",
+        "arguments": {},
+        "is_error": false
+      },
+      {
+        "name": "get_watch_summary",
+        "arguments": {
+          "hours": 24,
+          "watch_id": "w1"
+        },
+        "is_error": false
+      }
+    ],
+    "summary": {
+      "now": "2026-10-05T22:42:45Z",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "codes": [
+            "USD",
+            "EUR",
+            "CNY"
+          ],
+          "every_minutes": 60,
+          "status": "active",
+          "guest": false,
+          "expires_at": "",
+          "hours": 24,
+          "from": "2026-10-04T22:42:45Z",
+          "to": "2026-10-05T22:42:45Z",
+          "polls": {
+            "total": 4,
+            "ok": 4,
+            "failed": 0,
+            "last_at": "2026-10-05T22:42:42Z",
+            "last_error": ""
+          },
+          "publications": [
+            {
+              "rates_date": "2026-10-03",
+              "first_seen_at": "2026-10-05T01:00:21Z"
+            },
+            {
+              "rates_date": "2026-10-06",
+              "first_seen_at": "2026-10-05T16:06:43Z"
+            }
+          ],
+          "currencies": [
+            {
+              "code": "USD",
+              "first": {
+                "rates_date": "2026-10-03",
+                "unit_rate": 83.4839
+              },
+              "last": {
+                "rates_date": "2026-10-06",
+                "unit_rate": 84.9309
+              },
+              "min": 83.4839,
+              "max": 84.9309,
+              "avg": 84.2074,
+              "change": 1.447,
+              "change_pct": 1.7333
+            },
+            {
+              "code": "EUR",
+              "first": {
+                "rates_date": "2026-10-03",
+                "unit_rate": 94.3201
+              },
+              "last": {
+                "rates_date": "2026-10-06",
+                "unit_rate": 95.3349
+              },
+              "min": 94.3201,
+              "max": 95.3349,
+              "avg": 94.8275,
+              "change": 1.0148,
+              "change_pct": 1.0759
+            },
+            {
+              "code": "CNY",
+              "first": {
+                "rates_date": "2026-10-03",
+                "unit_rate": 12.4328
+              },
+              "last": {
+                "rates_date": "2026-10-06",
+                "unit_rate": 12.6491
+              },
+              "min": 12.4328,
+              "max": 12.6491,
+              "avg": 12.54095,
+              "change": 0.2163,
+              "change_pct": 1.7398
+            }
+          ],
+          "missing_codes": []
+        }
+      ]
+    },
+    "tokens": {
+      "prompt": 3261,
+      "cached": 1792,
+      "output": 386,
+      "per_call": [
+        {
+          "prompt": 800,
+          "cached": 0,
+          "output": 29
+        },
+        {
+          "prompt": 968,
+          "cached": 768,
+          "output": 58
+        },
+        {
+          "prompt": 1493,
+          "cached": 1024,
+          "output": 299
+        }
+      ]
+    },
+    "cost": 0.000457326,
+    "cost_known": true,
+    "checks": {
+      "called_summary": true,
+      "quotes_last_rates": true
+    }
   }
 ]
