@@ -1,0 +1,164 @@
+{
+  "created_at": "2026-10-07T07:16:59Z",
+  "endpoint": "http://127.0.0.1:11434",
+  "model": "qwen3:4b",
+  "digest": "359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7",
+  "ollama_version": "0.33.2",
+  "platform": "darwin/arm64",
+  "model_metadata": {
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "details": {
+      "families": [
+        "qwen3"
+      ],
+      "family": "qwen3",
+      "format": "gguf",
+      "parameter_size": "4.0B",
+      "parent_model": "",
+      "quantization_level": "Q4_K_M"
+    }
+  },
+  "results": [
+    {
+      "id": "arithmetic",
+      "title": "Простой расчёт",
+      "difficulty": "Простой",
+      "request": {
+        "model": "qwen3:4b",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Ты выполняешь учебные задания. Отвечай по-русски. Соблюдай указанный формат ответа."
+          },
+          {
+            "role": "user",
+            "content": "Сколько будет 17 + 25? Ответь только одним числом, без пояснений."
+          }
+        ],
+        "stream": false,
+        "think": false,
+        "options": {
+          "num_ctx": 4096,
+          "num_predict": 512,
+          "seed": 26,
+          "temperature": 0
+        }
+      },
+      "response": {
+        "model": "qwen3:4b",
+        "created_at": "2026-10-07T07:17:06.96161Z",
+        "message": {
+          "role": "assistant",
+          "content": "Хорошо, мне нужно посчитать 17 плюс 25. Давай подумаю. Сначала я вспомню, как складывать числа. 17 это десять плюс семь, а 25 это двадцать пять. Если я сложу десять и двадцать пять, то получу тридцать пять, а потом к этому добавлю семь. Тогда 35 плюс 7 будет 42. Проверю ещё раз: 17 плюс 20 это 37, а потом плюс 5 — получается 42. Да, всё правильно. Значит, ответ 42.\n\u003c/think\u003e\n\n42"
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 7735105917,
+        "load_duration": 2390411959,
+        "prompt_eval_count": 69,
+        "prompt_eval_duration": 482923000,
+        "eval_count": 170,
+        "eval_duration": 4854791000
+      },
+      "wall_ms": 7735,
+      "passed": false,
+      "check": "Ожидается ровно 42: 17 + 25."
+    },
+    {
+      "id": "extraction",
+      "title": "Извлечение данных",
+      "difficulty": "Средний",
+      "request": {
+        "model": "qwen3:4b",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Ты выполняешь учебные задания. Отвечай по-русски. Соблюдай указанный формат ответа."
+          },
+          {
+            "role": "user",
+            "content": "Извлеки данные из текста. Ответ — только JSON с тремя ключами city (строка), date (YYYY-MM-DD), participants (целое число). Текст: Встреча пройдёт в Казани 12 октября 2026 года. Подтвердили участие 12 человек. Название города в ответе: Казань."
+          }
+        ],
+        "stream": false,
+        "think": false,
+        "options": {
+          "num_ctx": 4096,
+          "num_predict": 512,
+          "seed": 26,
+          "temperature": 0
+        },
+        "format": "json"
+      },
+      "response": {
+        "model": "qwen3:4b",
+        "created_at": "2026-10-07T07:17:08.356267Z",
+        "message": {
+          "role": "assistant",
+          "content": "{\n  \"city\": \"Казань\",\n  \"date\": \"2026-10-12\",\n  \"participants\": 12\n}"
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 1393885667,
+        "load_duration": 1731583,
+        "prompt_eval_count": 131,
+        "prompt_eval_duration": 303951000,
+        "eval_count": 37,
+        "eval_duration": 1083049000
+      },
+      "wall_ms": 1394,
+      "passed": true,
+      "check": "Три поля JSON совпадают с исходным текстом."
+    },
+    {
+      "id": "optimization",
+      "title": "Выбор с ограничениями",
+      "difficulty": "Сложный",
+      "request": {
+        "model": "qwen3:4b",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Ты выполняешь учебные задания. Отвечай по-русски. Соблюдай указанный формат ответа."
+          },
+          {
+            "role": "user",
+            "content": "Выбери набор занятий с максимальной суммарной полезностью. Каждое занятие можно взять не более одного раза. Бюджет не более 5000 рублей, время не более 4 часов. Занятия независимы, стоимости и часы складываются.\nA: цена 2000 рублей, время 2 ч, полезность 6.\nB: цена 3000 рублей, время 3 ч, полезность 10.\nC: цена 1500 рублей, время 2 ч, полезность 5.\nD: цена 2500 рублей, время 1 ч, полезность 8.\nОтветь только JSON: selected (массив выбранных букв), cost (суммарная цена), hours (суммарные часы), score (суммарная полезность)."
+          }
+        ],
+        "stream": false,
+        "think": false,
+        "options": {
+          "num_ctx": 4096,
+          "num_predict": 512,
+          "seed": 26,
+          "temperature": 0
+        },
+        "format": "json"
+      },
+      "response": {
+        "model": "qwen3:4b",
+        "created_at": "2026-10-07T07:17:09.853857Z",
+        "message": {
+          "role": "assistant",
+          "content": "{\n  \"selected\": [],\n  \"cost\": 0,\n  \"hours\": 0,\n  \"score\": 0\n}"
+        },
+        "done": true,
+        "done_reason": "stop",
+        "total_duration": 1497214667,
+        "load_duration": 868042,
+        "prompt_eval_count": 241,
+        "prompt_eval_duration": 662316000,
+        "eval_count": 29,
+        "eval_duration": 829213000
+      },
+      "wall_ms": 1497,
+      "passed": false,
+      "check": "Суммы пересчитаны; ограничения ≤5000 ₽ и ≤4 ч; оптимальная полезность 14 проверена перебором всех наборов."
+    }
+  ]
+}
