@@ -10171,5 +10171,143 @@
       "called_summary": true,
       "quotes_last_rates": true
     }
+  },
+  {
+    "at": "2026-10-10T13:47:45Z",
+    "slot_start": "2026-10-10T12:00:00Z",
+    "digest_every": "3h0m0s",
+    "window_hours": 24,
+    "text": "**Наблюдение w1** (USD, EUR, CNY; опрос каждые 60 мин; активно)\n\nЗа окно 24 ч (09.10 16:47 – 10.10 16:47 МСК) ЦБ опубликовал один курс — на 10.10.2026, поэтому изменения нулевые.\n\n| Валюта | Последний курс | Дата курса | Δ за окно | Δ % |\n|---|---|---|---|---|\n| USD | 84,9048 ₽ | 10.10.2026 | 0 ₽ | 0 % |\n| EUR | 94,9745 ₽ | 10.10.2026 | 0 ₽ | 0 % |\n| CNY | 12,6739 ₽ | 10.10.2026 | 0 ₽ | 0 % |\n\nОпросы: 5 успешных, 0 сбоев (последний — 10.10 16:47 МСК). Новых публикаций: 1 (впервые замечена 09.10 19:17 МСК). Пропущенных кодов нет.",
+    "error": "",
+    "model": "deepseek-flash",
+    "model_calls": 3,
+    "tool_calls": [
+      {
+        "name": "list_watches",
+        "arguments": {},
+        "is_error": false
+      },
+      {
+        "name": "get_watch_summary",
+        "arguments": {
+          "hours": 24,
+          "watch_id": "w1"
+        },
+        "is_error": false
+      }
+    ],
+    "summary": {
+      "now": "2026-10-10T13:47:47Z",
+      "watches": [
+        {
+          "watch_id": "w1",
+          "codes": [
+            "USD",
+            "EUR",
+            "CNY"
+          ],
+          "every_minutes": 60,
+          "status": "active",
+          "guest": false,
+          "expires_at": "",
+          "hours": 24,
+          "from": "2026-10-09T13:47:47Z",
+          "to": "2026-10-10T13:47:47Z",
+          "polls": {
+            "total": 5,
+            "ok": 5,
+            "failed": 0,
+            "last_at": "2026-10-10T13:47:44Z",
+            "last_error": ""
+          },
+          "publications": [
+            {
+              "rates_date": "2026-10-10",
+              "first_seen_at": "2026-10-09T16:17:24Z"
+            }
+          ],
+          "currencies": [
+            {
+              "code": "USD",
+              "first": {
+                "rates_date": "2026-10-10",
+                "unit_rate": 84.9048
+              },
+              "last": {
+                "rates_date": "2026-10-10",
+                "unit_rate": 84.9048
+              },
+              "min": 84.9048,
+              "max": 84.9048,
+              "avg": 84.9048,
+              "change": 0,
+              "change_pct": 0
+            },
+            {
+              "code": "EUR",
+              "first": {
+                "rates_date": "2026-10-10",
+                "unit_rate": 94.9745
+              },
+              "last": {
+                "rates_date": "2026-10-10",
+                "unit_rate": 94.9745
+              },
+              "min": 94.9745,
+              "max": 94.9745,
+              "avg": 94.9745,
+              "change": 0,
+              "change_pct": 0
+            },
+            {
+              "code": "CNY",
+              "first": {
+                "rates_date": "2026-10-10",
+                "unit_rate": 12.6739
+              },
+              "last": {
+                "rates_date": "2026-10-10",
+                "unit_rate": 12.6739
+              },
+              "min": 12.6739,
+              "max": 12.6739,
+              "avg": 12.6739,
+              "change": 0,
+              "change_pct": 0
+            }
+          ],
+          "missing_codes": [],
+          "note": "за окно ЦБ опубликовал один курс"
+        }
+      ]
+    },
+    "tokens": {
+      "prompt": 3227,
+      "cached": 1792,
+      "output": 334,
+      "per_call": [
+        {
+          "prompt": 800,
+          "cached": 0,
+          "output": 29
+        },
+        {
+          "prompt": 968,
+          "cached": 768,
+          "output": 58
+        },
+        {
+          "prompt": 1459,
+          "cached": 1024,
+          "output": 247
+        }
+      ]
+    },
+    "cost": 0.000421026,
+    "cost_known": true,
+    "checks": {
+      "called_summary": true,
+      "quotes_last_rates": true
+    }
   }
 ]
