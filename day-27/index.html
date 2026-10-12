@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>День 27 — локальный чат</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main class="wrap">
+<header><h1>День 27 — локальный чат</h1><span class="tag">живое приложение</span></header>
+<p class="lede">Напишите вопрос. Установленная Qwen ответит через Ollama на этом компьютере.</p>
+<section class="panel"><p class="pipeline">Браузер → Go → локальная Ollama → Qwen → ответ</p><p id="identity" class="note">Проверяем модель…</p><p class="note">Облачные API не используются. История хранится в памяти вкладки; «Новый чат» или перезагрузка её очищает. В первичной установке весов нужен интернет.</p></section>
+<section aria-label="Диалог" id="conversation" aria-live="polite"><p id="empty" class="note">Начните диалог — ответы появятся здесь.</p></section>
+<form class="panel" id="composer"><label for="prompt">Ваш запрос</label><textarea id="prompt" rows="4" maxlength="4000" placeholder="Например: придумай название для клуба любителей Go." required></textarea><div class="controls"><button id="send" type="submit" disabled>Отправить</button><button id="reset" type="button">Новый чат</button></div><p id="status" role="status" class="note">Загрузка…</p><p class="note">До 8 ответов в диалоге; затем начните новый чат. Модель может ошибаться — проверяйте содержание ответа.</p></form>
+<details class="panel"><summary>Трасса последнего успешного запроса</summary><pre id="trace">Пока запросов нет.</pre></details>
+<footer class="note">Работает локально. Ограничение HTTP-клиента не является измерением сетевого трафика Ollama или доказательством физического отключения интернета.</footer>
+</main></body></html>
