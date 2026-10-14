@@ -35,6 +35,7 @@
 | `internal/toolagent/`, `internal/ratesmcp/`, `internal/cbr/`, `day-17/` | неделя 4, день 17 — MCP-сервер курсов ЦБ РФ и агент, который сам превращает `tools/list` в вызовы модели |
 | `internal/watch/`, `internal/watchmcp/`, `day-18/`, `.github/workflows/day-18-agent.yml` | неделя 4, день 18 — MCP-инструмент с расписанием: сервер сам опрашивает ЦБ, хранит JSON и отдаёт агрегат; агент работает 24/7 в GitHub Actions и раз в 3 часа выпускает сводку |
 | `day-21/` | **неделя 5**, день 21 — локальная индексация Markdown: fixed/structure chunking, эмбеддинги `bge-m3`, поиск и парное сравнение |
+| `docs/`, `internal/docrag/`, `internal/gitmcp/`, `day-31/` | **неделя 7**, день 31 — ассистент разработчика: `/help` по README и `docs/` (RAG) и по git через MCP; подробная карта репозитория — `docs/architecture.md` |
 
 **Неделя 2 растит один артефакт, а не пять.** День 7 добавил память в тот же
 `internal/agent` (`memory.go` — интерфейс `Store` и JSON-хранилище, `probe.go` — замер)
