@@ -65,6 +65,58 @@ func TestDirectCommandsAndUnknownInput(t *testing.T) {
 	}
 }
 
+// TestHostileRepositoryContentNeverReachesTheTerminalRaw drives every output sink with
+// escape sequences planted in a file name, a heading, a commit subject and the model's
+// answer, on a dirty tree so /status and /diff print their full output.
+func TestHostileRepositoryContentNeverReachesTheTerminalRaw(t *testing.T) {
+	a, model := newAssistant(t)
+	model.answer = "ответ\x1b[2J\x07 модели"
+	repo := a.cfg.repo
+	evil := "docs/evil\x1b[2J.md"
+	if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(evil)), []byte("# Bad\x1b]0;title\x07 heading\n\ntext\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# Demo\n\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "subject\x1b]0;pwn\x07 end"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# Demo\n\nchanged again\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	index, err := docrag.Build(context.Background(), repo, fakeEmbedder{}, "fake", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.index, a.cfg.k = index, 2
+	warning, err := staleWarning(repo, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	out.WriteString(warning)
+	if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(evil)), []byte("# changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if warning, err = staleWarning(repo, index); err != nil || warning == "" {
+		t.Fatalf("stale warning %q (%v)", warning, err)
+	}
+	out.WriteString(warning)
+	repl(context.Background(), a, strings.NewReader("/branch\n/status\n/files docs\n/diff\n/help вопрос\n"), &out)
+	text := out.String()
+	if strings.ContainsAny(text, "\x1b\x07") {
+		t.Fatalf("raw control bytes reached the terminal:\n%q", text)
+	}
+	for _, want := range []string{"изменено файлов: 2", " M README.md", "2 files changed", "фрагментов документации 2", "ответ"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output lacks %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestBranchLineStripsTerminalEscapes(t *testing.T) {
 	got := describeBranch(map[string]any{"branch": "main", "commit": "abc1234", "subject": "hi\x1b]0;pwn\x07 there"}, "")
 	if strings.ContainsAny(got, "\x1b\x07") || !strings.Contains(got, "main @ abc1234") {
@@ -92,6 +144,7 @@ type fakeModel struct {
 	systems  []string
 	callTool bool
 	toolText string
+	answer   string
 }
 
 func (f *fakeModel) Converse(_ context.Context, messages []llm.ToolMessage, opts llm.Options) (llm.Answer, error) {
@@ -109,6 +162,9 @@ func (f *fakeModel) Converse(_ context.Context, messages []llm.ToolMessage, opts
 		return llm.Answer{Content: "В docs: " + last.Content, Model: llm.DefaultModel}, nil
 	}
 	f.systems = append(f.systems, messages[0].Content)
+	if f.answer != "" {
+		return llm.Answer{Content: f.answer, Model: llm.DefaultModel}, nil
+	}
 	return llm.Answer{Content: "Ответ модели [docs/mcp.md § MCP › Инструменты]", Model: llm.DefaultModel}, nil
 }
 

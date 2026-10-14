@@ -93,7 +93,8 @@ func TestDiffFiltersByPathAndIncludesStagedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(filtered.Diff, "+readme edit") || strings.Contains(filtered.Diff, "guide") {
+	if !strings.Contains(filtered.Diff, "+readme edit") || strings.Contains(filtered.Diff, "guide") ||
+		!strings.Contains(filtered.Stat, "README.md") || strings.Contains(filtered.Stat, "guide") {
 		t.Fatalf("path filter ignored: %s", filtered.Diff)
 	}
 	all, err := Diff(context.Background(), repo, "")

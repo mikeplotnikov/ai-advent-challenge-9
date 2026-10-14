@@ -31,12 +31,12 @@ func TestChunkKeepsHeadingPathAndIgnoresHeadingsInCode(t *testing.T) {
 }
 
 func TestChunkSkippedHeadingLevelAndEmbeddingInput(t *testing.T) {
-	chunks := Chunk("docs/a.md", "# A\n\nx\n\n### C\n\ny\n\n## B\n\nz\n")
+	chunks := Chunk("docs/a.md", "# A\n\nx\n\n### C\n\ny\n\n### D\n\nw\n\n## B\n\nz\n")
 	var sections []string
 	for _, c := range chunks {
 		sections = append(sections, c.Section)
 	}
-	if want := []string{"A", "A › C", "A › B"}; !reflect.DeepEqual(sections, want) {
+	if want := []string{"A", "A › C", "A › D", "A › B"}; !reflect.DeepEqual(sections, want) {
 		t.Fatalf("sections %q, want %q", sections, want)
 	}
 	input := EmbeddingInput(chunks[1])
@@ -121,6 +121,9 @@ func TestBuildSearchAndStaleness(t *testing.T) {
 	}
 	if results[0].Chunk.Source != "docs/mcp.md" || results[0].Chunk.Section != "MCP › Инструменты" {
 		t.Fatalf("top result %s § %s", results[0].Chunk.Source, results[0].Chunk.Section)
+	}
+	if len(results) != 1 {
+		t.Fatalf("k=1 returned %d results", len(results))
 	}
 	if both, _ := Search(context.Background(), keywordEmbedder{}, file, "запуск", 5); len(both) != 2 || both[0].Chunk.Source != "README.md" {
 		t.Fatalf("k=5 over 2 chunks: %d results", len(both))

@@ -51,12 +51,15 @@ curl -fsS -m 3 -o /dev/null http://127.0.0.1:11434/api/version \
 
 START_BRANCH="$(git branch --show-current)"
 [ -n "$START_BRANCH" ] || { echo "HEAD отсоединён — переключитесь на ветку"; exit 1; }
+git show-ref --verify --quiet "refs/heads/$DEMO_BRANCH" \
+  && { echo "ветка $DEMO_BRANCH уже есть — сценарий её не трогает; удалите или переименуйте её сами"; exit 1; }
+
+# Cleanup undoes only what this run did: the edit and the branch it created itself.
+CREATED=0
 cleanup() {
-  git checkout -q -- "$EDITED" 2>/dev/null
-  if [ "$(git branch --show-current)" = "$DEMO_BRANCH" ]; then
-    git switch -q "$START_BRANCH"
-  fi
-  git branch -q -D "$DEMO_BRANCH" 2>/dev/null
+  [ "$CREATED" = "1" ] || return 0
+  git checkout -q -- "$EDITED"
+  git switch -q "$START_BRANCH" && git branch -q -D "$DEMO_BRANCH"
 }
 trap cleanup EXIT
 
@@ -84,7 +87,11 @@ pause 1.2
 pause 2
 
 say "Меняю проект: новая ветка и правка в docs/ — без перезапуска индекса"
-run git switch -c "$DEMO_BRANCH"
+printf '\n%s$ git switch -c %s%s\n' "$CYAN" "$DEMO_BRANCH" "$OFF"
+pause 1.2
+git switch -c "$DEMO_BRANCH" || exit 1
+CREATED=1
+pause 2.4
 printf '\n%s$ echo "- Ветки для экспериментов называются demo/<тема>." >> %s%s\n' "$CYAN" "$EDITED" "$OFF"
 pause 1.2
 echo "- Ветки для экспериментов называются demo/<тема>." >> "$EDITED"
