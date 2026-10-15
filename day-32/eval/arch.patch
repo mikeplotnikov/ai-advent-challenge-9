@@ -1,0 +1,46 @@
+diff --git a/day-91/main.go b/day-91/main.go
+new file mode 100644
+index 0000000..0bb74f6
+--- /dev/null
++++ b/day-91/main.go
+@@ -0,0 +1,40 @@
++// Command day-91 asks DeepSeek one question and prints the answer and its price.
++package main
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"os"
++)
++
++// pricePerToken is the flash output price, USD per token.
++const pricePerToken = 0.0000011
++
++func main() {
++	body, _ := json.Marshal(map[string]any{
++		"model":    "deepseek-v4-flash",
++		"messages": []map[string]string{{"role": "user", "content": os.Args[1]}},
++	})
++	req, _ := http.NewRequest("POST", "https://api.deepseek.com/chat/completions", bytes.NewReader(body))
++	req.Header.Set("Authorization", "Bearer "+os.Getenv("DEEPSEEK_API_KEY"))
++	req.Header.Set("Content-Type", "application/json")
++	resp, err := http.DefaultClient.Do(req)
++	if err != nil {
++		fmt.Println("ошибка:", err)
++		return
++	}
++	defer resp.Body.Close()
++	var out struct {
++		Choices []struct {
++			Message struct{ Content string } `json:"message"`
++		} `json:"choices"`
++		Usage struct {
++			TotalTokens int `json:"total_tokens"`
++		} `json:"usage"`
++	}
++	json.NewDecoder(resp.Body).Decode(&out)
++	fmt.Println(out.Choices[0].Message.Content)
++	fmt.Printf("цена: $%.6f\n", float64(out.Usage.TotalTokens)*pricePerToken)
++}

@@ -1,0 +1,44 @@
+name: "Day 32: AI code review"
+
+# Every pull request gets a review comment: potential bugs, architectural problems and
+# recommendations, written by DeepSeek over the diff plus the project's docs and Go code
+# found by RAG (bge-m3 in Ollama). The job runs on the owner's Mac as a self-hosted
+# runner, which day-32/runner.sh registers only for as long as it runs; the repository
+# variable DAY32_REVIEW is "on" only for that window, so without the runner the job is
+# skipped instead of waiting in the queue.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: day-32-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Pull requests from forks never reach the Mac: GitHub does not hand them secrets
+    # anyway, and a self-hosted runner must not run code from strangers.
+    if: vars.DAY32_REVIEW == 'on' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, day-32]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Review
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DEEPSEEK_API_KEY_DAY32: ${{ secrets.DEEPSEEK_API_KEY_DAY18 }}
+        run: go run ./day-32 -base "$BASE_SHA" -head "$HEAD_SHA" -post -out "$RUNNER_TEMP/review.md"

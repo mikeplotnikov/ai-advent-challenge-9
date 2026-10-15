@@ -9,10 +9,10 @@
 
 | Слой | Где | Что делает |
 |---|---|---|
-| Задания | `day-01/` … `day-31/`, плюс `day-01-web/` (веб-вариант дня 1) | `main.go` дня — CLI или веб-сервер (кроме `day-07`–`day-09`); с `day-09` рядом `README.md`, часто `RESULTS.md` с замером |
+| Задания | `day-01/` … `day-32/`, плюс `day-01-web/` (веб-вариант дня 1) | `main.go` дня — CLI или веб-сервер (кроме `day-07`–`day-09`); с `day-09` рядом `README.md`, часто `RESULTS.md` с замером |
 | Общие пакеты | `internal/` | код, который переиспользуют несколько дней |
 | Секреты | `.env` (в `.gitignore`) | ключи DeepSeek; шаблон — `.env.example` |
-| CI | `.github/workflows/day-18-agent.yml` | единственный workflow: агент дня 18 по расписанию |
+| CI | `.github/workflows/day-18-agent.yml`, `.github/workflows/day-32-review.yml` | агент дня 18 по расписанию; AI-ревью каждого PR (день 32, self-hosted runner на Mac владельца, включается `day-32/runner.sh`) |
 
 ## Пакеты `internal/`
 
@@ -63,6 +63,7 @@
 - `day-29` — оптимизация локальной LLM под RAG
 - `day-30` — локальная LLM как приватный сервис
 - `day-31` — ассистент разработчика: `/help` по документации и git через MCP
+- `day-32` — AI-ревью PR: diff + RAG по документации и коду → комментарий в PR (правила ревью — `docs/review-guide.md`)
 
 ## Модели
 

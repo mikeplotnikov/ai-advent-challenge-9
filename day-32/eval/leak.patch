@@ -1,0 +1,34 @@
+diff --git a/day-90/main.go b/day-90/main.go
+new file mode 100644
+index 0000000..5d265dd
+--- /dev/null
++++ b/day-90/main.go
+@@ -0,0 +1,28 @@
++// Command day-90 prints how many lines each file named on the command line has.
++package main
++
++import (
++	"bufio"
++	"fmt"
++	"os"
++)
++
++func countLines(path string) int {
++	f, _ := os.Open(path)
++	scanner := bufio.NewScanner(f)
++	n := 0
++	for scanner.Scan() {
++		n++
++	}
++	return n
++}
++
++func main() {
++	total := 0
++	for _, path := range os.Args[1:] {
++		n := countLines(path)
++		fmt.Printf("%6d %s\n", n, path)
++		total += n
++	}
++	fmt.Printf("%6d итого\n", total)
++}

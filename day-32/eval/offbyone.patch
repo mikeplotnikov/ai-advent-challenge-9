@@ -1,0 +1,13 @@
+diff --git a/internal/rag/rag.go b/internal/rag/rag.go
+index d6ec3ff..d5a43cc 100644
+--- a/internal/rag/rag.go
++++ b/internal/rag/rag.go
+@@ -322,7 +322,7 @@ func TerminalSafe(text string, limit int) string {
+ 	var builder strings.Builder
+ 	count := 0
+ 	for _, r := range text {
+-		if count == limit {
++		if count > limit {
+ 			builder.WriteString("…")
+ 			break
+ 		}
