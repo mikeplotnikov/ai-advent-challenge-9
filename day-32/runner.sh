@@ -22,7 +22,7 @@ curl -sf http://127.0.0.1:11434/api/tags | grep -q '"bge-m3' ||
 if [ ! -x "$DIR/run.sh" ]; then
   mkdir -p "$DIR"
   tarball="$DIR/actions-runner-osx-arm64-$VERSION.tar.gz"
-  echo "Скачиваю actions/runner $VERSION…"
+  echo "Скачиваю actions/runner ${VERSION}…"
   curl -fsSL -o "$tarball" "https://github.com/actions/runner/releases/download/v$VERSION/actions-runner-osx-arm64-$VERSION.tar.gz"
   if ! echo "$SHA256  $tarball" | shasum -a 256 -c - >/dev/null; then
     rm -f "$tarball"
