@@ -26,7 +26,7 @@ func gitRepo(t *testing.T, base, head map[string]string) string {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -732,5 +732,154 @@ func TestEmbeddingCacheKeyDependsOnTheModel(t *testing.T) {
 	b := &embeddingCache{model: "other"}
 	if a.key("x") == b.key("x") {
 		t.Fatal("a new embedding model must not reuse old vectors")
+	}
+}
+
+func TestRunStillPostsWhenALocalFileCannotBeWritten(t *testing.T) {
+	var posted string
+	gh, _ := fakeGitHub(t, nil, func(c issueComment) issueComment { posted = c.Body; return c })
+	t.Setenv(keyEnv, "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	t.Setenv("PR_NUMBER", "5")
+	t.Setenv("GITHUB_API_URL", gh.URL)
+	out := filepath.Join(t.TempDir(), "missing-dir", "r.md")
+	err := run(context.Background(), config{repo: t.TempDir(), base: "b", head: "h", out: out, post: true})
+	if posted == "" || err == nil || !strings.Contains(err.Error(), "missing-dir") || !strings.Contains(err.Error(), "не задан") {
+		t.Fatalf("posted=%q err=%v", posted, err)
+	}
+}
+
+func TestRunFailsTheJobWhenThePostFails(t *testing.T) {
+	gh, _ := fakeGitHub(t, nil, func(issueComment) issueComment { return issueComment{} })
+	t.Setenv(keyEnv, "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	t.Setenv("PR_NUMBER", "5")
+	t.Setenv("GITHUB_API_URL", gh.URL)
+	err := run(context.Background(), config{repo: t.TempDir(), base: "b", head: "h", out: filepath.Join(t.TempDir(), "r.md"), post: true})
+	if err == nil || !strings.Contains(err.Error(), "ревью не опубликовано") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestReviewPRTurnsAnUnreadableDiffIntoAFailureComment(t *testing.T) {
+	repo := gitRepo(t, map[string]string{"a.txt": "a\n"}, map[string]string{"b.txt": "b\n"})
+	cfg := config{repo: repo, base: "no-such-ref", head: "HEAD", cache: filepath.Join(t.TempDir(), "e.json")}
+	body, err := reviewPR(context.Background(), cfg, &scriptedModel{}, &fakeEmbedder{})
+	if err == nil || !strings.HasPrefix(body, marker) || !strings.Contains(body, "diff не прочитан") {
+		t.Fatalf("err=%v body:\n%s", err, body)
+	}
+}
+
+func TestRenderFailureBoundsTheReason(t *testing.T) {
+	body := renderFailure(pullRequest{Head: "abc"}, strings.Repeat("Ω", 5000), metrics{Started: time.Now()})
+	if strings.Count(body, "Ω") != 800 {
+		t.Fatalf("reason must be cut to 800 runes, got %d", strings.Count(body, "Ω"))
+	}
+}
+
+func TestGitHubRetriesATransportFailureButNeverRepeatsAPost(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
+		w.Write([]byte(`{"id":1,"html_url":"u","body":"` + marker + `"}`))
+	}))
+	defer srv.Close()
+	g := github{API: srv.URL, Token: "tok", Repo: "o/r"}
+	if _, err := g.do(context.Background(), http.MethodPatch, srv.URL+"/x", []byte(`{}`)); err != nil || calls != 2 {
+		t.Fatalf("a dropped PATCH must be retried: calls=%d err=%v", calls, err)
+	}
+	calls = 0
+	if _, err := g.do(context.Background(), http.MethodPost, srv.URL+"/x", []byte(`{}`)); err == nil || calls != 1 {
+		t.Fatalf("a POST must not be repeated: calls=%d err=%v", calls, err)
+	}
+	dead := 0
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dead++
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+	}))
+	defer down.Close()
+	if _, err := g.do(context.Background(), http.MethodGet, down.URL+"/x", nil); err == nil || dead != maxAttempts {
+		t.Fatalf("must give up after %d attempts: calls=%d err=%v", maxAttempts, dead, err)
+	}
+}
+
+func TestUpsertChecksEveryFieldOfTheConfirmation(t *testing.T) {
+	for name, reply := range map[string]issueComment{
+		"no marker": {ID: 1, HTMLURL: "u", Body: "text"},
+		"no id":     {HTMLURL: "u", Body: marker},
+		"no url":    {ID: 1, Body: marker},
+	} {
+		srv, _ := fakeGitHub(t, nil, func(issueComment) issueComment { return reply })
+		if _, err := (github{API: srv.URL, Token: "tok", Repo: "o/r"}).upsert(context.Background(), 5, marker); err == nil {
+			t.Fatalf("%s must not count as posted", name)
+		}
+	}
+}
+
+func TestFindOwnIgnoresABotCommentThatOnlyQuotesTheMarker(t *testing.T) {
+	quoting := issueComment{ID: 9, Body: "see " + marker}
+	quoting.User.Login = botLogin
+	srv, calls := fakeGitHub(t, []issueComment{quoting}, func(c issueComment) issueComment { return c })
+	if _, err := (github{API: srv.URL, Token: "tok", Repo: "o/r"}).upsert(context.Background(), 5, marker+"\nnew"); err != nil || (*calls)[1] != "POST /repos/o/r/issues/5/comments" {
+		t.Fatalf("err=%v calls=%v", err, *calls)
+	}
+}
+
+func TestEveryUsageFieldAndTheCostAreSummed(t *testing.T) {
+	var stats callStats
+	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	one := llm.Answer{Model: "deepseek-flash", Usage: llm.Usage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, PromptCacheHitTokens: 64, PromptCacheMissTokens: 36}}
+	addUsage(&stats, one, at)
+	single := stats.CostUSD
+	addUsage(&stats, one, at)
+	u := stats.Usage
+	if u.PromptTokens != 200 || u.CompletionTokens != 20 || u.TotalTokens != 220 || u.PromptCacheHitTokens != 128 || u.PromptCacheMissTokens != 72 {
+		t.Fatalf("usage: %+v", u)
+	}
+	if single <= 0 || stats.CostUSD != 2*single {
+		t.Fatalf("cost must add up: one=%v two=%v", single, stats.CostUSD)
+	}
+}
+
+func TestWriteOutputsStripsControlCodesOnTheTerminal(t *testing.T) {
+	r, w, _ := os.Pipe()
+	stdout := os.Stdout
+	os.Stdout = w
+	err := writeOutputs(config{}, "title \x1b[2Jcleared\n")
+	w.Close()
+	os.Stdout = stdout
+	got, _ := io.ReadAll(r)
+	if err != nil || strings.Contains(string(got), "\x1b") || !strings.Contains(string(got), "cleared\n") {
+		t.Fatalf("stdout=%q err=%v", got, err)
+	}
+}
+
+func TestCollectNotesADiffItCouldNotMatch(t *testing.T) {
+	repo := gitRepo(t, map[string]string{`q"uote.go`: "a\n"}, map[string]string{`q"uote.go`: "a\nb\n"})
+	pr, err := collect(repo, "base", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(pr.Omitted, "\n"), `q"uote.go: diff не разобран`) {
+		t.Fatalf("change=%+v omitted=%v", pr.Changes, pr.Omitted)
+	}
+}
+
+func TestLoadCacheKeysByTheModelItIsGiven(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "e.json")
+	a, _ := loadCache(path, "bge-m3")
+	b, _ := loadCache(path, "other")
+	if a.key("x") == b.key("x") {
+		t.Fatal("loadCache must keep the model in the key")
 	}
 }

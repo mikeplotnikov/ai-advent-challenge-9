@@ -97,7 +97,9 @@ func (g github) do(ctx context.Context, method, url string, body []byte) ([]byte
 		}
 		var retry bool
 		raw, retry, err = g.once(ctx, method, url, body)
-		if err == nil || !retry {
+		// A POST that timed out may still have created the comment; repeating it would
+		// leave two reviews on the PR. GET and PATCH are safe to repeat.
+		if err == nil || !retry || method == http.MethodPost {
 			return raw, err
 		}
 	}

@@ -38,13 +38,23 @@ policy_was=$(gh api "repos/$REPO/actions/permissions/fork-pr-contributor-approva
 runner_pid=""
 
 cleanup() {
-  # A second Ctrl-C while the runner is being taken down must not interrupt it.
+  # A second Ctrl-C while the runner is being taken down must not interrupt it, and no
+  # failing step — not even an echo into a closed terminal — may stop the rest.
   trap '' INT TERM HUP
   trap - EXIT
+  set +e
   if [ -n "$runner_pid" ] && kill -0 "$runner_pid" 2>/dev/null; then
-    kill -TERM "$runner_pid" 2>/dev/null || true
-    wait "$runner_pid" 2>/dev/null || true
+    kill -TERM "$runner_pid" 2>/dev/null
+    wait "$runner_pid" 2>/dev/null
   fi
+  # run.sh does not pass signals on to Runner.Listener, and a background child of this
+  # script starts with SIGINT ignored: stop every runner process by its path.
+  pkill -TERM -f "$DIR/bin/Runner\." 2>/dev/null
+  for _ in $(seq 1 15); do
+    pgrep -f "$DIR/bin/Runner\." >/dev/null || break
+    sleep 1
+  done
+  pkill -KILL -f "$DIR/bin/Runner\." 2>/dev/null
   echo
   echo "Снимаю раннер…"
   gh variable set DAY32_REVIEW --body off -R "$REPO" || echo "! DAY32_REVIEW не выключена — выключите: gh variable set DAY32_REVIEW --body off -R $REPO" >&2

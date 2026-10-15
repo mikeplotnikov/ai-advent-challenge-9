@@ -52,7 +52,7 @@ func renderReview(pr pullRequest, v verdict, sources []source, m metrics) string
 func renderFailure(pr pullRequest, reason string, m metrics) string {
 	var b strings.Builder
 	b.WriteString(marker + "\n")
-	fmt.Fprintf(&b, "## 🤖 AI-ревью · день 32\n\n❌ **Ревью не выполнено** для `%s`: %s\n\nPR нужно посмотреть вручную; перезапуск — повторный запуск job или новый пуш.\n", short(pr.Head), inline(reason))
+	fmt.Fprintf(&b, "## 🤖 AI-ревью · день 32\n\n❌ **Ревью не выполнено** для `%s`: %s\n\nPR нужно посмотреть вручную; перезапуск — повторный запуск job или новый пуш.\n", short(pr.Head), inline(truncateRunes(reason, 800)))
 	notes(&b, pr)
 	footer(&b, m)
 	return b.String()

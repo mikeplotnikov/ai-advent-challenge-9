@@ -23,6 +23,13 @@ fi
 
 [ "$(gh variable get DAY32_REVIEW -R "$REPO" 2>/dev/null)" = on ] ||
   { echo "AI-ревью выключено: сначала ./day-32/runner.sh в соседнем терминале" >&2; exit 1; }
+git fetch -q origin main
+git cat-file -e origin/main:.github/workflows/day-32-review.yml 2>/dev/null ||
+  { echo "в origin/main нет workflow дня 32: сначала запушьте main" >&2; exit 1; }
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  echo "локальная ветка $BRANCH уже есть — удалите её или переименуйте" >&2
+  exit 1
+fi
 if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
   echo "ветка $BRANCH уже есть на GitHub: ./day-32/demo.sh close" >&2
   exit 1
@@ -35,7 +42,6 @@ say "Пайплайн — GitHub Actions на pull_request; job идёт на э
 sed -n '/^on:/,/^$/p;/runs-on/p;/go run/p' .github/workflows/day-32-review.yml
 pause 4
 say "Делаю PR с намеренными дефектами: новый день 91 зовёт DeepSeek мимо internal/llm и считает цену константой"
-git fetch -q origin main
 git worktree add -q -b "$BRANCH" "$tmp/wt" origin/main
 git -C "$tmp/wt" apply "$root/day-32/eval/arch.patch"
 git -C "$tmp/wt" add -A
