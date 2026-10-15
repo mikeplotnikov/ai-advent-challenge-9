@@ -13,6 +13,10 @@ import (
 const pricePerToken = 0.0000011
 
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("usage: day-91 <question>")
+		return
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model":    "deepseek-v4-flash",
 		"messages": []map[string]string{{"role": "user", "content": os.Args[1]}},
