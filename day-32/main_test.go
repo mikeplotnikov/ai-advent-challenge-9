@@ -449,3 +449,288 @@ func TestRunRefusesToPostWithoutTheRunnerEnvironment(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestUserMessageCarriesEverythingTheModelReviews(t *testing.T) {
+	pr := pullRequest{
+		Changes: []change{
+			{Status: "M", Path: "a.go", Diff: "@@ -1 +1 @@\n    1 +new line\n", Content: "    1| new line\n", Lines: 1},
+			{Status: "R", Path: "new.md", OldPath: "old.md"},
+			{Status: "A", Path: "img.bin", Binary: true},
+		},
+		Omitted: []string{"img.bin: двоичный файл"},
+	}
+	sources := []source{
+		{ID: "D1", Kind: kindDoc, Chunk: rag.Chunk{Source: "docs/review-guide.md", Section: "Правила", Text: "rule text"}},
+		{ID: "C1", Kind: kindCode, Chunk: rag.Chunk{Source: "internal/x/x.go", Section: "func X", Start: 3, End: 9, Text: "func X() {}"}},
+	}
+	msg := userMessage(pr, sources)
+	for _, want := range []string{
+		"- M a.go", "- R new.md (было old.md)", "- A img.bin — двоичный",
+		"Не передано целиком:\n- img.bin: двоичный файл",
+		"### [D1] docs/review-guide.md — Правила\n```\nrule text\n```",
+		"### [C1] internal/x/x.go:3-9 — func X\n```\nfunc X() {}\n```",
+		"### a.go\n```diff\n@@ -1 +1 @@\n    1 +new line\n```",
+		"### a.go\n```\n    1| new line\n```",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("user message lacks %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestReviewKeepsTheRepairedAnswerAndShowsTheModelItsOwnReply(t *testing.T) {
+	bad := `{"summary":"s","bugs":[{"file":"a.go","line":99,"title":"t","detail":"d","sources":["diff"]}],"architecture":[],"recommendations":[]}`
+	fixed := `{"summary":"s2","bugs":[{"file":"a.go","line":10,"title":"fixed","detail":"d","sources":["diff"]}],"architecture":[],"recommendations":[]}`
+	m := &scriptedModel{replies: []any{bad, fixed}}
+	v, stats, err := review(context.Background(), m, testPR, testSources)
+	if err != nil || !stats.Repaired || len(stats.Dropped) != 0 || v.Summary != "s2" || len(v.Bugs) != 1 || v.Bugs[0].Title != "fixed" {
+		t.Fatalf("v=%+v stats=%+v err=%v", v, stats, err)
+	}
+	turns := m.got[1]
+	if len(turns) != 4 || turns[2].Role != "assistant" || turns[2].Content != bad || turns[3].Role != "user" {
+		t.Fatalf("repair conversation: %+v", turns)
+	}
+}
+
+func TestCheckFindingBoundaries(t *testing.T) {
+	known := map[string]bool{"diff": true}
+	ok := finding{File: "a.go", Line: 10, Title: "t", Sources: []string{"diff"}}
+	if p := checkFinding(ok, testPR, known); p != "" {
+		t.Fatalf("the last line must be accepted: %s", p)
+	}
+	for name, f := range map[string]finding{
+		"past end":   {File: "a.go", Line: 11, Title: "t", Sources: []string{"diff"}},
+		"negative":   {File: "a.go", Line: -1, Title: "t", Sources: []string{"diff"}},
+		"no title":   {File: "a.go", Line: 1, Title: " ", Sources: []string{"diff"}},
+		"no sources": {File: "a.go", Line: 1, Title: "t"},
+		"deleted":    {File: "gone.go", Line: 1, Title: "t", Sources: []string{"diff"}},
+	} {
+		if checkFinding(f, testPR, known) == "" {
+			t.Fatalf("%s must be rejected", name)
+		}
+	}
+}
+
+func TestCollectCountsALastLineWithoutNewlineAndNonASCIIPaths(t *testing.T) {
+	repo := gitRepo(t, map[string]string{"док/файл.go": "a\n"}, map[string]string{"док/файл.go": "a\nb\nc"})
+	pr, err := collect(repo, "base", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := pr.Changes[0]
+	if c.Path != "док/файл.go" || c.Lines != 3 || !strings.Contains(c.Diff, "    3 +c") || len(pr.Omitted) != 0 {
+		t.Fatalf("change: %+v omitted: %v", c, pr.Omitted)
+	}
+}
+
+func TestCollectSpendsTheTotalBudgetsAndSkipsRenamedBinaries(t *testing.T) {
+	base := map[string]string{"pic.bin": "\x00\x01\x02\x03"}
+	head := map[string]string{"pic.bin": "", "art/pic.bin": "\x00\x01\x02\x03"}
+	for i := 0; i < 4; i++ {
+		head[string(rune('a'+i))+".txt"] = strings.Repeat("строка\n", 2500) // 17500 runes each
+	}
+	repo := gitRepo(t, base, head)
+	pr, err := collect(repo, "base", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withContent := 0
+	for _, c := range pr.Changes {
+		if c.Path == "art/pic.bin" && (!c.Binary || c.Content != "") {
+			t.Fatalf("renamed binary: %+v", c)
+		}
+		if c.Content != "" {
+			withContent++
+		}
+	}
+	if withContent != 3 {
+		t.Fatalf("content budget %d must fit three files of 17500, got %d", maxContentRunes, withContent)
+	}
+	omitted := strings.Join(pr.Omitted, "\n")
+	if !strings.Contains(omitted, "d.txt: файл целиком не передан — превышен общий лимит") || !strings.Contains(omitted, "d.txt: diff не передан") {
+		t.Fatalf("budget notes:\n%s", omitted)
+	}
+}
+
+func TestQueriesAlwaysAskForTheRulesFirst(t *testing.T) {
+	qs := queries(pullRequest{Changes: []change{
+		{Path: "a.go", Diff: "@@ -1 +1 @@\n      -old\n    1 +" + strings.Repeat("x", 3000) + "\n"},
+		{Path: "b.bin", Binary: true},
+	}})
+	if len(qs) != 2 || !qs[0].Pinned || qs[0].Text != rulesQuery || qs[0].Code != 0 {
+		t.Fatalf("queries: %+v", qs)
+	}
+	q := qs[1]
+	if q.Pinned || q.Docs != docsPerQuery || q.Code != codePerQuery || !strings.Contains(q.Text, "-old") || len([]rune(q.Text)) != queryRunes {
+		t.Fatalf("file query: pinned=%v docs=%d code=%d len=%d", q.Pinned, q.Docs, q.Code, len([]rune(q.Text)))
+	}
+}
+
+func TestRetrieveNumbersSourcesAndHonoursPerQueryLimits(t *testing.T) {
+	var pieces []piece
+	for i := 0; i < 5; i++ {
+		pieces = append(pieces, piece{Kind: kindCode, Chunk: rag.Chunk{ChunkID: "c" + string(rune('0'+i))}})
+		pieces = append(pieces, piece{Kind: kindDoc, Chunk: rag.Chunk{ChunkID: "d" + string(rune('0'+i))}})
+	}
+	// Every piece scores the same for every query, so only the limits decide.
+	flat := func(context.Context, query) ([]scored, error) {
+		out := make([]scored, len(pieces))
+		for i := range pieces {
+			out[i] = scored{Index: i, Score: float64(len(pieces) - i)}
+		}
+		return out, nil
+	}
+	got, err := retrieve(context.Background(), flat, pieces, []query{{Docs: 1, Code: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range got {
+		ids = append(ids, s.ID+"="+s.Chunk.ChunkID)
+	}
+	if strings.Join(ids, ",") != "C1=c0,D1=d0,C2=c1" {
+		t.Fatalf("ids: %v", ids)
+	}
+}
+
+// flakyEmbedder works for the first n calls, then fails like a stopped Ollama.
+type flakyEmbedder struct {
+	fakeEmbedder
+	n int
+}
+
+func (f *flakyEmbedder) Embed(ctx context.Context, id string, input string) ([]float64, int, bool, error) {
+	if f.n == 0 {
+		return nil, 0, false, errors.New("Ollama недоступна")
+	}
+	f.n--
+	return f.fakeEmbedder.Embed(ctx, id, input)
+}
+
+func TestReviewPRFallsBackWhenOllamaDiesAfterIndexing(t *testing.T) {
+	repo := gitRepo(t,
+		map[string]string{"README.md": "# P\n\n## Правила\n\nправила ревью\n", "internal/x/x.go": "package x\n\nfunc LoadCache() {}\n"},
+		map[string]string{"day-50/main.go": "package main\n\nfunc main() { LoadCache() }\n"})
+	cfg := config{repo: repo, base: "base", head: "HEAD", cache: filepath.Join(t.TempDir(), "e.json")}
+	m := &scriptedModel{replies: []any{`{"summary":"s","bugs":[],"architecture":[],"recommendations":[]}`}}
+	// README makes one or two chunks and x.go one: three embeddings, then the queries fail.
+	corpus, _ := buildCorpus(repo, pullRequest{Changes: []change{{Path: "day-50/main.go"}}})
+	body, err := reviewPR(context.Background(), cfg, m, &flakyEmbedder{n: len(corpus.Pieces)})
+	if err != nil || !strings.Contains(body, "Деградация") {
+		t.Fatalf("err=%v body:\n%s", err, body)
+	}
+}
+
+func TestRunPostsTheFailureAndAppendsTheSummary(t *testing.T) {
+	repo := gitRepo(t, map[string]string{"README.md": "# P\n"}, map[string]string{"a.go": "package a\n"})
+	deepseek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no balance", http.StatusPaymentRequired)
+	}))
+	defer deepseek.Close()
+	var posted string
+	gh, _ := fakeGitHub(t, nil, func(c issueComment) issueComment { posted = c.Body; return c })
+	summary := filepath.Join(t.TempDir(), "summary.md")
+	os.WriteFile(summary, []byte("earlier step\n"), 0o644)
+	out := filepath.Join(t.TempDir(), "review.md")
+	t.Setenv("DEEPSEEK_API_URL", deepseek.URL)
+	t.Setenv(keyEnv, "test-key")
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	t.Setenv("PR_NUMBER", "5")
+	t.Setenv("GITHUB_API_URL", gh.URL)
+	err := run(context.Background(), config{repo: repo, base: "base", head: "HEAD", out: out, summary: summary,
+		post: true, ollama: "http://127.0.0.1:1", cache: filepath.Join(t.TempDir(), "e.json")})
+	if err == nil || !strings.Contains(err.Error(), "402") {
+		t.Fatalf("a failed review must fail the job: %v", err)
+	}
+	if !strings.Contains(posted, "Ревью не выполнено") {
+		t.Fatalf("failure comment not posted: %q", posted)
+	}
+	file, _ := os.ReadFile(out)
+	sum, _ := os.ReadFile(summary)
+	if string(file) != posted || !strings.HasPrefix(string(sum), "earlier step\n") || !strings.Contains(string(sum), "Ревью не выполнено") {
+		t.Fatalf("outputs: file=%q summary=%q", file, sum)
+	}
+}
+
+func TestRunPostsAFailureWhenTheKeyIsMissing(t *testing.T) {
+	var posted string
+	gh, _ := fakeGitHub(t, nil, func(c issueComment) issueComment { posted = c.Body; return c })
+	t.Setenv(keyEnv, "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv("GITHUB_REPOSITORY", "o/r")
+	t.Setenv("PR_NUMBER", "5")
+	t.Setenv("GITHUB_API_URL", gh.URL)
+	err := run(context.Background(), config{repo: t.TempDir(), base: "b", head: "h", out: filepath.Join(t.TempDir(), "r.md"), post: true})
+	if err == nil || !strings.Contains(posted, "нет ключа DeepSeek") {
+		t.Fatalf("err=%v posted=%q", err, posted)
+	}
+}
+
+func TestFindOwnReadsEveryPageAndNeedsTheMarker(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.Query().Get("page"))
+		var list []issueComment
+		if r.URL.Query().Get("page") == "1" {
+			for i := 0; i < 100; i++ {
+				c := issueComment{ID: int64(i + 1), Body: "other bot note"}
+				c.User.Login = botLogin
+				list = append(list, c)
+			}
+		} else {
+			c := issueComment{ID: 500, Body: marker + "\nreview"}
+			c.User.Login = botLogin
+			list = append(list, c)
+		}
+		json.NewEncoder(w).Encode(list)
+	}))
+	defer srv.Close()
+	id, err := github{API: srv.URL, Token: "tok", Repo: "o/r"}.findOwn(context.Background(), 5)
+	if err != nil || id != 500 || strings.Join(pages, ",") != "1,2" {
+		t.Fatalf("id=%d pages=%v err=%v", id, pages, err)
+	}
+}
+
+func TestGitHubRetriesAServerErrorButNotAClientError(t *testing.T) {
+	calls := 0
+	status := http.StatusBadGateway
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(status)
+			return
+		}
+		w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+	g := github{API: srv.URL, Token: "tok", Repo: "o/r"}
+	if _, err := g.findOwn(context.Background(), 5); err != nil || calls != 2 {
+		t.Fatalf("502 must be retried: calls=%d err=%v", calls, err)
+	}
+	calls, status = 0, http.StatusNotFound
+	if _, err := g.findOwn(context.Background(), 5); err == nil || calls != 1 {
+		t.Fatalf("404 must not be retried: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestUsageAndAttemptsAreCountedAcrossRetriesAndRepair(t *testing.T) {
+	bad := `{"summary":"s","bugs":[{"file":"nope.go","line":1,"title":"t","sources":["diff"]}],"architecture":[],"recommendations":[]}`
+	m := &scriptedModel{replies: []any{errors.New("API вернул 503"), bad, errors.New("dial tcp: reset"), errors.New("dial tcp: reset"), errors.New("dial tcp: reset")}}
+	_, stats, err := review(context.Background(), m, testPR, testSources)
+	if err == nil || !strings.Contains(err.Error(), "попыток: 3") {
+		t.Fatalf("the repair call's own attempts must be reported: %v", err)
+	}
+	if stats.Calls != 5 || stats.Usage.PromptTokens != 5+100+5+5+5 {
+		t.Fatalf("billed usage must be summed over every call: %+v", stats)
+	}
+}
+
+func TestEmbeddingCacheKeyDependsOnTheModel(t *testing.T) {
+	a := &embeddingCache{model: "bge-m3"}
+	b := &embeddingCache{model: "other"}
+	if a.key("x") == b.key("x") {
+		t.Fatal("a new embedding model must not reuse old vectors")
+	}
+}

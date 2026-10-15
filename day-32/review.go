@@ -110,6 +110,7 @@ func review(ctx context.Context, model chatModel, pr pullRequest, sources []sour
 // errors. A 4xx other than 429 is the request's fault and is not retried.
 func ask(ctx context.Context, model chatModel, messages []llm.Message, opts llm.Options, stats *callStats) (llm.Answer, error) {
 	var last error
+	attempts := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			stats.Retries++
@@ -122,6 +123,7 @@ func ask(ctx context.Context, model chatModel, messages []llm.Message, opts llm.
 		started := time.Now()
 		answer, err := model.AskWith(ctx, messages, opts)
 		stats.Calls++
+		attempts++
 		addUsage(stats, answer, started)
 		if err == nil {
 			return answer, nil
@@ -136,7 +138,7 @@ func ask(ctx context.Context, model chatModel, messages []llm.Message, opts llm.
 			break
 		}
 	}
-	return llm.Answer{}, fmt.Errorf("DeepSeek недоступен после %d попыток: %w", stats.Calls, last)
+	return llm.Answer{}, fmt.Errorf("DeepSeek не ответил, попыток: %d: %w", attempts, last)
 }
 
 func retryable(err error) bool {

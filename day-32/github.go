@@ -82,14 +82,36 @@ func (g github) findOwn(ctx context.Context, pr int) (int64, error) {
 	return 0, nil
 }
 
+// do retries transport failures and 5xx like the model call does: by now the review is
+// paid for, and losing it to one bad gateway would mean paying again.
 func (g github) do(ctx context.Context, method, url string, body []byte) ([]byte, error) {
+	var raw []byte
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(retryDelays[min(attempt-1, len(retryDelays)-1)]):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		var retry bool
+		raw, retry, err = g.once(ctx, method, url, body)
+		if err == nil || !retry {
+			return raw, err
+		}
+	}
+	return nil, err
+}
+
+func (g github) once(ctx context.Context, method, url string, body []byte) ([]byte, bool, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+g.Token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -103,15 +125,15 @@ func (g github) do(ctx context.Context, method, url string, body []byte) ([]byte
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GitHub %s %s: %w", method, url, err)
+		return nil, true, fmt.Errorf("GitHub %s %s: %w", method, url, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("GitHub %s %s: %s: %s", method, url, resp.Status, strings.TrimSpace(string(raw[:min(len(raw), 500)])))
+		return nil, resp.StatusCode >= 500, fmt.Errorf("GitHub %s %s: %s: %s", method, url, resp.Status, strings.TrimSpace(string(raw[:min(len(raw), 500)])))
 	}
-	return raw, nil
+	return raw, false, nil
 }

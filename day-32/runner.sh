@@ -35,8 +35,16 @@ fi
 
 policy_was=$(gh api "repos/$REPO/actions/permissions/fork-pr-contributor-approval" --jq .approval_policy)
 
+runner_pid=""
+
 cleanup() {
-  trap - EXIT INT TERM
+  # A second Ctrl-C while the runner is being taken down must not interrupt it.
+  trap '' INT TERM HUP
+  trap - EXIT
+  if [ -n "$runner_pid" ] && kill -0 "$runner_pid" 2>/dev/null; then
+    kill -TERM "$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+  fi
   echo
   echo "Снимаю раннер…"
   gh variable set DAY32_REVIEW --body off -R "$REPO" || echo "! DAY32_REVIEW не выключена — выключите: gh variable set DAY32_REVIEW --body off -R $REPO" >&2
@@ -54,7 +62,7 @@ cleanup() {
     "политика форков $(gh api "repos/$REPO/actions/permissions/fork-pr-contributor-approval" --jq .approval_policy || echo '?')"
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT TERM HUP
 
 gh api -X PUT "repos/$REPO/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors >/dev/null
 token=$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)
@@ -63,5 +71,8 @@ token=$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .to
 gh variable set DAY32_REVIEW --body on -R "$REPO"
 
 echo "Раннер $NAME работает, AI-ревью включено. Ctrl-C — снять раннер и выключить ревью."
-cd "$DIR"
-./run.sh
+# In the background with `wait`, so Ctrl-C, kill and a closed terminal reach the trap at
+# once instead of after the runner happens to exit.
+(cd "$DIR" && exec ./run.sh) &
+runner_pid=$!
+wait "$runner_pid"

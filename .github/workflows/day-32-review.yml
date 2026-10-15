@@ -21,8 +21,10 @@ concurrency:
 
 jobs:
   review:
-    # Pull requests from forks never reach the Mac: GitHub does not hand them secrets
-    # anyway, and a self-hosted runner must not run code from strangers.
+    # This check lives in a file the pull request itself can rewrite, so it only spares the
+    # Mac PRs that do not try. What keeps a fork's code off the runner is the repository
+    # policy runner.sh sets while it runs: every outside contributor's run waits for the
+    # owner's approval — which must not be given during the window.
     if: vars.DAY32_REVIEW == 'on' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, day-32]
     timeout-minutes: 15

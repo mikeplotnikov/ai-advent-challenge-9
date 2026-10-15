@@ -34,8 +34,10 @@ const (
 	maxFileRunes    = 20000
 )
 
+// git runs with core.quotepath off, so a non-ASCII path reads the same in the patch as
+// in --name-status -z; otherwise its hunks could not be matched to the file.
 func git(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", repo, "-c", "core.quotepath=false"}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -85,6 +87,9 @@ func collect(repo, base, head string) (pullRequest, error) {
 			continue
 		}
 		c.Diff = annotate(hunks[c.Path])
+		if c.Diff == "" && (c.Status == "M" || c.Status == "A") {
+			pr.Omitted = append(pr.Omitted, c.Path+": diff не разобран — модель видит только файл целиком")
+		}
 		if n := utf8.RuneCountInString(c.Diff); n > diffBudget {
 			pr.Omitted = append(pr.Omitted, fmt.Sprintf("%s: diff не передан модели — превышен общий лимит %d символов", c.Path, maxDiffRunes))
 			c.Diff = ""

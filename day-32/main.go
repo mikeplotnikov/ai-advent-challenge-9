@@ -79,35 +79,39 @@ func run(ctx context.Context, cfg config) error {
 		}
 		gh, prNumber = &github{API: api, Token: token, Repo: repo}, n
 	}
-	model, err := llm.NewWithKeyEnv(keyEnv)
-	if err != nil {
-		return err
+	var body string
+	var reviewErr error
+	if model, err := llm.NewWithKeyEnv(keyEnv); err != nil {
+		reviewErr = err
+		body = renderFailure(pullRequest{Base: cfg.base, Head: cfg.head}, "нет ключа DeepSeek: "+err.Error(), metrics{Started: time.Now()})
+	} else {
+		body, reviewErr = reviewPR(ctx, cfg, model, &rag.OllamaClient{BaseURL: cfg.ollama, Model: embedModel})
 	}
-	embedder := &rag.OllamaClient{BaseURL: cfg.ollama, Model: embedModel}
-	body, reviewErr := reviewPR(ctx, cfg, model, embedder)
-	if err := writeOutputs(cfg, body); err != nil {
-		return err
-	}
-	if gh != nil && body != "" {
-		url, err := gh.upsert(ctx, prNumber, body)
-		if err != nil {
-			return fmt.Errorf("ревью готово, но не опубликовано: %w", err)
+	// The comment goes out first: a local file that cannot be written must not cost
+	// the PR its review.
+	var postErr error
+	if gh != nil {
+		var url string
+		if url, postErr = gh.upsert(ctx, prNumber, body); postErr == nil {
+			fmt.Fprintln(os.Stderr, "Комментарий:", url)
+		} else {
+			postErr = fmt.Errorf("ревью не опубликовано: %w", postErr)
 		}
-		fmt.Fprintln(os.Stderr, "Комментарий:", url)
 	}
+	writeErr := writeOutputs(cfg, body)
 	// A failed review still leaves a comment that says so; the red job is the second
 	// signal to a human that this PR has not been looked at.
-	return reviewErr
+	return errors.Join(reviewErr, postErr, writeErr)
 }
 
-// reviewPR runs the pipeline and always returns a comment body once the PR itself could
-// be read: the review, or a failure notice with the reason.
+// reviewPR runs the pipeline and always returns a comment body: the review, or a
+// failure notice with the reason.
 func reviewPR(ctx context.Context, cfg config, model chatModel, embedder rag.Embedder) (string, error) {
 	m := metrics{Started: time.Now()}
 	pr, err := collect(cfg.repo, cfg.base, cfg.head)
 	m.Collect = time.Since(m.Started)
 	if err != nil {
-		return "", err
+		return renderFailure(pullRequest{Base: cfg.base, Head: cfg.head}, "diff не прочитан: "+err.Error(), m), err
 	}
 	stage := time.Now()
 	c, err := buildCorpus(cfg.repo, pr)
@@ -158,11 +162,9 @@ func pickScorer(ctx context.Context, embedder rag.Embedder, cachePath string, pi
 }
 
 func writeOutputs(cfg config, body string) error {
-	if body == "" {
-		return nil
-	}
 	if cfg.out == "" {
-		fmt.Print(body)
+		// The body quotes the model and the PR: a terminal gets it without control codes.
+		fmt.Print(rag.TerminalSafeMultiline(body, len(body)))
 	} else if err := os.WriteFile(cfg.out, []byte(body), 0o644); err != nil {
 		return err
 	}
@@ -182,7 +184,7 @@ func writeOutputs(cfg config, body string) error {
 
 func fail(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка:", err)
+		fmt.Fprintln(os.Stderr, "Ошибка:", rag.TerminalSafeMultiline(err.Error(), 4000))
 		os.Exit(1)
 	}
 }
