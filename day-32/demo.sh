@@ -12,7 +12,7 @@ BRANCH=day-32-demo
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 PACE="${PACE:-1.0}"
-pause() { sleep "$(awk -v s="$1" -v p="$PACE" 'BEGIN{printf "%.2f", s*p}')"; }
+pause() { sleep "$(LC_ALL=C awk -v s="$1" -v p="$PACE" 'BEGIN{printf "%.2f", s*p}')"; }
 say() { printf '\n\033[1m\033[38;5;208m▌ %s\033[0m\n' "$*"; pause 2.5; }
 
 if [ "${1:-}" = close ]; then
