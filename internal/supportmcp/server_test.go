@@ -50,6 +50,9 @@ func TestToolsReadTheCRMOverMCP(t *testing.T) {
 	if !strings.Contains(tickets, `"T-2"`) || !strings.Contains(tickets, `"T-3"`) || strings.Contains(tickets, `"T-1"`) {
 		t.Fatalf("list_tickets u2: %s", tickets)
 	}
+	if padded := ok(t, session, "list_tickets", map[string]any{"user_id": " u2 "}); !strings.Contains(padded, `"user_id":"u2"`) || !strings.Contains(padded, `"T-2"`) {
+		t.Fatalf("list_tickets with spaces around the id: %s", padded)
+	}
 	ticket := ok(t, session, "get_ticket", map[string]any{"user_id": "u2", "ticket_id": "T-2"})
 	if !strings.Contains(ticket, "Замок на уроках") {
 		t.Fatalf("get_ticket: %s", ticket)

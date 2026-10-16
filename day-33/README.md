@@ -54,6 +54,7 @@ go build -o bin/day33-mcp ./day-33/mcp-server
 
 ./day-33/run.sh             # то же + публичный https через Cloudflare Quick Tunnel (Ctrl+C гасит оба)
 ./bin/day33 -eval day-33/scenarios.json   # 7 сценариев с проверками → day-33/eval-results.json
+./bin/day33 -eval day-33/scenarios.json -eval-out /tmp/day33-eval.json   # то же, не трогая закоммиченный прогон
 ```
 
 ## Что это не умеет — честно

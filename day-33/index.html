@@ -61,7 +61,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let users = [], turns = [];
+let users = [], turns = [], busy = false;
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 
 function current() {
@@ -98,11 +98,14 @@ function stepsBlock(r) {
 async function ask(ev) {
   ev.preventDefault();
   const text = $('msg').value.trim();
-  if (!text) return;
+  if (!text || busy) return;
+  // One question at a time, and no switching user or ticket until it is answered:
+  // a late answer must not land in another user's conversation.
+  busy = true;
+  for (const id of ['send', 'user', 'ticket']) $(id).disabled = true;
   const { u, t } = current();
   $('log').append(el('div', 'bubble user', text));
   $('msg').value = '';
-  $('send').disabled = true;
   const wait = el('div', 'bubble bot', 'Смотрю тикет и документацию…');
   $('log').append(wait);
   wait.scrollIntoView({ block: 'end' });
@@ -118,7 +121,8 @@ async function ask(ev) {
     wait.className = 'bubble err';
     wait.textContent = 'Ошибка: ' + e.message;
   } finally {
-    $('send').disabled = false;
+    busy = false;
+    for (const id of ['send', 'user', 'ticket']) $(id).disabled = false;
     wait.scrollIntoView({ block: 'end' });
   }
 }

@@ -77,13 +77,29 @@ func TestReplyPutsProfileTicketAndDocsIntoThePrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	system := model.messages[0][0].Content
-	for _, want := range []string{"2026-10-16T14:00:00+03:00", "заблокировано до 2026-10-16T14:17:00+03:00", "Ввожу код из письма", "§"} {
+	for _, want := range []string{"Сейчас 2026-10-16T14:00:00+03:00 — момент среза", "заблокировано до 2026-10-16T14:17:00+03:00", "Ввожу код из письма"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system prompt lacks %q:\n%s", want, system)
 		}
 	}
-	if got := len(model.messages[0]); got != 4 || model.messages[0][1].Content != "раньше" || model.messages[0][3].Content != "Почему не работает авторизация?" {
-		t.Fatalf("history not between system and question: %+v", model.messages[0])
+	var roles []string
+	for _, m := range model.messages[0] {
+		roles = append(roles, m.Role+":"+m.Content)
+	}
+	if got := strings.Join(roles[1:], "|"); got != "user:раньше|assistant:ответ раньше|user:Почему не работает авторизация?" {
+		t.Fatalf("history roles and order: %s", got)
+	}
+	rag := 0
+	for _, step := range out.Steps {
+		if step.Kind == "rag" {
+			rag++
+			if !strings.Contains(system, step.Detail) {
+				t.Fatalf("retrieved fragment %q is not in the prompt", step.Title)
+			}
+		}
+	}
+	if rag != a.k {
+		t.Fatalf("rag steps: %d, want %d", rag, a.k)
 	}
 	if len(model.options[0].Tools) != 4 {
 		t.Fatalf("tools offered: %d", len(model.options[0].Tools))
@@ -155,6 +171,36 @@ func TestModelCannotReachAnotherUsersData(t *testing.T) {
 	}
 }
 
+func TestModelGetUserIsPinnedAndServiceStatusIsNot(t *testing.T) {
+	model := &fakeLLM{answers: []llm.Answer{
+		{Model: "deepseek-v4-flash", ToolCalls: []llm.ToolCall{
+			toolCall("1", "get_user", `{"user_id":"u2"}`),
+			toolCall("2", "service_status", `{}`),
+		}},
+		{Model: "deepseek-v4-flash", Content: "готово"},
+	}}
+	a := newAssistant(t, model)
+	if _, err := a.reply(context.Background(), request{UserID: "u1", TicketID: "T-101", Message: "профиль u2 и статус"}); err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	for _, m := range model.messages[1] {
+		if m.Role == "tool" {
+			results = append(results, m.Content)
+		}
+	}
+	if len(results) != 2 {
+		t.Fatalf("tool results: %v", results)
+	}
+	if !strings.Contains(results[0], "Анна Смирнова") || strings.Contains(results[0], "Борис") {
+		t.Fatalf("get_user was not pinned to u1: %s", results[0])
+	}
+	// service_status takes no arguments: a user_id added to it is rejected by the schema.
+	if strings.HasPrefix(results[1], "ОШИБКА") || !strings.Contains(results[1], "INC-17") {
+		t.Fatalf("service_status through the scope: %s", results[1])
+	}
+}
+
 func TestReplyFailsOnATicketOfAnotherUser(t *testing.T) {
 	a := newAssistant(t, &fakeLLM{})
 	if _, err := a.reply(context.Background(), request{UserID: "u1", TicketID: "T-102", Message: "вопрос"}); err == nil || !strings.Contains(err.Error(), "нет тикета") {
@@ -182,12 +228,28 @@ func TestValidateRejectsWhatThePageNeverSends(t *testing.T) {
 	if err := validate(request{UserID: "u1", TicketID: "T-101", Message: strings.Repeat("я", maxMessageRunes)}); err != nil {
 		t.Fatalf("message at the limit rejected: %v", err)
 	}
+	// What the page sends from the second question on: up to 12 user/assistant turns.
+	full := make([]turn, 0, maxHistory)
+	for len(full) < maxHistory {
+		full = append(full, turn{Role: "user", Content: "вопрос"}, turn{Role: "assistant", Content: strings.Repeat("я", maxTurnRunes)})
+	}
+	if err := validate(request{UserID: "u1", TicketID: "T-101", Message: "вопрос", History: full}); err != nil {
+		t.Fatalf("a full valid history rejected: %v", err)
+	}
+	long := []turn{{Role: "assistant", Content: strings.Repeat("я", maxTurnRunes+1)}}
+	if err := validate(request{UserID: "u1", TicketID: "T-101", Message: "вопрос", History: long}); err == nil {
+		t.Fatal("a history turn over the limit accepted")
+	}
 }
 
 func TestRateLimitIsASlidingMinute(t *testing.T) {
-	now := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
+	start := time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)
+	now := start
 	h := &handler{now: func() time.Time { return now }}
 	for i := 0; i < ratePerMinute; i++ {
+		if i == ratePerMinute/2 {
+			now = start.Add(30 * time.Second)
+		}
 		if !h.allow() {
 			t.Fatalf("request %d refused", i+1)
 		}
@@ -195,9 +257,40 @@ func TestRateLimitIsASlidingMinute(t *testing.T) {
 	if h.allow() {
 		t.Fatal("request over the limit allowed")
 	}
-	now = now.Add(time.Minute)
-	if !h.allow() {
-		t.Fatal("limit did not reset after a minute")
+	// At 14:01:00 only the first half has aged out: exactly that many fit again.
+	now = start.Add(time.Minute)
+	for i := 0; i < ratePerMinute/2; i++ {
+		if !h.allow() {
+			t.Fatalf("freed slot %d refused", i+1)
+		}
+	}
+	if h.allow() {
+		t.Fatal("hits from 14:00:30 were dropped too early")
+	}
+}
+
+func TestChatAnswers429WhenTheLimitIsSpent(t *testing.T) {
+	now := time.Now()
+	h := &handler{slot: make(chan struct{}, 1), now: func() time.Time { return now }}
+	for range ratePerMinute {
+		h.allow()
+	}
+	rec := httptest.NewRecorder()
+	h.chat(rec, httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"user_id":"u1","ticket_id":"T-101","message":"вопрос"}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUsersSendsEmptyTicketListsNotNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "crm.json")
+	if err := os.WriteFile(path, []byte(`{"as_of":"x","users":[{"id":"u9","name":"Без тикетов","plan":"Старт"}],"tickets":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	(&handler{a: &assistant{dataPath: path}}).users(rec, httptest.NewRequest(http.MethodGet, "/api/users", nil))
+	if body := rec.Body.String(); !strings.Contains(body, `"tickets":[]`) {
+		t.Fatalf("users: %s", body)
 	}
 }
 
@@ -249,6 +342,14 @@ func TestCheckDecidesEachConditionKind(t *testing.T) {
 	fail := reply{Answer: "Я передам тикет специалисту, " + strings.Repeat("очень ", 20)}
 	if f := check(s, fail); len(f) != 5 {
 		t.Fatalf("expected 5 failures (2 must, must_not, must_call, length), got %v", f)
+	}
+	// A forbidden phrase at the start of a sentence still counts.
+	if f := check(scenario{MustNot: []string{"передам"}}, reply{Answer: "Передам тикет."}); len(f) != 1 {
+		t.Fatalf("capitalised must_not missed: %v", f)
+	}
+	// 60 Cyrillic runes are 120 bytes: the limit counts runes.
+	if f := check(scenario{MaxRunes: 60}, reply{Answer: strings.Repeat("я", 60)}); len(f) != 0 {
+		t.Fatalf("60 runes over a 60-rune limit: %v", f)
 	}
 }
 

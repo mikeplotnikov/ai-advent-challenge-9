@@ -41,6 +41,9 @@ type User struct {
 	Devices         []Device     `json:"devices"`
 	LoginEvents     []LoginEvent `json:"login_events"`
 	Courses         []Course     `json:"courses"`
+	// LessonsSinceLastPayment counts lessons finished since the latest successful
+	// charge — the figure the refund rule needs.
+	LessonsSinceLastPayment int `json:"lessons_since_last_payment"`
 }
 
 type Payment struct {
@@ -153,6 +156,7 @@ func (c CRM) User(id string) (User, error) {
 }
 
 func (c CRM) TicketsOf(userID string) []TicketSummary {
+	userID = strings.TrimSpace(userID)
 	out := []TicketSummary{}
 	for _, t := range c.Tickets {
 		if t.UserID == userID {
@@ -196,7 +200,7 @@ func NewServer(path string) *mcp.Server {
 		if _, err := crm.User(in.UserID); err != nil {
 			return nil, TicketsOutput{}, err
 		}
-		return nil, TicketsOutput{UserID: in.UserID, Tickets: crm.TicketsOf(in.UserID)}, nil
+		return nil, TicketsOutput{UserID: strings.TrimSpace(in.UserID), Tickets: crm.TicketsOf(in.UserID)}, nil
 	})
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_ticket",

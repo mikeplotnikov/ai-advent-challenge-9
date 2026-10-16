@@ -103,8 +103,34 @@ func runEval(ctx context.Context, a *assistant, path, outPath string) error {
 		return err
 	}
 	fmt.Println("Ответы и шаги → " + outPath)
+	fmt.Print("\nТаблица для RESULTS.md:\n\n" + table(outcomes))
 	if passed != len(scenarios) {
 		return fmt.Errorf("не прошли %d сценариев", len(scenarios)-passed)
 	}
 	return nil
+}
+
+// table renders the outcomes as the Markdown table of RESULTS.md, so the numbers there
+// come from a run, not from typing.
+func table(outcomes []outcome) string {
+	var b strings.Builder
+	b.WriteString("| Сценарий | Что проверяет | Итог | Модель сама вызвала | Вход (кэш) / выход, токены | Цена | Секунды |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
+	for _, o := range outcomes {
+		mark := "PASS"
+		if !o.Pass {
+			mark = "FAIL"
+		}
+		tools := strings.Join(o.Reply.ToolsUsed, ", ")
+		if tools == "" {
+			tools = "—"
+		}
+		cost := "—"
+		if o.Reply.Cost != nil {
+			cost = fmt.Sprintf("$%.5f", *o.Reply.Cost)
+		}
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %d (%d) / %d | %s | %.1f |\n", o.Scenario.Name, o.Scenario.Purpose, mark, tools,
+			o.Reply.Prompt, o.Reply.Cached, o.Reply.Output, cost, o.Reply.Seconds)
+	}
+	return b.String()
 }

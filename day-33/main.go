@@ -49,7 +49,8 @@ type config struct {
 func main() {
 	var cfg config
 	build := flag.Bool("index", false, "построить индекс документации продукта и выйти")
-	eval := flag.String("eval", "", "прогнать сценарии из файла (day-33/scenarios.json) и записать результаты в day-33/eval-results.json")
+	eval := flag.String("eval", "", "прогнать сценарии из файла (day-33/scenarios.json): итоги, таблица для RESULTS.md, ответы в -eval-out")
+	evalOut := flag.String("eval-out", filepath.Join("day-33", "eval-results.json"), "куда записать ответы и шаги прогона -eval")
 	flag.StringVar(&cfg.addr, "addr", "127.0.0.1:8033", "адрес веб-чата")
 	flag.StringVar(&cfg.product, "product", filepath.Join("day-33", "product"), "документация продукта: README.md + docs/")
 	flag.StringVar(&cfg.data, "data", filepath.Join("day-33", "data", "crm.json"), "JSON с пользователями, тикетами и инцидентами")
@@ -72,7 +73,7 @@ func main() {
 	}
 	defer closeFn()
 	if *eval != "" {
-		fail(runEval(ctx, a, *eval, filepath.Join("day-33", "eval-results.json")))
+		fail(runEval(ctx, a, *eval, *evalOut))
 		return
 	}
 	fmt.Printf("Чат поддержки: http://%s\n", cfg.addr)

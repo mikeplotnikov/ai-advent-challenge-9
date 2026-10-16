@@ -25,7 +25,8 @@
       ],
       "courses": [
         {"title": "Excel для аналитиков", "lessons_total": 18, "lessons_done": 11, "homework_total": 6, "homework_accepted": 3}
-      ]
+      ],
+      "lessons_since_last_payment": 6
     },
     {
       "id": "u2",
@@ -49,7 +50,8 @@
       ],
       "courses": [
         {"title": "Python с нуля", "lessons_total": 24, "lessons_done": 9, "homework_total": 8, "homework_accepted": 3}
-      ]
+      ],
+      "lessons_since_last_payment": 0
     },
     {
       "id": "u3",
@@ -69,7 +71,8 @@
       ],
       "courses": [
         {"title": "Английский для работы", "lessons_total": 30, "lessons_done": 4, "homework_total": 10, "homework_accepted": 1}
-      ]
+      ],
+      "lessons_since_last_payment": 2
     },
     {
       "id": "u4",
@@ -90,7 +93,8 @@
       ],
       "courses": [
         {"title": "Python с нуля", "lessons_total": 24, "lessons_done": 24, "homework_total": 8, "homework_accepted": 8, "completed_at": "2026-10-16T11:20:00+03:00", "certificate": "не выдан"}
-      ]
+      ],
+      "lessons_since_last_payment": 10
     }
   ],
   "tickets": [

@@ -14,16 +14,20 @@ cloudflared tunnel --no-autoupdate --protocol http2 --url http://127.0.0.1:8033 
 trap 'kill $SERVER $TUNNEL 2>/dev/null; rm -f "$LOG"' EXIT
 URL=""
 for _ in $(seq 60); do
+  kill -0 $SERVER 2>/dev/null || { echo "The day-33 service exited: see its error above"; exit 1; }
   URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" | head -1 || true)
   [ -n "$URL" ] && break
   sleep 1
 done
 [ -n "$URL" ] || { echo "Tunnel did not start:"; cat "$LOG"; exit 1; }
 echo "Tunnel $URL is registering (usually under a minute)..."
+READY=""
 for _ in $(seq 90); do
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/users")" = 200 ] && break
+  kill -0 $SERVER 2>/dev/null || { echo "The day-33 service exited: see its error above"; exit 1; }
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/users")" = 200 ] && { READY=1; break; }
   sleep 2
 done
+[ -n "$READY" ] || { echo "Tunnel $URL never answered; stopping"; exit 1; }
 echo
 echo "Support chat: $URL"
 echo
