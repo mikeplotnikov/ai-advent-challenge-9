@@ -107,6 +107,10 @@ func TestTheDay33DatasetLoadsAndEveryTicketHasAnOwner(t *testing.T) {
 	if crm.AsOf == "" || len(crm.Users) == 0 || len(crm.Tickets) == 0 {
 		t.Fatalf("dataset is empty: %+v", crm)
 	}
+	// The refund rule reads this figure; a renamed key would vanish silently in Unmarshal.
+	if gleb, err := crm.User("u4"); err != nil || gleb.LessonsSinceLastPayment != 10 {
+		t.Fatalf("u4 lessons_since_last_payment = %d, %v; want 10", gleb.LessonsSinceLastPayment, err)
+	}
 	for _, ticket := range crm.Tickets {
 		if _, err := crm.User(ticket.UserID); err != nil {
 			t.Fatalf("ticket %s: %v", ticket.ID, err)
