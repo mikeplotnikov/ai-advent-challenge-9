@@ -88,6 +88,9 @@ type Input struct {
 	// ModelCallLimit overrides MaxModelCalls for one run. Zero preserves the
 	// shared five-call behavior used by days 17 and 18.
 	ModelCallLimit int
+	// History holds earlier user and assistant turns of a chat; it goes between the
+	// system prompt and Question, oldest first.
+	History []llm.ToolMessage
 }
 
 // Run lists the server tools once, then lets the provider choose calls until it writes text.
@@ -111,7 +114,9 @@ func Run(ctx context.Context, model LLM, session Session, in Input) (Trace, erro
 			known[tool.Name] = true
 		}
 	}
-	messages := []llm.ToolMessage{{Role: "system", Content: in.SystemPrompt}, {Role: "user", Content: in.Question}}
+	messages := []llm.ToolMessage{{Role: "system", Content: in.SystemPrompt}}
+	messages = append(messages, in.History...)
+	messages = append(messages, llm.ToolMessage{Role: "user", Content: in.Question})
 	zero := 0.0
 	limit := in.ModelCallLimit
 	if limit <= 0 {

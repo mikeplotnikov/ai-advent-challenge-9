@@ -210,6 +210,21 @@ func TestRunAcceptsPerRunModelCallLimit(t *testing.T) {
 	}
 }
 
+func TestRunPlacesHistoryBetweenSystemAndQuestion(t *testing.T) {
+	model := &fakeLLM{answers: []llm.Answer{answer("ответ")}}
+	history := []llm.ToolMessage{{Role: "user", Content: "первый"}, {Role: "assistant", Content: "первый ответ"}}
+	if _, err := Run(context.Background(), model, forbiddenSession{t}, Input{SystemPrompt: "система", Question: "второй", History: history, NoTools: true}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range model.messages[0] {
+		got = append(got, m.Role+":"+m.Content)
+	}
+	if want := "system:система|user:первый|assistant:первый ответ|user:второй"; strings.Join(got, "|") != want {
+		t.Fatalf("messages: %s", strings.Join(got, "|"))
+	}
+}
+
 func TestRunDirectTextAndNoTools(t *testing.T) {
 	session, closeSession := realSession(t)
 	defer closeSession()

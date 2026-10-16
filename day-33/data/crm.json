@@ -1,0 +1,158 @@
+{
+  "as_of": "2026-10-16T14:00:00+03:00",
+  "users": [
+    {
+      "id": "u1",
+      "name": "Анна Смирнова",
+      "email": "anna@example.com",
+      "plan": "Про",
+      "plan_active_until": "2026-11-03",
+      "payments": [
+        {"at": "2026-10-03", "amount_rub": 990, "status": "succeeded"}
+      ],
+      "devices": [
+        {"name": "MacBook", "client": "Chrome 141, macOS", "last_seen": "2026-10-15T21:10:00+03:00"}
+      ],
+      "login_events": [
+        {"at": "2026-10-16T13:38:00+03:00", "event": "code_sent"},
+        {"at": "2026-10-16T13:40:00+03:00", "event": "code_sent"},
+        {"at": "2026-10-16T13:41:00+03:00", "event": "code_invalid", "note": "введён код из первого письма"},
+        {"at": "2026-10-16T13:42:00+03:00", "event": "code_invalid", "note": "введён код из первого письма"},
+        {"at": "2026-10-16T13:44:00+03:00", "event": "code_invalid"},
+        {"at": "2026-10-16T13:45:00+03:00", "event": "code_invalid"},
+        {"at": "2026-10-16T13:47:00+03:00", "event": "code_invalid"},
+        {"at": "2026-10-16T13:47:00+03:00", "event": "locked", "note": "заблокировано до 2026-10-16T14:17:00+03:00"}
+      ],
+      "courses": [
+        {"title": "Excel для аналитиков", "lessons_total": 18, "lessons_done": 11, "homework_total": 6, "homework_accepted": 3}
+      ]
+    },
+    {
+      "id": "u2",
+      "name": "Борис Петров",
+      "email": "boris@example.com",
+      "plan": "Старт",
+      "plan_active_until": "",
+      "plan_note": "подписка «Про» закончилась 2026-10-12 после трёх неудачных списаний",
+      "payments": [
+        {"at": "2026-09-09", "amount_rub": 990, "status": "succeeded"},
+        {"at": "2026-10-09", "amount_rub": 990, "status": "failed", "error": "card_expired"},
+        {"at": "2026-10-10", "amount_rub": 990, "status": "failed", "error": "card_expired"},
+        {"at": "2026-10-12", "amount_rub": 990, "status": "failed", "error": "card_expired"}
+      ],
+      "devices": [
+        {"name": "Ноутбук", "client": "Edge 141, Windows 11", "last_seen": "2026-10-16T09:05:00+03:00"}
+      ],
+      "login_events": [
+        {"at": "2026-10-16T09:04:00+03:00", "event": "code_sent"},
+        {"at": "2026-10-16T09:05:00+03:00", "event": "login_ok"}
+      ],
+      "courses": [
+        {"title": "Python с нуля", "lessons_total": 24, "lessons_done": 9, "homework_total": 8, "homework_accepted": 3}
+      ]
+    },
+    {
+      "id": "u3",
+      "name": "Вера Ким",
+      "email": "vera@example.com",
+      "plan": "Про",
+      "plan_active_until": "2026-10-28",
+      "payments": [
+        {"at": "2026-09-28", "amount_rub": 990, "status": "succeeded"}
+      ],
+      "devices": [
+        {"name": "iPhone 8", "client": "Safari, iOS 15.8", "last_seen": "2026-10-16T12:30:00+03:00"}
+      ],
+      "login_events": [
+        {"at": "2026-10-16T12:28:00+03:00", "event": "code_sent"},
+        {"at": "2026-10-16T12:29:00+03:00", "event": "login_ok"}
+      ],
+      "courses": [
+        {"title": "Английский для работы", "lessons_total": 30, "lessons_done": 4, "homework_total": 10, "homework_accepted": 1}
+      ]
+    },
+    {
+      "id": "u4",
+      "name": "Глеб Орлов",
+      "email": "gleb@example.com",
+      "plan": "Про",
+      "plan_active_until": "2026-10-20",
+      "payments": [
+        {"at": "2026-08-20", "amount_rub": 990, "status": "succeeded"},
+        {"at": "2026-09-20", "amount_rub": 990, "status": "succeeded"}
+      ],
+      "devices": [
+        {"name": "Рабочий ПК", "client": "Chrome 141, Windows 10", "last_seen": "2026-10-16T13:15:00+03:00"}
+      ],
+      "login_events": [
+        {"at": "2026-10-16T13:14:00+03:00", "event": "code_sent"},
+        {"at": "2026-10-16T13:15:00+03:00", "event": "login_ok"}
+      ],
+      "courses": [
+        {"title": "Python с нуля", "lessons_total": 24, "lessons_done": 24, "homework_total": 8, "homework_accepted": 8, "completed_at": "2026-10-16T11:20:00+03:00", "certificate": "не выдан"}
+      ]
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-101",
+      "user_id": "u1",
+      "subject": "Не могу войти в аккаунт",
+      "status": "open",
+      "created_at": "2026-10-16T13:50:00+03:00",
+      "messages": [
+        {"from": "user", "at": "2026-10-16T13:50:00+03:00", "text": "Ввожу код из письма, а он пишет «неверный код». Теперь вообще ничего не приходит."}
+      ]
+    },
+    {
+      "id": "T-102",
+      "user_id": "u2",
+      "subject": "Курс весь под замком",
+      "status": "open",
+      "created_at": "2026-10-16T09:10:00+03:00",
+      "messages": [
+        {"from": "user", "at": "2026-10-16T09:10:00+03:00", "text": "Неделю назад всё работало, сегодня захожу — уроки Python закрыты замком. Я же плачу за Про!"}
+      ]
+    },
+    {
+      "id": "T-103",
+      "user_id": "u3",
+      "subject": "Чёрный экран вместо видео",
+      "status": "open",
+      "created_at": "2026-10-16T12:35:00+03:00",
+      "messages": [
+        {"from": "user", "at": "2026-10-16T12:35:00+03:00", "text": "Открываю урок с телефона — вместо видео чёрный экран, звука тоже нет."}
+      ]
+    },
+    {
+      "id": "T-105",
+      "user_id": "u4",
+      "subject": "Не пришёл сертификат",
+      "status": "open",
+      "created_at": "2026-10-16T13:20:00+03:00",
+      "messages": [
+        {"from": "user", "at": "2026-10-16T13:20:00+03:00", "text": "Закончил курс Python утром, все домашки приняты, а сертификата в профиле нет."}
+      ]
+    },
+    {
+      "id": "T-106",
+      "user_id": "u4",
+      "subject": "Возврат за сентябрь",
+      "status": "open",
+      "created_at": "2026-10-16T13:25:00+03:00",
+      "messages": [
+        {"from": "user", "at": "2026-10-16T13:25:00+03:00", "text": "Курс я закончил, верните, пожалуйста, деньги за последний месяц подписки."}
+      ]
+    }
+  ],
+  "incidents": [
+    {
+      "id": "INC-17",
+      "title": "Задержка выдачи сертификатов",
+      "status": "investigating",
+      "started_at": "2026-10-16T10:00:00+03:00",
+      "eta": "2026-10-16T18:00:00+03:00",
+      "details": "Сертификаты за курсы, завершённые после 10:00, выдаются с задержкой. Все сертификаты будут выданы автоматически, повторно ничего сдавать не нужно."
+    }
+  ]
+}
